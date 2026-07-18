@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A train front under a Gaussian bell curve -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group android:translateX="27" android:translateY="27">
+        <!-- bell curve -->
+        <path
+            android:pathData="M2,26 C10,26 16,4 27,4 C38,4 44,26 52,26"
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:fillColor="#00000000" />
+        <!-- train body -->
+        <path
+            android:pathData="M14,32 h26 a6,6 0 0 1 6,6 v8 a4,4 0 0 1 -4,4 h-30 a4,4 0 0 1 -4,-4 v-8 a6,6 0 0 1 6,-6 z"
+            android:fillColor="#FFFFFF" />
+        <!-- windows -->
+        <path
+            android:pathData="M13,36 h12 v6 h-12 z M29,36 h12 v6 h-12 z"
+            android:fillColor="#1A5276" />
+        <!-- wheels -->
+        <path
+            android:pathData="M18,52 m-3,0 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0 M36,52 m-3,0 a3,3 0 1 0 6,0 a3,3 0 1 0 -6,0"
+            android:fillColor="#FFFFFF" />
+    </group>
+</vector>

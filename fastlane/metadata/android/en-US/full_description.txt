@@ -1,0 +1,18 @@
+BayesianBahn predicts when your train will actually arrive — as a full
+probability distribution, not a single number.
+
+Pick a station, pick a train from the live departure board, and see:
+
+* the median predicted arrival time,
+* an 80% credible interval,
+* the full delay distribution as a chart,
+* the probability of arriving within 5 minutes of schedule,
+* the historical cancellation rate.
+
+Predictions are empirical: they come from months of real historical runs of
+that exact train at that station (collected from Deutsche Bahn's public IRIS
+API, CC BY 4.0), reweighted for recency, weekday, and the train's current
+live delay. Trains without history get an honest Bayesian prior estimate.
+
+The app talks only to the keyless public IRIS timetable endpoint, needs no
+account, no API key, no Google services, and collects no data.
