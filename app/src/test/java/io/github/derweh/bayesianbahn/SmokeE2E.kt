@@ -28,7 +28,7 @@ class SmokeE2E {
         var forecasts = 0
         for (stop in stops.take(40)) {
             val key = HistoryRepository.shardKey("${stop.label.category} ${stop.label.number}")
-            val f = File(assets, "$key.json.gz")
+            val f = File(assets, "$key.jgz")
             val history = if (f.exists()) {
                 HistoryRepository.parseShard(
                     GZIPInputStream(f.inputStream()).readBytes().decodeToString(),

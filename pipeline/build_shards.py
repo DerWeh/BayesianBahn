@@ -170,11 +170,11 @@ def main() -> None:
         for station in shard["stations"].values():
             station["runs"].sort()
         blob = json.dumps(shard, ensure_ascii=False, separators=(",", ":"))
-        (shard_dir / f"{key}.json.gz").write_bytes(gzip.compress(blob.encode(), 6))
+        (shard_dir / f"{key}.jgz").write_bytes(gzip.compress(blob.encode(), 6))
         index[key] = sum(len(s["runs"]) for s in shard["stations"].values())
 
     (args.out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False))
-    total_mb = sum(f.stat().st_size for f in shard_dir.glob("*.json.gz")) / 2**20
+    total_mb = sum(f.stat().st_size for f in shard_dir.glob("*.jgz")) / 2**20
     print(f"total shard size: {total_mb:.1f} MB, index entries: {len(index)}")
 
 

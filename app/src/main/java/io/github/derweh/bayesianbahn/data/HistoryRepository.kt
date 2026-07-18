@@ -52,7 +52,9 @@ class HistoryRepository(private val context: Context) {
 
     private fun readShard(key: String): TrainHistory? {
         val bytes = try {
-            context.assets.open("history/$key.json.gz").use { stream ->
+            // .jgz, not .json.gz: aapt silently gunzips and renames *.gz
+            // assets, which would break the lookup and the F-Droid build.
+            context.assets.open("history/$key.jgz").use { stream ->
                 GZIPInputStream(stream).readBytes()
             }
         } catch (_: IOException) {

@@ -68,7 +68,7 @@ pixi run -e pipeline python pipeline/backtest.py \
 # download monthly parquet files into pipeline/data/, then:
 pixi run -e pipeline python pipeline/build_shards.py \
     --data-dir pipeline/data --out-dir pipeline/output --stations 8000013,8000261
-cp pipeline/output/shards/*.json.gz pipeline/output/index.json app/src/main/assets/history/
+cp pipeline/output/shards/*.jgz pipeline/output/index.json app/src/main/assets/history/
 ```
 
 The bundled station list (`app/src/main/assets/stations.csv`) derives from
