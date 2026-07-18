@@ -54,6 +54,10 @@ class Variant:
     holiday_as_sunday: bool = False  # fold public holidays into the Sunday class
     window_days: int | None = None  # hard cutoff, Bahn-Vorhersage style
     live_bandwidth: float | None = None  # kernel bandwidth factor; None = ignore live
+    # "kernel": reweight runs with similar previous-stop delay (app draft).
+    # "delta": predict live + (final - prev) residuals of all runs —
+    #          Bahn-Vorhersage's delay_diff idea, nonparametrically.
+    live_mode: str = "kernel"
     min_effective_n: float = 8.0
 
     def day_class(self, d: date) -> int:
@@ -62,39 +66,64 @@ class Variant:
         return d.weekday()
 
 
-def weights(
+def base_weights(
     variant: Variant,
     hist_dates: np.ndarray,  # days-ago (int)
     hist_dayclass: np.ndarray,
-    hist_prev: np.ndarray,  # delay at previous stop, NaN if unknown
     query_dayclass: int,
-    live_prev: float | None,
-) -> tuple[np.ndarray, float]:
-    """Returns (weights, kernel_mass). kernel_mass counts comparable runs."""
+) -> np.ndarray:
     w = np.ones(len(hist_dates))
     if variant.window_days is not None:
         w *= hist_dates <= variant.window_days
     if math.isfinite(variant.half_life_days):
         w *= np.exp(-math.log(2.0) / variant.half_life_days * hist_dates)
-    w = np.where(hist_dayclass == query_dayclass, w * variant.weekday_boost, w)
+    return np.where(hist_dayclass == query_dayclass, w * variant.weekday_boost, w)
 
-    kernel_mass = math.inf
-    if live_prev is not None and variant.live_bandwidth is not None:
-        bw = max(3.0, variant.live_bandwidth * abs(live_prev))
-        kernel = np.where(
-            np.isnan(hist_prev),
-            0.05,
-            np.exp(-0.5 * ((hist_prev - live_prev) / bw) ** 2),
-        )
-        kernel_mass = float(np.nansum(kernel))
-        cond = w * kernel
-        # Same guard as the app: only trust conditioning when enough
-        # genuinely comparable runs exist.
-        sum_w, sum_w2 = cond.sum(), (cond**2).sum()
-        eff_n = sum_w * sum_w / sum_w2 if sum_w2 > 0 else 0.0
-        if eff_n >= variant.min_effective_n and kernel_mass >= variant.min_effective_n:
-            return cond, kernel_mass
-    return w, kernel_mass
+
+def predictive_points(
+    variant: Variant,
+    hist_delay: np.ndarray,
+    hist_prev: np.ndarray,  # delay at previous stop, NaN if unknown
+    w: np.ndarray,
+    live_prev: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Returns (support, weights) of the predictive distribution."""
+    if live_prev is None or variant.live_bandwidth is None:
+        return hist_delay, w
+
+    if variant.live_mode == "delta":
+        # Shift each run's progression residual onto the live report:
+        # candidate final = live + (final_i - prev_i). Uses every run with a
+        # known previous-stop delay, optionally kernel-sharpened.
+        known = ~np.isnan(hist_prev)
+        if known.sum() < variant.min_effective_n:
+            return hist_delay, w
+        x = live_prev + (hist_delay[known] - hist_prev[known])
+        wk = w[known]
+        if variant.live_bandwidth > 0:
+            bw = max(3.0, variant.live_bandwidth * abs(live_prev))
+            wk = wk * (
+                0.15
+                + np.exp(-0.5 * ((hist_prev[known] - live_prev) / bw) ** 2)
+            )
+        return x, wk
+
+    # kernel mode (the app draft)
+    bw = max(3.0, variant.live_bandwidth * abs(live_prev))
+    kernel = np.where(
+        np.isnan(hist_prev),
+        0.05,
+        np.exp(-0.5 * ((hist_prev - live_prev) / bw) ** 2),
+    )
+    kernel_mass = float(np.nansum(kernel))
+    cond = w * kernel
+    # Same guard as the app: only trust conditioning when enough genuinely
+    # comparable runs exist.
+    sum_w, sum_w2 = cond.sum(), (cond**2).sum()
+    eff_n = sum_w * sum_w / sum_w2 if sum_w2 > 0 else 0.0
+    if eff_n >= variant.min_effective_n and kernel_mass >= variant.min_effective_n:
+        return hist_delay, cond
+    return hist_delay, w
 
 
 # --------------------------------------------------------------------------- scoring
@@ -155,30 +184,34 @@ class Scores:
 # --------------------------------------------------------------------------- data
 
 
-def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
-    files = sorted(data_dir.glob("data-*.parquet"))
-    if not files:
-        raise SystemExit(f"no data-*.parquet files in {data_dir}")
-    print(f"scanning {len(files)} monthly files")
+def load_month(file: Path, station_evas: list[str]) -> pl.DataFrame:
+    """One monthly file → evaluation rows at the requested stations.
+
+    Months are processed independently to bound memory (ride ids never span
+    months), and the data is semi-joined down to trains calling at the
+    stations *before* the sort that the prev-stop feature needs.
+    """
     minutes = lambda a, b: (pl.col(a) - pl.col(b)).dt.total_minutes()  # noqa: E731
 
-    lf = pl.concat(
-        [
-            pl.scan_parquet(f).select(
-                "eva",
-                "train_type",
-                "train_number",
-                "train_line_ride_id",
-                "train_line_station_num",
-                "arrival_planned_time",
-                "arrival_change_time",
-                "departure_planned_time",
-                "departure_change_time",
-                "is_canceled",
-            )
-            for f in files
-        ]
-    ).with_columns(eva=pl.col("eva").str.strip_chars_start("0"))
+    lf = pl.scan_parquet(file).select(
+        "eva",
+        "train_type",
+        "train_number",
+        "train_line_ride_id",
+        "train_line_station_num",
+        "arrival_planned_time",
+        "arrival_change_time",
+        "departure_planned_time",
+        "departure_change_time",
+        "is_canceled",
+    ).with_columns(
+        eva=pl.col("eva").str.strip_chars_start("0"),
+        identity=pl.col("train_type") + " " + pl.col("train_number"),
+    )
+    wanted = (
+        lf.filter(pl.col("eva").is_in(station_evas)).select("identity").unique()
+    )
+    lf = lf.join(wanted, on="identity", how="semi")
 
     df = (
         lf.with_columns(
@@ -187,11 +220,17 @@ def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
             planned=pl.coalesce("arrival_planned_time", "departure_planned_time"),
         )
         .filter(pl.col("planned").is_not_null())
-        .sort("train_line_ride_id", "train_line_station_num")
+        # ride_id is the route pattern shared by all days of a month, so
+        # partition by service day too (4h shift keeps post-midnight stops
+        # with their run) — otherwise prev_delay crosses days.
+        .with_columns(
+            service_day=(pl.col("planned") - pl.duration(hours=4)).dt.date()
+        )
+        .sort("train_line_ride_id", "service_day", "train_line_station_num")
         .with_columns(
             prev_delay=pl.coalesce("arr_delay", "dep_delay")
             .shift(1)
-            .over("train_line_ride_id")
+            .over("train_line_ride_id", "service_day")
         )
         .filter(pl.col("eva").is_in(station_evas))
         .with_columns(
@@ -211,6 +250,17 @@ def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
     return df
 
 
+def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
+    files = sorted(data_dir.glob("data-*.parquet"))
+    if not files:
+        raise SystemExit(f"no data-*.parquet files in {data_dir}")
+    frames = []
+    for f in files:
+        frames.append(load_month(f, station_evas))
+        print(f"  {f.name}: {frames[-1].height} rows", flush=True)
+    return pl.concat(frames)
+
+
 # --------------------------------------------------------------------------- backtest
 
 
@@ -225,21 +275,36 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | No
         Variant("hl60", half_life_days=60),
         Variant("hl30", half_life_days=30),
         Variant("hl14", half_life_days=14),
+        Variant("hl7", half_life_days=7),
         Variant("window35", window_days=35),
+        Variant("hl14_wd2", half_life_days=14, weekday_boost=2),
+        Variant("hl14_wd2_hol", half_life_days=14, weekday_boost=2, holiday_as_sunday=True),
         Variant("hl60_wd2", half_life_days=60, weekday_boost=2),
         Variant("hl30_wd2", half_life_days=30, weekday_boost=2),
         Variant("hl30_wd4", half_life_days=30, weekday_boost=4),
         Variant("hl30_wd2_hol", half_life_days=30, weekday_boost=2, holiday_as_sunday=True),
         # live variants (identical blind behaviour to their base):
-        Variant("hl30_wd2_live", half_life_days=30, weekday_boost=2, live_bandwidth=0.3),
+        Variant("hl30_wd2_kernel", half_life_days=30, weekday_boost=2, live_bandwidth=0.3),
         Variant(
-            "hl30_wd2_hol_live",
+            "hl30_wd2_delta",
             half_life_days=30,
             weekday_boost=2,
-            holiday_as_sunday=True,
             live_bandwidth=0.3,
+            live_mode="delta",
         ),
-        Variant("hl30_wd2_live_bw15", half_life_days=30, weekday_boost=2, live_bandwidth=0.15),
+        Variant(
+            "hl30_wd2_delta_nok",
+            half_life_days=30,
+            weekday_boost=2,
+            live_bandwidth=0.0,
+            live_mode="delta",
+        ),
+        Variant(
+            "hl14_delta",
+            half_life_days=14,
+            live_bandwidth=0.3,
+            live_mode="delta",
+        ),
     ]
 
     results: dict[tuple[str, str, str], Scores] = {}
@@ -284,16 +349,17 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | No
                     )
                 hdc = dayclass_cache[variant][hist]
                 qdc = dayclass_cache[variant][i]
+                w0 = base_weights(variant, hage, hdc, qdc)
                 for scenario, lp in (("blind", None), ("live", live)):
                     if scenario == "live" and lp is None:
                         continue
-                    w, _ = weights(variant, hage, hdc, hprev, qdc, lp)
+                    x, w = predictive_points(variant, hx, hprev, w0, lp)
                     if w.sum() <= 0:
                         continue
                     key = (variant.name, scenario, b)
-                    results.setdefault(key, Scores()).add(hx, w, y)
+                    results.setdefault(key, Scores()).add(x, w, y)
                     results.setdefault((variant.name, scenario, "all"), Scores()).add(
-                        hx, w, y
+                        x, w, y
                     )
 
     print(f"{n_conn} connections evaluated")

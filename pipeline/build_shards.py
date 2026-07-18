@@ -50,20 +50,20 @@ def train_key(train_type: str, train_number: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", f"{train_type} {train_number}").strip("_").upper()
 
 
-def scan(data_dir: Path) -> pl.LazyFrame:
-    files = sorted(data_dir.glob("data-*.parquet"))
-    if not files:
-        raise SystemExit(f"no data-*.parquet files in {data_dir}")
-    print(f"scanning {len(files)} monthly files")
-    return pl.concat([pl.scan_parquet(f).select(COLUMNS) for f in files]).with_columns(
+def prepare_month(file: Path, station_evas: list[str] | None) -> pl.DataFrame:
+    """One monthly file → filtered events with the prev-stop feature.
+
+    Months are processed independently to bound memory: ride ids never span
+    months, so the previous-stop computation loses nothing, and the semi-join
+    shrinks the data before the expensive sort.
+    """
+    minutes = lambda a, b: (pl.col(a) - pl.col(b)).dt.total_minutes()  # noqa: E731
+
+    lf = pl.scan_parquet(file).select(COLUMNS).with_columns(
         # piebro zero-pads EVA numbers; IRIS and the app use unpadded ones.
         eva=pl.col("eva").str.strip_chars_start("0"),
         identity=pl.col("train_type") + " " + pl.col("train_number"),
     )
-
-
-def load_events(data_dir: Path, station_evas: list[str] | None) -> pl.DataFrame:
-    lf = scan(data_dir)
     if station_evas:
         wanted = (
             lf.filter(pl.col("eva").is_in(station_evas))
@@ -71,33 +71,58 @@ def load_events(data_dir: Path, station_evas: list[str] | None) -> pl.DataFrame:
             .unique()
         )
         lf = lf.join(wanted, on="identity", how="semi")
-    return lf.collect()
 
-
-def build(events: pl.DataFrame) -> dict[str, dict]:
-    minutes = lambda a, b: (pl.col(a) - pl.col(b)).dt.total_minutes()  # noqa: E731
-
-    df = (
-        events.with_columns(
+    return (
+        lf.with_columns(
             arr_delay=minutes("arrival_change_time", "arrival_planned_time"),
             dep_delay=minutes("departure_change_time", "departure_planned_time"),
             planned=pl.coalesce("arrival_planned_time", "departure_planned_time"),
         )
         .filter(pl.col("planned").is_not_null())
+        # Arrival delay at the previous stop of the same daily run, for
+        # conditioning predictions on the live state of an approaching train.
+        # ride_id identifies the route pattern (shared by all days of a
+        # month), so partition additionally by service day — planned time
+        # shifted by 4h keeps post-midnight stops with their run.
         .with_columns(
-            date=pl.col("planned").dt.date().cast(pl.String),
-            hhmm=pl.col("planned").dt.strftime("%H:%M"),
+            service_day=(pl.col("planned") - pl.duration(hours=4)).dt.date()
         )
-        # Arrival delay at the previous stop of the same ride, for conditioning
-        # predictions on the live state of an approaching train.
-        .sort("train_line_ride_id", "train_line_station_num")
+        .sort("train_line_ride_id", "service_day", "train_line_station_num")
         .with_columns(
             prev_delay=pl.coalesce("arr_delay", "dep_delay")
             .shift(1)
-            .over("train_line_ride_id")
+            .over("train_line_ride_id", "service_day")
         )
+        .select(
+            "station_name",
+            "eva",
+            "identity",
+            "train_type",
+            "train_number",
+            "line_number",
+            "is_canceled",
+            "arr_delay",
+            "dep_delay",
+            "prev_delay",
+            date=pl.col("planned").dt.date().cast(pl.String),
+            hhmm=pl.col("planned").dt.strftime("%H:%M"),
+        )
+        .collect(engine="streaming")
     )
 
+
+def load_events(data_dir: Path, station_evas: list[str] | None) -> pl.DataFrame:
+    files = sorted(data_dir.glob("data-*.parquet"))
+    if not files:
+        raise SystemExit(f"no data-*.parquet files in {data_dir}")
+    frames = []
+    for f in files:
+        frames.append(prepare_month(f, station_evas))
+        print(f"  {f.name}: {frames[-1].height} events", flush=True)
+    return pl.concat(frames)
+
+
+def build(df: pl.DataFrame) -> dict[str, dict]:
     shards: dict[str, dict] = defaultdict(lambda: {"stations": {}})
     clamp = lambda v: None if v is None else max(MIN_DELAY, min(MAX_DELAY, int(v)))  # noqa: E731
 

@@ -19,11 +19,21 @@ from that train's real historical runs, not from DB's own forecast.
   (`iris.noncd.db.de`) for the live board — the same source DB's station
   displays use.
 - **Prediction**: a weighted empirical distribution over the train's past runs
-  at your station. Weights combine recency (60-day half-life), a same-weekday
-  boost, and — when the train is already reported late — a kernel that
-  reweights history towards runs that were similarly late one stop earlier.
-  Trains without history fall back to a Bayesian Normal-inverse-gamma prior
-  per train class and time of day (closed-form Student-t predictive).
+  at your station. Without live data, past final delays are weighted by
+  recency (30-day half-life — short on purpose: construction sites and
+  timetable changes make old runs stale) and a same-weekday boost. When a
+  live delay is reported, the *delta* model shifts each run's observed
+  last-hop progression (final − previous stop) onto the live report,
+  sharpened towards runs that were similarly late. Trains without history
+  fall back to a Bayesian Normal-inverse-gamma prior per train class and
+  time of day (closed-form Student-t predictive).
+- **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
+  variants on months of archive data with proper scoring rules (CRPS,
+  pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,
+  91k predictions) the delta model cut live-scenario CRPS 3.2× versus
+  ignoring live data (1.53 vs 4.83); a 30-day half-life beat 7/14/60 days;
+  explicit holiday handling showed no benefit even across the April–June
+  holidays. Parameters above are the backtest winners.
 
 ## Roadmap
 
@@ -43,6 +53,13 @@ available via `local.properties` or `ANDROID_HOME`.
 ```sh
 pixi run ./gradlew assembleDebug      # build the APK
 pixi run ./gradlew testDebugUnitTest  # run unit tests
+```
+
+### Backtesting
+
+```sh
+pixi run -e pipeline python pipeline/backtest.py \
+    --data-dir pipeline/data --stations 8000013,8000261 --eval-weeks 12
 ```
 
 ### Regenerating data

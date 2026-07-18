@@ -52,9 +52,10 @@ class EmpiricalDelayTest {
     }
 
     @Test
-    fun `live conditioning shifts the distribution`() {
+    fun `live delta model anchors the distribution at the live delay`() {
         // 50 on-time runs, 25 runs that were ~20 min late at the previous stop
-        // and stayed ~20 late; enough delayed runs to satisfy MIN_EFFECTIVE_N.
+        // and stayed ~20 late. With a +20 live report the delta model must
+        // predict around 20, not around the marginal median of ~1.
         val runs = (1L..50L).map { run(it, 1, prev = 0) } +
             (51L..75L).map { run(it - 50, 20 + (it % 3).toInt(), prev = 20) }
         val unconditioned = EmpiricalDelay.build(runs, "17:59", today)!!
@@ -66,12 +67,22 @@ class EmpiricalDelayTest {
     }
 
     @Test
-    fun `falls back to unconditioned for unseen live delay`() {
-        // History has only on-time runs; a 90-minute live delay has no
-        // similar historical runs, so conditioning must not be trusted.
+    fun `delta model extrapolates residuals to unseen live delays`() {
+        // All runs gained +1 min on the last hop; a train reported 90 min
+        // late at the previous stop is predicted to stay ~91 min late even
+        // though no historical run was ever that late.
         val runs = (1L..40L).map { run(it, 2, prev = 1) }
         val dist = EmpiricalDelay.build(runs, "17:59", today, liveDelayAtPreviousStop = 90.0)!!
+        assertTrue(dist.conditionedOnLive)
+        assertEquals(91.0, dist.quantile(0.5), 0.5)
+    }
+
+    @Test
+    fun `falls back to marginal when previous-stop delays are unknown`() {
+        val runs = (1L..40L).map { run(it, 2, prev = null) }
+        val dist = EmpiricalDelay.build(runs, "17:59", today, liveDelayAtPreviousStop = 10.0)!!
         assertFalse(dist.conditionedOnLive)
+        assertTrue(dist.quantile(0.5) <= 3.0)
     }
 
     @Test
