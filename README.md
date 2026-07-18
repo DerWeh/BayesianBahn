@@ -35,7 +35,10 @@ from that train's real historical runs, not from DB's own forecast.
   the destination — including the case where a *delayed* earlier train is
   still catchable. Departure and arrival delays of a candidate come from the
   same historical run, preserving their correlation; feeder and candidates
-  are assumed independent (documented in-app).
+  are assumed independent (documented in-app). A **Deutschland-Ticket**
+  switch (on by default when the feeder is regional) restricts candidates
+  to covered trains (RE, RB, IRE, S-Bahn, private regional operators — no
+  ICE/IC/EC, night trains or FlixTrain).
 - **Data updates**: predictions stay fresh without app updates — the
   pipeline publishes `history.zip` (shards + index + meta) as a GitHub
   release with tag `data`, and the in-app "Update delay history" action

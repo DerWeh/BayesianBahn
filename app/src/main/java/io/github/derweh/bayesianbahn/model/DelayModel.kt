@@ -10,7 +10,7 @@ enum class TrainClass {
 
     companion object {
         private val LONG_DISTANCE_CATEGORIES = setOf(
-            "ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "D", "IR",
+            "ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "D", "IR", "WB",
         )
 
         fun fromCategory(category: String): TrainClass = when {

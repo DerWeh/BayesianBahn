@@ -3,6 +3,7 @@ package io.github.derweh.bayesianbahn.data
 import io.github.derweh.bayesianbahn.api.IrisClient
 import io.github.derweh.bayesianbahn.api.TimetableStop
 import io.github.derweh.bayesianbahn.model.ConnectionModel
+import io.github.derweh.bayesianbahn.model.DeutschlandTicket
 import io.github.derweh.bayesianbahn.model.EmpiricalDelay
 import java.time.Instant
 import java.time.LocalDate
@@ -39,6 +40,7 @@ class ConnectionPlanner(
         transferQuery: String,
         destinationQuery: String,
         transferMinutes: Int,
+        deutschlandTicketOnly: Boolean = false,
         today: LocalDate = LocalDate.now(ZONE),
     ): Outcome {
         val transfer = stationRepository.search(transferQuery).firstOrNull()
@@ -84,13 +86,16 @@ class ConnectionPlanner(
                     stop.label.number == feeder.label.number)
             }
             .filter { stop -> stop.departure!!.plannedPath.any { matches(it, destinationName) } }
+            .filter { !deutschlandTicketOnly || DeutschlandTicket.covers(it.label.category) }
             .filter { it.departure!!.plannedTime!! >= feederPlanned - 15 * 60_000 }
             .sortedBy { it.departure!!.plannedTime }
             .take(MAX_CANDIDATES)
             .toList()
         if (candidates.isEmpty()) {
+            val restriction = if (deutschlandTicketOnly) "Deutschland-Ticket " else ""
             return Outcome.Error(
-                "No trains towards $destinationName found at ${transfer.name} in the next hours.",
+                "No ${restriction}trains towards $destinationName found at " +
+                    "${transfer.name} in the next hours.",
             )
         }
 

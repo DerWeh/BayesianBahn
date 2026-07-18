@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -44,6 +45,7 @@ import io.github.derweh.bayesianbahn.R
 import io.github.derweh.bayesianbahn.api.TimetableStop
 import io.github.derweh.bayesianbahn.data.ConnectionPlanner
 import io.github.derweh.bayesianbahn.data.Station
+import io.github.derweh.bayesianbahn.model.DeutschlandTicket
 import kotlin.math.roundToInt
 
 /**
@@ -66,6 +68,10 @@ fun ConnectionScreen(
     }
     var destination by rememberSaveable(stop.id) { mutableStateOf("") }
     var transferMinutes by rememberSaveable(stop.id) { mutableStateOf(5) }
+    // Riding a regional train usually means holding a Deutschland-Ticket.
+    var deutschlandTicket by rememberSaveable(stop.id) {
+        mutableStateOf(DeutschlandTicket.covers(stop.label.category))
+    }
 
     Scaffold(
         topBar = {
@@ -118,9 +124,30 @@ fun ConnectionScreen(
                 )
                 OutlinedButton(onClick = { transferMinutes += 2 }) { Text("+") }
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Deutschland-Ticket only", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Only regional trains (RE, RB, S, …) as connections",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(checked = deutschlandTicket, onCheckedChange = { deutschlandTicket = it })
+            }
+            if (deutschlandTicket && !DeutschlandTicket.covers(stop.label.category)) {
+                Text(
+                    "Note: ${stop.label.display} itself is not covered by the " +
+                        "Deutschland-Ticket.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Button(
                 onClick = {
-                    viewModel.evaluateConnection(stop, transfer, destination, transferMinutes)
+                    viewModel.evaluateConnection(
+                        stop, transfer, destination, transferMinutes, deutschlandTicket,
+                    )
                 },
                 enabled = transfer.isNotBlank() && destination.isNotBlank() &&
                     viewModel.connectionState != ConnectionState.Loading,

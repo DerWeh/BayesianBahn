@@ -115,6 +115,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         transferName: String,
         destinationQuery: String,
         transferMinutes: Int,
+        deutschlandTicketOnly: Boolean,
     ) {
         connectionState = ConnectionState.Loading
         viewModelScope.launch {
@@ -124,6 +125,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     transferQuery = transferName,
                     destinationQuery = destinationQuery,
                     transferMinutes = transferMinutes,
+                    deutschlandTicketOnly = deutschlandTicketOnly,
                 )
             ) {
                 is ConnectionPlanner.Outcome.Error -> ConnectionState.Error(outcome.message)
