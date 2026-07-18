@@ -1,0 +1,58 @@
+# Rebuilds the delay-history shards from the piebro/deutsche-bahn-data
+# archive every month and replaces history.zip on the `data` release —
+# the app's in-app updater downloads from that stable URL.
+name: Update delay data
+
+on:
+  schedule:
+    # The archive publishes a month a few days after it ends; the 6th
+    # reliably has the previous month.
+    - cron: "17 3 6 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pipeline dependencies
+        run: pip install "polars>=1.0"
+
+      - name: Download the last 8 months of archive data
+        run: |
+          mkdir -p pipeline/data
+          got=0
+          for i in $(seq 1 9); do
+            # Anchor on the 15th so month arithmetic never skips a month.
+            month=$(date -d "$(date +%Y-%m-15) -$i month" +%Y-%m)
+            url="https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data/data-$month.parquet"
+            if curl -fsSL --retry 3 -o "pipeline/data/data-$month.parquet" "$url"; then
+              echo "downloaded $month"
+              got=$((got + 1))
+            else
+              echo "skipping $month (not published)"
+            fi
+            [ "$got" -ge 8 ] && break
+          done
+          [ "$got" -ge 6 ] || { echo "only $got months available"; exit 1; }
+
+      - name: Build shards
+        run: |
+          python pipeline/build_shards.py \
+            --data-dir pipeline/data --out-dir pipeline/output \
+            --stations 8000013,8000261
+
+      - name: Replace history.zip on the data release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload data pipeline/output/history.zip --clobber
+          cat pipeline/output/meta.json

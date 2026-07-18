@@ -40,10 +40,10 @@ from that train's real historical runs, not from DB's own forecast.
   to covered trains (RE, RB, IRE, S-Bahn, private regional operators — no
   ICE/IC/EC, night trains or FlixTrain).
 - **Data updates**: predictions stay fresh without app updates — the
-  pipeline publishes `history.zip` (shards + index + meta) as a GitHub
-  release with tag `data`, and the in-app "Update delay history" action
-  downloads it over the current connection into app storage, which takes
-  precedence over the bundled snapshot.
+  `update-data` workflow rebuilds the shards from the newest 8 archive
+  months every month and replaces `history.zip` on the `data` release;
+  the in-app "Update delay history" action downloads it into app storage,
+  which takes precedence over the bundled snapshot.
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
   pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,
@@ -54,10 +54,9 @@ from that train's real historical runs, not from DB's own forecast.
 
 ## Roadmap
 
-- Automate the monthly data release (`pipeline/build_shards.py` already
-  produces `history.zip`; it needs a scheduled job that uploads it to the
-  `data` release). The draft bundle covers trains calling at
-  Augsburg Hbf / München Hbf.
+- Widen the data beyond the draft subset (trains calling at Augsburg Hbf /
+  München Hbf) — the pipeline and the update mechanism already handle any
+  station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
 - On-device [TabICL v2](https://github.com/soda-inria/tabicl) (BSD-3) via ONNX
