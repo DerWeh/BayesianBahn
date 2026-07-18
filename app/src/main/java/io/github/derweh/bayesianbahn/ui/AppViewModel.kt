@@ -71,6 +71,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         routes = routes + Route.Search
     }
 
+    /** Synchronous suggestions for station input fields (in-memory list). */
+    fun suggestStations(query: String): List<Station> =
+        container.stationRepository.search(query, limit = 6)
+
     fun planJourney(
         fromQuery: String,
         toQuery: String,
@@ -184,6 +188,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch(Dispatchers.IO) {
             dataMeta = DataUpdater.readMeta(getApplication())
+            // Prewarm the station list so field suggestions never block the UI.
+            container.stationRepository.search("")
         }
     }
 

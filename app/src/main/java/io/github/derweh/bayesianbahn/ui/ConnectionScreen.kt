@@ -104,12 +104,11 @@ fun ConnectionScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
             TransferPicker(routeStations, transfer) { transfer = it }
-            OutlinedTextField(
+            StationSuggestField(
                 value = destination,
                 onValueChange = { destination = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Destination station") },
-                singleLine = true,
+                label = "Destination station",
+                suggest = viewModel::suggestStations,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Transfer time", style = MaterialTheme.typography.bodyMedium)

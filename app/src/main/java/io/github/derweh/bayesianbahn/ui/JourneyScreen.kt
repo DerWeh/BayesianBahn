@@ -15,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -22,12 +24,15 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,7 +65,10 @@ private val HHMM = DateTimeFormatter.ofPattern("HH:mm")
 fun JourneyScreen(viewModel: AppViewModel) {
     var from by rememberSaveable { mutableStateOf("") }
     var to by rememberSaveable { mutableStateOf("") }
-    var timeText by rememberSaveable { mutableStateOf("") }
+    // null = depart now.
+    var pickedHour by rememberSaveable { mutableStateOf<Int?>(null) }
+    var pickedMinute by rememberSaveable { mutableStateOf<Int?>(null) }
+    var showTimePicker by rememberSaveable { mutableStateOf(false) }
     var tomorrow by rememberSaveable { mutableStateOf(false) }
     var deutschlandTicket by rememberSaveable { mutableStateOf(true) }
 
@@ -84,32 +92,32 @@ fun JourneyScreen(viewModel: AppViewModel) {
                 .verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            OutlinedTextField(
+            StationSuggestField(
                 value = from,
                 onValueChange = { from = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("From") },
-                singleLine = true,
+                label = "From",
+                suggest = viewModel::suggestStations,
             )
-            OutlinedTextField(
+            StationSuggestField(
                 value = to,
                 onValueChange = { to = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("To") },
-                singleLine = true,
+                label = "To",
+                suggest = viewModel::suggestStations,
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                OutlinedTextField(
-                    value = timeText,
-                    onValueChange = { timeText = it },
-                    modifier = Modifier.width(120.dp),
-                    label = { Text("Depart") },
-                    placeholder = { Text("now") },
-                    singleLine = true,
-                )
+                OutlinedButton(onClick = { showTimePicker = true }) {
+                    Icon(Icons.Default.Schedule, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        pickedHour?.let { h ->
+                            "%02d:%02d".format(h, pickedMinute ?: 0)
+                        } ?: "now",
+                    )
+                }
+                Spacer(Modifier.weight(1f))
                 FilterChip(
                     selected = !tomorrow,
                     onClick = { tomorrow = false },
@@ -119,6 +127,23 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     selected = tomorrow,
                     onClick = { tomorrow = true },
                     label = { Text("Tomorrow") },
+                )
+            }
+            if (showTimePicker) {
+                DepartureTimeDialog(
+                    initialHour = pickedHour ?: LocalTime.now(ZONE).hour,
+                    initialMinute = pickedMinute ?: LocalTime.now(ZONE).minute,
+                    onDismiss = { showTimePicker = false },
+                    onNow = {
+                        pickedHour = null
+                        pickedMinute = null
+                        showTimePicker = false
+                    },
+                    onConfirm = { h, m ->
+                        pickedHour = h
+                        pickedMinute = m
+                        showTimePicker = false
+                    },
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -135,7 +160,8 @@ fun JourneyScreen(viewModel: AppViewModel) {
             Button(
                 onClick = {
                     viewModel.planJourney(
-                        from, to, departMillis(timeText, tomorrow), deutschlandTicket,
+                        from, to, departMillis(pickedHour, pickedMinute, tomorrow),
+                        deutschlandTicket,
                     )
                 },
                 enabled = from.isNotBlank() && to.isNotBlank() &&
@@ -172,12 +198,43 @@ fun JourneyScreen(viewModel: AppViewModel) {
     }
 }
 
-/** "HH:mm" + today/tomorrow → epoch millis; blank means now. */
-internal fun departMillis(timeText: String, tomorrow: Boolean): Long {
+/** Picked time + today/tomorrow → epoch millis; null hour means now. */
+internal fun departMillis(hour: Int?, minute: Int?, tomorrow: Boolean): Long {
     val date = LocalDate.now(ZONE).plusDays(if (tomorrow) 1 else 0)
-    val time = runCatching { LocalTime.parse(timeText.trim(), HHMM) }.getOrNull()
+    val time = hour?.let { LocalTime.of(it, minute ?: 0) }
         ?: if (tomorrow) LocalTime.of(6, 0) else LocalTime.now(ZONE)
     return ZonedDateTime.of(date, time, ZONE).toInstant().toEpochMilli()
+}
+
+/** Material time picker in a dialog, with a shortcut back to "depart now". */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DepartureTimeDialog(
+    initialHour: Int,
+    initialMinute: Int,
+    onDismiss: () -> Unit,
+    onNow: () -> Unit,
+    onConfirm: (Int, Int) -> Unit,
+) {
+    val state = rememberTimePickerState(
+        initialHour = initialHour,
+        initialMinute = initialMinute,
+        is24Hour = true,
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Departure time") },
+        text = { TimePicker(state = state) },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(state.hour, state.minute) }) { Text("OK") }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onNow) { Text("Now") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 @Composable
