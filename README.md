@@ -39,11 +39,14 @@ from that train's real historical runs, not from DB's own forecast.
   switch (on by default when the feeder is regional) restricts candidates
   to covered trains (RE, RB, IRE, S-Bahn, private regional operators — no
   ICE/IC/EC, night trains or FlixTrain).
-- **Data updates**: predictions stay fresh without app updates — the
-  `update-data` workflow rebuilds the shards from the newest 8 archive
-  months every month and replaces `history.zip` on the `data` release;
-  the in-app "Update delay history" action downloads it into app storage,
-  which takes precedence over the bundled snapshot.
+- **Data updates**: predictions stay fresh to within ~a day, with minimal
+  downloads. The daily `update-data` workflow maintains three assets on the
+  `data` release: `meta.json` (tiny descriptor), `history.zip` (monthly
+  base, ~16 MB, rebuilt when the archive publishes a new month) and
+  `recent.zip` (~1–3 MB, rebuilt daily by `pipeline/build_recent.py` from
+  the archive's *raw* IRIS logs, covering the days newer than the newest
+  monthly file). The in-app update checks `meta.json` first and fetches
+  only the tier that changed; the app overlays recent runs onto the base.
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
   pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,

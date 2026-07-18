@@ -52,17 +52,30 @@ class HistoryRepository(private val context: Context) {
     }
 
     private fun readShard(key: String): TrainHistory? {
-        // Downloaded data (DataUpdater) wins over the bundled snapshot.
-        val updated = File(File(context.filesDir, DataUpdater.HISTORY_DIR), "$key.jgz")
+        // Base data: downloaded monthly build if present, else the bundled
+        // snapshot; the small daily "recent" overlay is merged on top.
+        val base = readFile(File(DataUpdater.baseDir(context), "$key.jgz"))
+            ?: readAsset(key)
+        val recent = readFile(File(DataUpdater.recentDir(context), "$key.jgz"))
+        return mergeHistories(base, recent)
+    }
+
+    private fun readFile(file: File): TrainHistory? {
+        if (!file.isFile) return null
         val bytes = try {
-            if (updated.isFile) {
-                updated.inputStream().use { GZIPInputStream(it).readBytes() }
-            } else {
-                // .jgz, not .json.gz: aapt silently gunzips and renames *.gz
-                // assets, which would break the lookup and the F-Droid build.
-                context.assets.open("history/$key.jgz").use { stream ->
-                    GZIPInputStream(stream).readBytes()
-                }
+            file.inputStream().use { GZIPInputStream(it).readBytes() }
+        } catch (_: IOException) {
+            return null
+        }
+        return parseShard(bytes.decodeToString())
+    }
+
+    private fun readAsset(key: String): TrainHistory? {
+        val bytes = try {
+            // .jgz, not .json.gz: aapt silently gunzips and renames *.gz
+            // assets, which would break the lookup and the F-Droid build.
+            context.assets.open("history/$key.jgz").use { stream ->
+                GZIPInputStream(stream).readBytes()
             }
         } catch (_: IOException) {
             return null
@@ -74,6 +87,33 @@ class HistoryRepository(private val context: Context) {
         /** Mirrors `train_key` in build_shards.py. */
         fun shardKey(trainName: String): String =
             trainName.trim().replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').uppercase()
+
+        /**
+         * Overlays [recent] runs onto [base]; where both cover the same
+         * (date, planned time) at a station, the recent run wins — it was
+         * built from fresher raw data.
+         */
+        fun mergeHistories(base: TrainHistory?, recent: TrainHistory?): TrainHistory? {
+            if (base == null) return recent
+            if (recent == null) return base
+            val stations = (base.stations.keys + recent.stations.keys).associateWith { name ->
+                val b = base.stations[name]
+                val r = recent.stations[name]
+                when {
+                    b == null -> r!!
+                    r == null -> b
+                    else -> {
+                        val covered = r.runs.mapTo(HashSet()) { it.date to it.plannedTimeOfDay }
+                        StationHistory(
+                            eva = b.eva ?: r.eva,
+                            runs = b.runs.filter { (it.date to it.plannedTimeOfDay) !in covered } +
+                                r.runs,
+                        )
+                    }
+                }
+            }
+            return TrainHistory(base.trainName, base.trainType, stations)
+        }
 
         fun parseShard(json: String): TrainHistory? {
             val root = runCatching { Json.parseToJsonElement(json).jsonObject }.getOrNull()

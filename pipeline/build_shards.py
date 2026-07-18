@@ -178,9 +178,21 @@ def main() -> None:
     (args.out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False))
     meta = {
         "generated": date.today().isoformat(),
-        "months": [f.stem.removeprefix("data-") for f in sorted(args.data_dir.glob("data-*.parquet"))],
+        "months": sorted(
+            f.stem.removeprefix("data-")
+            for f in args.data_dir.glob("data-*.parquet")
+            if re.fullmatch(r"data-\d{4}-\d{2}", f.stem)
+        ),
         "trains": len(index),
     }
+    # Daily files from build_recent.py (data-recent-YYYY-MM-DD.parquet).
+    recent_days = sorted(
+        f.stem.removeprefix("data-recent-")
+        for f in args.data_dir.glob("data-recent-*.parquet")
+    )
+    if recent_days:
+        meta["recent_from"] = recent_days[0]
+        meta["recent_through"] = recent_days[-1]
     (args.out_dir / "meta.json").write_text(json.dumps(meta))
     total_mb = sum(f.stat().st_size for f in shard_dir.glob("*.jgz")) / 2**20
     print(f"total shard size: {total_mb:.1f} MB, index entries: {len(index)}")

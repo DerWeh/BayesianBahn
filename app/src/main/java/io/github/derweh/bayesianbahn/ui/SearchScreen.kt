@@ -73,7 +73,11 @@ private fun DataStatusRow(viewModel: AppViewModel) {
     ListItem(
         headlineContent = {
             Text(
-                meta?.generated?.let { "Delay history: $it" } ?: "Delay history: bundled",
+                when {
+                    meta?.recentThrough != null -> "Delay history through ${meta.recentThrough}"
+                    meta?.baseGenerated != null -> "Delay history: ${meta.baseGenerated}"
+                    else -> "Delay history: bundled"
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
         },

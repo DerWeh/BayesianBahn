@@ -1,17 +1,27 @@
-# Rebuilds the delay-history shards from the piebro/deutsche-bahn-data
-# archive every month and replaces history.zip on the `data` release —
-# the app's in-app updater downloads from that stable URL.
+# Keeps the `data` release fresh with minimal app downloads via three assets:
+#   meta.json    tiny descriptor the app checks first
+#   history.zip  monthly base (~16 MB), rebuilt when a new month publishes
+#   recent.zip   daily overlay (~1-3 MB) built from the archive's raw day
+#                files, covering the days newer than the newest monthly file
+# Per-day condensed parquet is cached, so a daily run only processes new days.
 name: Update delay data
 
 on:
   schedule:
-    # The archive publishes a month a few days after it ends; the 6th
-    # reliably has the previous month.
-    - cron: "17 3 6 * *"
+    - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      rebuild_base:
+        description: "Force rebuilding the monthly base (history.zip)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+
+env:
+  STATIONS: "8000013,8000261"
+  HF: https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main
 
 jobs:
   update:
@@ -26,33 +36,123 @@ jobs:
       - name: Install pipeline dependencies
         run: pip install "polars>=1.0"
 
-      - name: Download the last 8 months of archive data
+      - name: Restore per-day cache
+        uses: actions/cache@v4
+        with:
+          path: pipeline/recent-cache
+          key: recent-cache-${{ github.run_id }}
+          restore-keys: recent-cache-
+
+      - name: Determine coverage
+        id: coverage
         run: |
+          # Newest published monthly file, probing backwards from last month.
+          for i in 1 2 3; do
+            month=$(date -d "$(date +%Y-%m-15) -$i month" +%Y-%m)
+            if curl -fsIL "$HF/monthly_processed_data/data-$month.parquet" >/dev/null; then
+              echo "newest_month=$month" >> "$GITHUB_OUTPUT"
+              echo "newest published month: $month"
+              break
+            fi
+          done
+
+      - name: Build missing recent days
+        run: |
+          mkdir -p pipeline/recent-cache
+          newest="${{ steps.coverage.outputs.newest_month }}"
+          start=$(date -d "${newest}-15 +1 month" +%Y-%m-01)
+          yesterday=$(date -d yesterday +%Y-%m-%d)
+          # Drop cached days a monthly file now covers.
+          for f in pipeline/recent-cache/data-recent-*.parquet; do
+            [ -e "$f" ] || continue
+            d=$(basename "$f" .parquet); d=${d#data-recent-}
+            [ "$d" \< "$start" ] && { echo "pruning $d (covered by $newest)"; rm "$f"; }
+          done
+          day="$start"
+          while [ "$day" \< "$yesterday" ] || [ "$day" = "$yesterday" ]; do
+            out="pipeline/recent-cache/data-recent-$day.parquet"
+            if [ ! -f "$out" ]; then
+              y=$(date -d "$day" +%Y); m=$(date -d "$day" +%-m); dd=$(date -d "$day" +%-d)
+              mkdir -p raw && ok=1
+              for h in 00_01_02_03_04_05 06_07_08_09_10_11 12_13_14_15_16_17 18_19_20_21_22_23; do
+                url="$HF/raw_data/year%3D$y/month%3D$m/day%3D$dd/hour_$h.parquet"
+                curl -fsSL --retry 3 -o "raw/hour_$h.parquet" "$url" || { ok=0; break; }
+              done
+              if [ "$ok" = 1 ]; then
+                python pipeline/build_recent.py --date "$day" --raw-dir raw \
+                  --out "$out" --stations "$STATIONS"
+              else
+                echo "skipping $day (raw files not fully published)"
+              fi
+              rm -rf raw
+            fi
+            day=$(date -d "$day +1 day" +%Y-%m-%d)
+          done
+          ls pipeline/recent-cache/
+
+      - name: Build recent.zip
+        run: |
+          mkdir -p pipeline/recent-out
+          if ! ls pipeline/recent-cache/data-recent-*.parquet >/dev/null 2>&1; then
+            echo "no recent days available yet"
+            echo '{}' > pipeline/recent-out/meta.json
+            exit 0
+          fi
+          python pipeline/build_shards.py \
+            --data-dir pipeline/recent-cache --out-dir pipeline/recent-out \
+            --stations "$STATIONS"
+          mv pipeline/recent-out/history.zip pipeline/recent-out/recent.zip
+
+      - name: Rebuild monthly base
+        run: |
+          # Cheap daily check: rebuild only when a new month was published.
+          newest="${{ steps.coverage.outputs.newest_month }}"
+          GH_TOKEN="${{ github.token }}" gh release download data -p history.zip -O /tmp/base.zip -R "$GITHUB_REPOSITORY" || true
+          have=$( [ -f /tmp/base.zip ] && unzip -p /tmp/base.zip meta.json | python -c "import json,sys;print(json.load(sys.stdin)['months'][-1])" || echo none)
+          force="${{ github.event.inputs.rebuild_base }}"
+          if [ "$have" = "$newest" ] && [ "$force" != "true" ]; then
+            echo "base up to date (through $have)"; exit 0
+          fi
           mkdir -p pipeline/data
           got=0
           for i in $(seq 1 9); do
-            # Anchor on the 15th so month arithmetic never skips a month.
             month=$(date -d "$(date +%Y-%m-15) -$i month" +%Y-%m)
-            url="https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main/monthly_processed_data/data-$month.parquet"
+            url="$HF/monthly_processed_data/data-$month.parquet"
             if curl -fsSL --retry 3 -o "pipeline/data/data-$month.parquet" "$url"; then
-              echo "downloaded $month"
-              got=$((got + 1))
-            else
-              echo "skipping $month (not published)"
+              got=$((got + 1)); echo "downloaded $month"
             fi
             [ "$got" -ge 8 ] && break
           done
           [ "$got" -ge 6 ] || { echo "only $got months available"; exit 1; }
-
-      - name: Build shards
-        run: |
           python pipeline/build_shards.py \
-            --data-dir pipeline/data --out-dir pipeline/output \
-            --stations 8000013,8000261
+            --data-dir pipeline/data --out-dir pipeline/output --stations "$STATIONS"
+          echo "BASE_REBUILT=1" >> "$GITHUB_ENV"
 
-      - name: Replace history.zip on the data release
+      - name: Compose meta.json and upload
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload data pipeline/output/history.zip --clobber
-          cat pipeline/output/meta.json
+          mkdir -p release-assets
+          if [ "${BASE_REBUILT:-0}" = 1 ]; then
+            base_meta=pipeline/output/meta.json
+          else
+            gh release download data -p history.zip -O /tmp/base.zip --clobber -R "$GITHUB_REPOSITORY"
+            unzip -o -d /tmp /tmp/base.zip meta.json && base_meta=/tmp/meta.json
+          fi
+          python -c "$(printf '%s\n' \
+            'import json, sys' \
+            'base = json.load(open(sys.argv[1]))' \
+            'recent = json.load(open(sys.argv[2]))' \
+            'for key in ("recent_from", "recent_through"):' \
+            '    if key in recent:' \
+            '        base[key] = recent[key]' \
+            'json.dump(base, open("release-assets/meta.json", "w"))' \
+          )" "$base_meta" pipeline/recent-out/meta.json
+          cat release-assets/meta.json
+          if [ -f pipeline/recent-out/recent.zip ]; then
+            cp pipeline/recent-out/recent.zip release-assets/
+          fi
+          if [ "${BASE_REBUILT:-0}" = 1 ]; then
+            cp pipeline/output/history.zip release-assets/
+          fi
+          gh release upload data release-assets/* --clobber -R "$GITHUB_REPOSITORY"
