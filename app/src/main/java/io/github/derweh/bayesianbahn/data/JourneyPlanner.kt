@@ -86,9 +86,17 @@ class JourneyPlanner(
         for (stop in direct.take(MAX_DIRECT)) {
             directItinerary(stop, to)?.let { itineraries += it }
         }
+        var transferBudget = MAX_TRANSFER_ATTEMPTS
+        var found = 0
         for (stop in others.take(MAX_TRANSFER_FEEDERS)) {
-            transferItinerary(stop, to, transferMinutes, deutschlandTicketOnly)
-                ?.let { itineraries += it }
+            if (transferBudget <= 0 || found >= MAX_TRANSFER_RESULTS) break
+            val itinerary = transferItinerary(
+                stop, to, transferMinutes, deutschlandTicketOnly,
+            ) { transferBudget-- > 0 }
+            if (itinerary != null) {
+                itineraries += itinerary
+                found++
+            }
         }
         if (itineraries.isEmpty()) {
             return Outcome.Error(
@@ -137,48 +145,61 @@ class JourneyPlanner(
         )
     }
 
-    /** A train not reaching the destination: change at its biggest station. */
+    /**
+     * A train not reaching the destination: try changing at the biggest
+     * stations on its route (largest first) until one works. [tryAttempt]
+     * gates each network-heavy evaluation against the shared budget.
+     */
     private suspend fun transferItinerary(
         stop: TimetableStop,
         to: Station,
         transferMinutes: Int,
         deutschlandTicketOnly: Boolean,
+        tryAttempt: () -> Boolean,
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
-        val transferName = stop.departure!!.plannedPath
+        val transfers = stop.departure!!.plannedPath
             .mapNotNull { name -> stationRepository.byName(name) }
-            .filter { it.eva != to.eva }
-            .maxByOrNull { it.weight }
-            ?.takeIf { it.weight >= MIN_TRANSFER_WEIGHT }
-            ?.name ?: return null
-        val outcome = connectionPlanner.plan(
-            feeder = stop,
-            transferQuery = transferName,
-            destinationQuery = to.name,
-            transferMinutes = transferMinutes,
-            deutschlandTicketOnly = deutschlandTicketOnly,
-            boardStartMillis = departure,
-        ) as? ConnectionPlanner.Outcome.Success ?: return null
-        return Itinerary(
-            feeder = stop,
-            departureMillis = departure,
-            transferStation = outcome.transferStation.name,
-            distribution = outcome.result.distribution,
-            referenceArrivalMillis = outcome.result.referenceArrivalMillis,
-            catchProbability = outcome.result.candidates
-                .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
-            missProbability = outcome.result.missProbability,
-            connection = outcome,
-        )
+            .filter { it.eva != to.eva && it.weight >= MIN_TRANSFER_WEIGHT }
+            .sortedByDescending { it.weight }
+            .take(TRANSFERS_PER_FEEDER)
+        for (transfer in transfers) {
+            if (!tryAttempt()) return null
+            val outcome = connectionPlanner.plan(
+                feeder = stop,
+                transferQuery = transfer.name,
+                destinationQuery = to.name,
+                transferMinutes = transferMinutes,
+                deutschlandTicketOnly = deutschlandTicketOnly,
+                boardStartMillis = departure,
+            ) as? ConnectionPlanner.Outcome.Success ?: continue
+            return Itinerary(
+                feeder = stop,
+                departureMillis = departure,
+                transferStation = outcome.transferStation.name,
+                distribution = outcome.result.distribution,
+                referenceArrivalMillis = outcome.result.referenceArrivalMillis,
+                catchProbability = outcome.result.candidates
+                    .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
+                missProbability = outcome.result.missProbability,
+                connection = outcome,
+            )
+        }
+        return null
     }
 
     companion object {
         const val MAX_DIRECT = 3
-        const val MAX_TRANSFER_FEEDERS = 3
+        const val MAX_TRANSFER_FEEDERS = 5
+        const val MAX_TRANSFER_RESULTS = 3
+
+        /** Cap on connection evaluations (each fetches a transfer board). */
+        const val MAX_TRANSFER_ATTEMPTS = 6
+        const val TRANSFERS_PER_FEEDER = 2
         const val MAX_RESULTS = 5
 
-        /** Stations below this weight (junction size) rarely offer connections. */
-        const val MIN_TRANSFER_WEIGHT = 200
+        /** Skip pure village halts; real junctions can be small (Buchloe: 167). */
+        const val MIN_TRANSFER_WEIGHT = 40
 
         /** Route entries sometimes differ in suffixes ("Hbf") — match loosely. */
         fun pathMatches(pathStation: String, destination: String): Boolean =

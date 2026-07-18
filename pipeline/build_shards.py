@@ -80,7 +80,11 @@ def prepare_month(file: Path, station_evas: list[str] | None) -> pl.DataFrame:
             dep_delay=minutes("departure_change_time", "departure_planned_time"),
             planned=pl.coalesce("arrival_planned_time", "departure_planned_time"),
         )
-        .filter(pl.col("planned").is_not_null())
+        .filter(
+            pl.col("planned").is_not_null()
+            & pl.col("train_type").is_not_null()
+            & pl.col("train_number").is_not_null()
+        )
         # Arrival delay at the previous stop of the same daily run, for
         # conditioning predictions on the live state of an approaching train.
         # ride_id identifies the route pattern (shared by all days of a
@@ -113,19 +117,7 @@ def prepare_month(file: Path, station_evas: list[str] | None) -> pl.DataFrame:
     )
 
 
-def load_events(data_dir: Path, station_evas: list[str] | None) -> pl.DataFrame:
-    files = sorted(data_dir.glob("data-*.parquet"))
-    if not files:
-        raise SystemExit(f"no data-*.parquet files in {data_dir}")
-    frames = []
-    for f in files:
-        frames.append(prepare_month(f, station_evas))
-        print(f"  {f.name}: {frames[-1].height} events", flush=True)
-    return pl.concat(frames)
-
-
-def build(df: pl.DataFrame) -> dict[str, dict]:
-    shards: dict[str, dict] = defaultdict(lambda: {"stations": {}})
+def build_into(shards: dict[str, dict], df: pl.DataFrame) -> None:
     clamp = lambda v: None if v is None else max(MIN_DELAY, min(MAX_DELAY, int(v)))  # noqa: E731
 
     for row in df.iter_rows(named=True):
@@ -148,7 +140,6 @@ def build(df: pl.DataFrame) -> dict[str, dict]:
                 1 if row["is_canceled"] else 0,
             ]
         )
-    return shards
 
 
 def main() -> None:
@@ -159,10 +150,20 @@ def main() -> None:
     args = ap.parse_args()
 
     station_evas = args.stations.split(",") if args.stations else None
-    events = load_events(args.data_dir, station_evas)
-    print(f"{events.height} events after filtering")
+    files = sorted(args.data_dir.glob("data-*.parquet"))
+    if not files:
+        raise SystemExit(f"no data-*.parquet files in {args.data_dir}")
 
-    shards = build(events)
+    # Stream one file at a time through the shard dict to bound memory.
+    shards: dict[str, dict] = defaultdict(lambda: {"stations": {}})
+    total = 0
+    for f in files:
+        df = prepare_month(f, station_evas)
+        build_into(shards, df)
+        total += df.height
+        print(f"  {f.name}: {df.height} events", flush=True)
+    print(f"{total} events after filtering")
+
     shard_dir = args.out_dir / "shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
     print(f"writing {len(shards)} shards to {shard_dir}")
@@ -179,6 +180,7 @@ def main() -> None:
     (args.out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False))
     meta = {
         "generated": date.today().isoformat(),
+        "stations": station_evas or [],
         "months": sorted(
             f.stem.removeprefix("data-")
             for f in args.data_dir.glob("data-*.parquet")

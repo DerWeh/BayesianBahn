@@ -20,7 +20,10 @@ permissions:
   contents: write
 
 env:
-  STATIONS: "8000013,8000261"
+  # Bavaria/Schwaben hubs + neighbours: Augsburg, München Hbf/Ost, Nürnberg,
+  # Stuttgart, Regensburg, Ulm, Würzburg, Ingolstadt, Aalen, Buchloe,
+  # Donauwörth, Lindau-Reutin, Memmingen, Treuchtlingen, Kempten.
+  STATIONS: "8000013,8000261,8000262,8000284,8000096,8000309,8000170,8000260,8000183,8000002,8000057,8000078,8003693,8000249,8000122,8000197"
   HF: https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main
 
 jobs:
@@ -40,8 +43,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: pipeline/recent-cache
-          key: recent-cache-${{ github.run_id }}
-          restore-keys: recent-cache-
+          # Keyed by station set: widening coverage rebuilds all days.
+          key: recent-cache-${{ env.STATIONS }}-${{ github.run_id }}
+          restore-keys: recent-cache-${{ env.STATIONS }}-
 
       - name: Determine coverage
         id: coverage
@@ -108,22 +112,24 @@ jobs:
           # Cheap daily check: rebuild only when a new month was published.
           newest="${{ steps.coverage.outputs.newest_month }}"
           GH_TOKEN="${{ github.token }}" gh release download data -p history.zip -O /tmp/base.zip -R "$GITHUB_REPOSITORY" || true
-          have=$( [ -f /tmp/base.zip ] && unzip -p /tmp/base.zip meta.json | python -c "import json,sys;print(json.load(sys.stdin)['months'][-1])" || echo none)
+          have=$( [ -f /tmp/base.zip ] && unzip -p /tmp/base.zip meta.json | python -c "import json,sys;m=json.load(sys.stdin);print(m['months'][-1], ','.join(m.get('stations',[])))" || echo none)
           force="${{ github.event.inputs.rebuild_base }}"
-          if [ "$have" = "$newest" ] && [ "$force" != "true" ]; then
+          if [ "$have" = "$newest $STATIONS" ] && [ "$force" != "true" ]; then
             echo "base up to date (through $have)"; exit 0
           fi
+          # 4 months of base: with the 30-day recency half-life, older runs
+          # carry <10% weight — not worth the download size.
           mkdir -p pipeline/data
           got=0
-          for i in $(seq 1 9); do
+          for i in $(seq 1 5); do
             month=$(date -d "$(date +%Y-%m-15) -$i month" +%Y-%m)
             url="$HF/monthly_processed_data/data-$month.parquet"
             if curl -fsSL --retry 3 -o "pipeline/data/data-$month.parquet" "$url"; then
               got=$((got + 1)); echo "downloaded $month"
             fi
-            [ "$got" -ge 8 ] && break
+            [ "$got" -ge 4 ] && break
           done
-          [ "$got" -ge 6 ] || { echo "only $got months available"; exit 1; }
+          [ "$got" -ge 3 ] || { echo "only $got months available"; exit 1; }
           python pipeline/build_shards.py \
             --data-dir pipeline/data --out-dir pipeline/output --stations "$STATIONS"
           echo "BASE_REBUILT=1" >> "$GITHUB_ENV"
