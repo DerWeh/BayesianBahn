@@ -12,4 +12,5 @@
     <string name="no_trains">No trains in the next hours.</string>
     <string name="cancelled">Cancelled</string>
     <string name="on_time_prob">P(≤5 min)</string>
+    <string name="update_data">Update delay history</string>
 </resources>

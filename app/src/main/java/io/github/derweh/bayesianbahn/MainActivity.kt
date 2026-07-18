@@ -10,6 +10,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.github.derweh.bayesianbahn.ui.AppViewModel
 import io.github.derweh.bayesianbahn.ui.BayesianBahnTheme
 import io.github.derweh.bayesianbahn.ui.BoardScreen
+import io.github.derweh.bayesianbahn.ui.ConnectionScreen
 import io.github.derweh.bayesianbahn.ui.PredictionScreen
 import io.github.derweh.bayesianbahn.ui.Route
 import io.github.derweh.bayesianbahn.ui.SearchScreen
@@ -38,6 +39,12 @@ private fun App(viewModel: AppViewModel = viewModel()) {
             onBack = { viewModel.pop() },
         )
         is Route.Prediction -> PredictionScreen(
+            viewModel = viewModel,
+            station = route.station,
+            stop = route.stop,
+            onBack = { viewModel.pop() },
+        )
+        is Route.Connection -> ConnectionScreen(
             viewModel = viewModel,
             station = route.station,
             stop = route.stop,

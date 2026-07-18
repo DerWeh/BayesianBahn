@@ -19,6 +19,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -89,6 +90,9 @@ fun PredictionScreen(
                 station,
                 stop,
                 state.forecast,
+                onPlanConnection = if (stop.departure?.plannedPath?.isNotEmpty() == true) {
+                    { viewModel.openConnection(station, stop) }
+                } else null,
             )
         }
     }
@@ -100,6 +104,7 @@ private fun PredictionContent(
     station: Station,
     stop: TimetableStop,
     forecast: Forecast,
+    onPlanConnection: (() -> Unit)? = null,
 ) {
     val event = stop.arrival ?: stop.departure
     val planned = event?.plannedTime
@@ -171,6 +176,12 @@ private fun PredictionContent(
                 forecast.cancelProbability?.let { "${(it * 100).roundToInt()} %" } ?: "n/a",
                 Modifier.weight(1f),
             )
+        }
+
+        onPlanConnection?.let {
+            OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
+                Text("Plan a connection from this train")
+            }
         }
 
         Text(

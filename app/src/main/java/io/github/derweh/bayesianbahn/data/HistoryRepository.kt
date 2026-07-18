@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.intOrNull
+import java.io.File
 import java.io.IOException
 import java.time.LocalDate
 import java.util.zip.GZIPInputStream
@@ -51,11 +52,17 @@ class HistoryRepository(private val context: Context) {
     }
 
     private fun readShard(key: String): TrainHistory? {
+        // Downloaded data (DataUpdater) wins over the bundled snapshot.
+        val updated = File(File(context.filesDir, DataUpdater.HISTORY_DIR), "$key.jgz")
         val bytes = try {
-            // .jgz, not .json.gz: aapt silently gunzips and renames *.gz
-            // assets, which would break the lookup and the F-Droid build.
-            context.assets.open("history/$key.jgz").use { stream ->
-                GZIPInputStream(stream).readBytes()
+            if (updated.isFile) {
+                updated.inputStream().use { GZIPInputStream(it).readBytes() }
+            } else {
+                // .jgz, not .json.gz: aapt silently gunzips and renames *.gz
+                // assets, which would break the lookup and the F-Droid build.
+                context.assets.open("history/$key.jgz").use { stream ->
+                    GZIPInputStream(stream).readBytes()
+                }
             }
         } catch (_: IOException) {
             return null

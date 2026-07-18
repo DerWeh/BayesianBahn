@@ -8,9 +8,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.derweh.bayesianbahn.BayesianBahnApp
 import io.github.derweh.bayesianbahn.api.TimetableStop
+import io.github.derweh.bayesianbahn.data.ConnectionPlanner
+import io.github.derweh.bayesianbahn.data.DataMeta
+import io.github.derweh.bayesianbahn.data.DataUpdater
 import io.github.derweh.bayesianbahn.data.Forecast
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.Station
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -18,6 +22,7 @@ sealed interface Route {
     data object Search : Route
     data class Board(val station: Station) : Route
     data class Prediction(val station: Station, val stop: TimetableStop) : Route
+    data class Connection(val station: Station, val stop: TimetableStop) : Route
 }
 
 sealed interface BoardState {
@@ -29,6 +34,14 @@ sealed interface BoardState {
 sealed interface PredictionState {
     data object Loading : PredictionState
     data class Loaded(val forecast: Forecast) : PredictionState
+}
+
+sealed interface ConnectionState {
+    /** Waiting for the user to pick transfer and destination. */
+    data object Idle : ConnectionState
+    data object Loading : ConnectionState
+    data class Error(val message: String) : ConnectionState
+    data class Loaded(val outcome: ConnectionPlanner.Outcome.Success) : ConnectionState
 }
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -87,6 +100,63 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---- prediction ----
     var predictionState by mutableStateOf<PredictionState>(PredictionState.Loading)
         private set
+
+    // ---- connection ----
+    var connectionState by mutableStateOf<ConnectionState>(ConnectionState.Idle)
+        private set
+
+    fun openConnection(station: Station, stop: TimetableStop) {
+        routes = routes + Route.Connection(station, stop)
+        connectionState = ConnectionState.Idle
+    }
+
+    fun evaluateConnection(
+        stop: TimetableStop,
+        transferName: String,
+        destinationQuery: String,
+        transferMinutes: Int,
+    ) {
+        connectionState = ConnectionState.Loading
+        viewModelScope.launch {
+            connectionState = when (
+                val outcome = container.connectionPlanner.plan(
+                    feeder = stop,
+                    transferQuery = transferName,
+                    destinationQuery = destinationQuery,
+                    transferMinutes = transferMinutes,
+                )
+            ) {
+                is ConnectionPlanner.Outcome.Error -> ConnectionState.Error(outcome.message)
+                is ConnectionPlanner.Outcome.Success -> ConnectionState.Loaded(outcome)
+            }
+        }
+    }
+
+    // ---- history data updates ----
+    var dataMeta by mutableStateOf<DataMeta?>(null)
+        private set
+    var dataUpdating by mutableStateOf(false)
+        private set
+    var dataUpdateError by mutableStateOf<String?>(null)
+        private set
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            dataMeta = DataUpdater.readMeta(getApplication())
+        }
+    }
+
+    fun updateData() {
+        if (dataUpdating) return
+        dataUpdating = true
+        dataUpdateError = null
+        viewModelScope.launch {
+            container.dataUpdater.update()
+                .onSuccess { dataMeta = it }
+                .onFailure { dataUpdateError = it.message ?: "update failed" }
+            dataUpdating = false
+        }
+    }
 
     fun openPrediction(station: Station, stop: TimetableStop) {
         routes = routes + Route.Prediction(station, stop)

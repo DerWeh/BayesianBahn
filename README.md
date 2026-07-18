@@ -27,6 +27,20 @@ from that train's real historical runs, not from DB's own forecast.
   sharpened towards runs that were similarly late. Trains without history
   fall back to a Bayesian Normal-inverse-gamma prior per train class and
   time of day (closed-form Student-t predictive).
+- **Connections**: for a journey with a transfer, the app propagates the
+  feeder's arrival distribution through the transfer with the law of total
+  probability: the passenger boards the first connecting train (in planned
+  order) that has not yet left, so the final arrival is a mixture
+  `Σ_k P(board k) · P(arrival | board k)` over all candidate trains towards
+  the destination — including the case where a *delayed* earlier train is
+  still catchable. Departure and arrival delays of a candidate come from the
+  same historical run, preserving their correlation; feeder and candidates
+  are assumed independent (documented in-app).
+- **Data updates**: predictions stay fresh without app updates — the
+  pipeline publishes `history.zip` (shards + index + meta) as a GitHub
+  release with tag `data`, and the in-app "Update delay history" action
+  downloads it over the current connection into app storage, which takes
+  precedence over the bundled snapshot.
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
   pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,
@@ -37,8 +51,10 @@ from that train's real historical runs, not from DB's own forecast.
 
 ## Roadmap
 
-- Replace bundled shards with a remote shard host updated monthly from the
-  archive (draft bundles trains calling at Augsburg Hbf / München Hbf).
+- Automate the monthly data release (`pipeline/build_shards.py` already
+  produces `history.zip`; it needs a scheduled job that uploads it to the
+  `data` release). The draft bundle covers trains calling at
+  Augsburg Hbf / München Hbf.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
 - On-device [TabICL v2](https://github.com/soda-inria/tabicl) (BSD-3) via ONNX

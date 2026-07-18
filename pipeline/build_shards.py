@@ -21,7 +21,9 @@ import argparse
 import gzip
 import json
 import re
+import zipfile
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 
 import polars as pl
@@ -174,8 +176,23 @@ def main() -> None:
         index[key] = sum(len(s["runs"]) for s in shard["stations"].values())
 
     (args.out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False))
+    meta = {
+        "generated": date.today().isoformat(),
+        "months": [f.stem.removeprefix("data-") for f in sorted(args.data_dir.glob("data-*.parquet"))],
+        "trains": len(index),
+    }
+    (args.out_dir / "meta.json").write_text(json.dumps(meta))
     total_mb = sum(f.stat().st_size for f in shard_dir.glob("*.jgz")) / 2**20
     print(f"total shard size: {total_mb:.1f} MB, index entries: {len(index)}")
+
+    # Single flat archive the app's DataUpdater downloads; shards are already
+    # gzipped, so store without recompression.
+    with zipfile.ZipFile(args.out_dir / "history.zip", "w", zipfile.ZIP_STORED) as zf:
+        for f in sorted(shard_dir.glob("*.jgz")):
+            zf.write(f, f.name)
+        zf.write(args.out_dir / "index.json", "index.json")
+        zf.write(args.out_dir / "meta.json", "meta.json")
+    print(f"wrote {args.out_dir / 'history.zip'}")
 
 
 if __name__ == "__main__":

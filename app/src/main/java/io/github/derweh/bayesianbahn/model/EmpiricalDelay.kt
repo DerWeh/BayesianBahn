@@ -100,6 +100,14 @@ class EmpiricalDelay private constructor(
         /** Minimum effective sample size for a usable distribution. */
         const val MIN_EFFECTIVE_N = 8.0
 
+        /** Recency × same-weekday weight, shared with the connection model. */
+        fun baseWeight(runDate: LocalDate, queryDate: LocalDate): Double {
+            val age = ChronoUnit.DAYS.between(runDate, queryDate).coerceAtLeast(0)
+            var w = exp(-ln(2.0) / RECENCY_HALF_LIFE_DAYS * age)
+            if (runDate.dayOfWeek == queryDate.dayOfWeek) w *= SAME_WEEKDAY_BOOST
+            return w
+        }
+
         fun build(
             runs: List<HistoricalRun>,
             queryTimeOfDay: String,
@@ -115,12 +123,7 @@ class EmpiricalDelay private constructor(
             val usable = relevant.filter { !it.cancelled && it.delayOrNull() != null }
             if (usable.isEmpty()) return null
 
-            fun baseWeight(run: HistoricalRun): Double {
-                val age = ChronoUnit.DAYS.between(run.date, queryDate).coerceAtLeast(0)
-                var w = exp(-ln(2.0) / RECENCY_HALF_LIFE_DAYS * age)
-                if (run.date.dayOfWeek == queryDate.dayOfWeek) w *= SAME_WEEKDAY_BOOST
-                return w
-            }
+            fun baseWeight(run: HistoricalRun): Double = baseWeight(run.date, queryDate)
 
             fun effectiveN(points: List<Pair<Double, Double>>): Double {
                 val sumW = points.sumOf { it.second }
@@ -155,7 +158,7 @@ class EmpiricalDelay private constructor(
 
         private fun HistoricalRun.delayOrNull(): Int? = arrivalDelay ?: departureDelay
 
-        private fun timeOfDayDistance(a: String, b: String): Int {
+        fun timeOfDayDistance(a: String, b: String): Int {
             val am = toMinutes(a) ?: return Int.MAX_VALUE
             val bm = toMinutes(b) ?: return Int.MAX_VALUE
             val diff = abs(am - bm)
