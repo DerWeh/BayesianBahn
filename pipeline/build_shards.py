@@ -170,7 +170,8 @@ def main() -> None:
     index = {}
     for key, shard in shards.items():
         for station in shard["stations"].values():
-            station["runs"].sort()
+            # Only by (date, time): later fields may be None (unsortable).
+            station["runs"].sort(key=lambda run: (run[0], run[1]))
         blob = json.dumps(shard, ensure_ascii=False, separators=(",", ":"))
         (shard_dir / f"{key}.jgz").write_bytes(gzip.compress(blob.encode(), 6))
         index[key] = sum(len(s["runs"]) for s in shard["stations"].values())
