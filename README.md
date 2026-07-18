@@ -3,10 +3,13 @@
 Empirical arrival-time predictions for Deutsche Bahn trains — as a
 **distribution**, not a point estimate.
 
-Pick a station, pick a train, and see when you will *actually* arrive: the
-median predicted arrival time, an 80% credible interval, the full delay
-distribution, and the probability of staying within 5 minutes — all computed
-from that train's real historical runs, not from DB's own forecast.
+Enter from, to and a departure time (future trips included): the app finds
+direct trains and one-transfer connections and predicts when you will
+*actually* arrive — median arrival, an 80% credible interval, the full
+distribution, and per-train catch probabilities — all computed from real
+historical runs, not from DB's own forecast. A Deutschland-Ticket filter
+restricts the search to regional trains; live station boards and per-train
+forecasts remain available behind the list icon.
 
 ## How predictions work
 

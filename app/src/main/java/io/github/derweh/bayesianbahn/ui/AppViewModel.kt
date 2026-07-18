@@ -12,6 +12,7 @@ import io.github.derweh.bayesianbahn.data.ConnectionPlanner
 import io.github.derweh.bayesianbahn.data.DataMeta
 import io.github.derweh.bayesianbahn.data.DataUpdater
 import io.github.derweh.bayesianbahn.data.Forecast
+import io.github.derweh.bayesianbahn.data.JourneyPlanner
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.Station
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +20,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 sealed interface Route {
+    /** Home: from/to journey search. */
+    data object Journey : Route
+
+    /** Station search list for browsing live boards. */
     data object Search : Route
     data class Board(val station: Station) : Route
     data class Prediction(val station: Station, val stop: TimetableStop) : Route
@@ -44,12 +49,46 @@ sealed interface ConnectionState {
     data class Loaded(val outcome: ConnectionPlanner.Outcome.Success) : ConnectionState
 }
 
+sealed interface JourneyState {
+    data object Idle : JourneyState
+    data object Loading : JourneyState
+    data class Error(val message: String) : JourneyState
+    data class Loaded(val outcome: JourneyPlanner.Outcome.Success) : JourneyState
+}
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val container get() = getApplication<BayesianBahnApp>()
     private val predictor = Predictor()
 
-    var routes by mutableStateOf(listOf<Route>(Route.Search))
+    var routes by mutableStateOf(listOf<Route>(Route.Journey))
         private set
+
+    // ---- journey search ----
+    var journeyState by mutableStateOf<JourneyState>(JourneyState.Idle)
+        private set
+
+    fun openStationSearch() {
+        routes = routes + Route.Search
+    }
+
+    fun planJourney(
+        fromQuery: String,
+        toQuery: String,
+        departMillis: Long,
+        deutschlandTicketOnly: Boolean,
+    ) {
+        journeyState = JourneyState.Loading
+        viewModelScope.launch {
+            journeyState = when (
+                val outcome = container.journeyPlanner.plan(
+                    fromQuery, toQuery, departMillis, deutschlandTicketOnly,
+                )
+            ) {
+                is JourneyPlanner.Outcome.Error -> JourneyState.Error(outcome.message)
+                is JourneyPlanner.Outcome.Success -> JourneyState.Loaded(outcome)
+            }
+        }
+    }
 
     val current: Route get() = routes.last()
 

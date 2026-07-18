@@ -18,6 +18,12 @@ class StationRepository(private val context: Context) {
         }
     }
 
+    /** Exact (normalized) name lookup, e.g. for stations named in an IRIS route. */
+    fun byName(name: String): Station? {
+        val n = normalize(name)
+        return stations.firstOrNull { normalize(it.name) == n }
+    }
+
     fun search(query: String, limit: Int = 30): List<Station> {
         val q = normalize(query)
         if (q.isBlank()) return stations.take(limit)

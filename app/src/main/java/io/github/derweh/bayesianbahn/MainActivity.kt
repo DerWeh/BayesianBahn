@@ -11,6 +11,7 @@ import io.github.derweh.bayesianbahn.ui.AppViewModel
 import io.github.derweh.bayesianbahn.ui.BayesianBahnTheme
 import io.github.derweh.bayesianbahn.ui.BoardScreen
 import io.github.derweh.bayesianbahn.ui.ConnectionScreen
+import io.github.derweh.bayesianbahn.ui.JourneyScreen
 import io.github.derweh.bayesianbahn.ui.PredictionScreen
 import io.github.derweh.bayesianbahn.ui.Route
 import io.github.derweh.bayesianbahn.ui.SearchScreen
@@ -31,6 +32,7 @@ class MainActivity : ComponentActivity() {
 private fun App(viewModel: AppViewModel = viewModel()) {
     BackHandler(enabled = viewModel.routes.size > 1) { viewModel.pop() }
     when (val route = viewModel.current) {
+        Route.Journey -> JourneyScreen(viewModel)
         Route.Search -> SearchScreen(viewModel, onStationSelected = viewModel::openBoard)
         is Route.Board -> BoardScreen(
             viewModel = viewModel,

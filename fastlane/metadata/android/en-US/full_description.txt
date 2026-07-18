@@ -1,18 +1,29 @@
-BayesianBahn predicts when your train will actually arrive — as a full
+BayesianBahn predicts when you will actually arrive — as a full
 probability distribution, not a single number.
 
-Pick a station, pick a train from the live departure board, and see:
+Enter where you start, where you want to go and when (also future trips):
+the app finds direct trains and one-transfer connections and shows for
+each option:
 
-* the median predicted arrival time,
+* the median predicted arrival time at your destination,
 * an 80% credible interval,
 * the full delay distribution as a chart,
-* the probability of arriving within 5 minutes of schedule,
-* the historical cancellation rate.
+* the probability of catching each connecting train,
+* a Deutschland-Ticket filter that keeps you on regional trains.
 
-Predictions are empirical: they come from months of real historical runs of
-that exact train at that station (collected from Deutsche Bahn's public IRIS
-API, CC BY 4.0), reweighted for recency, weekday, and the train's current
-live delay. Trains without history get an honest Bayesian prior estimate.
+Transfers are propagated with Bayes' theorem: you board the first
+connecting train that has not left yet — so a delayed earlier train
+counts as catchable, and a missed connection honestly shifts the whole
+distribution. Live station boards and per-train predictions (including
+cancellation rates) are also available.
 
-The app talks only to the keyless public IRIS timetable endpoint, needs no
-account, no API key, no Google services, and collects no data.
+Predictions are empirical: they come from months of real historical runs
+of that exact train at that station (collected from Deutsche Bahn's
+public IRIS API, CC BY 4.0), reweighted for recency and weekday and
+anchored on the train's current live delay. Delay history updates
+in-app — a small daily data release keeps predictions fresh to within a
+day. Trains without history get an honest Bayesian prior estimate.
+
+The app talks only to the keyless public IRIS timetable endpoint and the
+project's own data releases, needs no account, no API key, no Google
+services, and collects no data.

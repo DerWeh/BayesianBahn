@@ -41,6 +41,7 @@ class ConnectionPlanner(
         destinationQuery: String,
         transferMinutes: Int,
         deutschlandTicketOnly: Boolean = false,
+        boardStartMillis: Long? = null,
         today: LocalDate = LocalDate.now(ZONE),
     ): Outcome {
         val transfer = stationRepository.search(transferQuery).firstOrNull()
@@ -49,7 +50,7 @@ class ConnectionPlanner(
             ?: destinationQuery.trim()
 
         val board = try {
-            irisClient.board(transfer.eva, hours = 4)
+            irisClient.board(transfer.eva, hours = 4, startMillis = boardStartMillis)
         } catch (e: Exception) {
             return Outcome.Error(e.message ?: "network error")
         }

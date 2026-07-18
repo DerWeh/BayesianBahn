@@ -1,0 +1,189 @@
+package io.github.derweh.bayesianbahn.data
+
+import io.github.derweh.bayesianbahn.api.IrisClient
+import io.github.derweh.bayesianbahn.api.TimetableStop
+import io.github.derweh.bayesianbahn.model.DelayDistribution
+import io.github.derweh.bayesianbahn.model.DeutschlandTicket
+
+/**
+ * From/to journey search in the style people know from the DB Navigator:
+ * the user names origin, destination and departure time; the planner finds
+ * direct trains and one-transfer connections and predicts the *arrival
+ * distribution* at the destination for each.
+ *
+ * Routing is heuristic, not exhaustive: candidate trains come from the
+ * origin's IRIS board; for trains not running through the destination, the
+ * highest-weight station on their route serves as the transfer, evaluated
+ * via [ConnectionPlanner]'s Bayesian propagation.
+ */
+class JourneyPlanner(
+    private val stationRepository: StationRepository,
+    private val historyRepository: HistoryRepository,
+    private val irisClient: IrisClient,
+    private val connectionPlanner: ConnectionPlanner,
+    private val predictor: Predictor = Predictor(),
+) {
+
+    /** One planned journey option with its predicted arrival distribution. */
+    data class Itinerary(
+        val feeder: TimetableStop,
+        val departureMillis: Long,
+        /** Null for a direct train. */
+        val transferStation: String?,
+        /** Arrival delay at the destination, minutes relative to [referenceArrivalMillis]. */
+        val distribution: DelayDistribution,
+        val referenceArrivalMillis: Long,
+        /** Probability of catching the first listed connecting train (transfer only). */
+        val catchProbability: Double?,
+        /** Probability of missing every listed connecting train (transfer only). */
+        val missProbability: Double?,
+        /** Full connection outcome for detail display (transfer only). */
+        val connection: ConnectionPlanner.Outcome.Success?,
+    ) {
+        val medianArrivalMillis: Long
+            get() = referenceArrivalMillis + (distribution.quantile(0.5) * 60_000).toLong()
+    }
+
+    sealed interface Outcome {
+        data class Error(val message: String) : Outcome
+        data class Success(
+            val itineraries: List<Itinerary>,
+            val from: Station,
+            val to: Station,
+        ) : Outcome
+    }
+
+    suspend fun plan(
+        fromQuery: String,
+        toQuery: String,
+        departMillis: Long,
+        deutschlandTicketOnly: Boolean,
+        transferMinutes: Int = 5,
+    ): Outcome {
+        val from = stationRepository.search(fromQuery).firstOrNull()
+            ?: return Outcome.Error("Station \"$fromQuery\" not found.")
+        val to = stationRepository.search(toQuery).firstOrNull()
+            ?: return Outcome.Error("Station \"$toQuery\" not found.")
+        if (from.eva == to.eva) return Outcome.Error("Origin and destination are the same.")
+
+        val board = try {
+            irisClient.board(from.eva, hours = 3, startMillis = departMillis)
+        } catch (e: Exception) {
+            return Outcome.Error(e.message ?: "network error")
+        }
+
+        val departures = board
+            .filter { it.departure?.plannedTime != null && !it.departure!!.cancelled }
+            .filter { it.departure!!.plannedTime!! >= departMillis }
+            .filter { !deutschlandTicketOnly || DeutschlandTicket.covers(it.label.category) }
+            .sortedBy { it.departure!!.plannedTime }
+
+        val (direct, others) = departures.partition { stop ->
+            stop.departure!!.plannedPath.any { pathMatches(it, to.name) }
+        }
+
+        val itineraries = mutableListOf<Itinerary>()
+        for (stop in direct.take(MAX_DIRECT)) {
+            directItinerary(stop, to)?.let { itineraries += it }
+        }
+        for (stop in others.take(MAX_TRANSFER_FEEDERS)) {
+            transferItinerary(stop, to, transferMinutes, deutschlandTicketOnly)
+                ?.let { itineraries += it }
+        }
+        if (itineraries.isEmpty()) {
+            return Outcome.Error(
+                if (departures.isEmpty()) {
+                    "No timetable data for ${from.name} at that time — IRIS " +
+                        "publishes plans only about a day ahead."
+                } else {
+                    "No plannable trains from ${from.name} towards ${to.name} " +
+                        "found around that time."
+                },
+            )
+        }
+        return Outcome.Success(
+            itineraries.sortedBy { it.medianArrivalMillis }.take(MAX_RESULTS),
+            from,
+            to,
+        )
+    }
+
+    /** A train running through the destination: predict its arrival there. */
+    private suspend fun directItinerary(stop: TimetableStop, to: Station): Itinerary? {
+        val departure = stop.departure?.plannedTime ?: return null
+        val history = historyRepository.load(stop.label.category, stop.label.number, stop.label.line)
+        val destHistory = history?.stations?.entries
+            ?.firstOrNull { (name, sh) -> sh.eva == to.eva || pathMatches(name, to.name) }
+            ?.value ?: return null
+        val arrivalTod = destHistory.runs.maxByOrNull { it.date }?.plannedTimeOfDay ?: return null
+        val plannedArr = ConnectionPlanner.arrivalMillis(departure, arrivalTod) ?: return null
+        val forecast = predictor.forecast(
+            history = history,
+            stationEva = to.eva,
+            stationName = to.name,
+            trainCategory = stop.label.category,
+            plannedTimeMillis = plannedArr,
+            liveDelayMinutes = stop.departure?.liveDelayMinutes,
+        )
+        return Itinerary(
+            feeder = stop,
+            departureMillis = departure,
+            transferStation = null,
+            distribution = forecast.distribution,
+            referenceArrivalMillis = plannedArr,
+            catchProbability = null,
+            missProbability = null,
+            connection = null,
+        )
+    }
+
+    /** A train not reaching the destination: change at its biggest station. */
+    private suspend fun transferItinerary(
+        stop: TimetableStop,
+        to: Station,
+        transferMinutes: Int,
+        deutschlandTicketOnly: Boolean,
+    ): Itinerary? {
+        val departure = stop.departure?.plannedTime ?: return null
+        val transferName = stop.departure!!.plannedPath
+            .mapNotNull { name -> stationRepository.byName(name) }
+            .filter { it.eva != to.eva }
+            .maxByOrNull { it.weight }
+            ?.takeIf { it.weight >= MIN_TRANSFER_WEIGHT }
+            ?.name ?: return null
+        val outcome = connectionPlanner.plan(
+            feeder = stop,
+            transferQuery = transferName,
+            destinationQuery = to.name,
+            transferMinutes = transferMinutes,
+            deutschlandTicketOnly = deutschlandTicketOnly,
+            boardStartMillis = departure,
+        ) as? ConnectionPlanner.Outcome.Success ?: return null
+        return Itinerary(
+            feeder = stop,
+            departureMillis = departure,
+            transferStation = outcome.transferStation.name,
+            distribution = outcome.result.distribution,
+            referenceArrivalMillis = outcome.result.referenceArrivalMillis,
+            catchProbability = outcome.result.candidates
+                .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
+            missProbability = outcome.result.missProbability,
+            connection = outcome,
+        )
+    }
+
+    companion object {
+        const val MAX_DIRECT = 3
+        const val MAX_TRANSFER_FEEDERS = 3
+        const val MAX_RESULTS = 5
+
+        /** Stations below this weight (junction size) rarely offer connections. */
+        const val MIN_TRANSFER_WEIGHT = 200
+
+        /** Route entries sometimes differ in suffixes ("Hbf") — match loosely. */
+        fun pathMatches(pathStation: String, destination: String): Boolean =
+            pathStation.equals(destination, ignoreCase = true) ||
+                pathStation.contains(destination, ignoreCase = true) ||
+                destination.contains(pathStation, ignoreCase = true)
+    }
+}

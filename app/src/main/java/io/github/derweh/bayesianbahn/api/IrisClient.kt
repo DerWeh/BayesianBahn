@@ -28,13 +28,21 @@ class IrisClient(
         .build()
 
     /**
-     * Fetches the merged real-time board for a station: planned stops for the
-     * next [hours] hour slices with all currently known changes applied.
+     * Fetches the merged real-time board for a station: planned stops for
+     * [hours] hour slices starting at [startMillis] (default: now — IRIS
+     * serves plan data days ahead, so future trips work too) with all
+     * currently known changes applied.
      */
-    suspend fun board(eva: String, hours: Int = 2): List<TimetableStop> = coroutineScope {
-        val now = ZonedDateTime.now(ZONE)
+    suspend fun board(
+        eva: String,
+        hours: Int = 2,
+        startMillis: Long? = null,
+    ): List<TimetableStop> = coroutineScope {
+        val start = startMillis
+            ?.let { ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(it), ZONE) }
+            ?: ZonedDateTime.now(ZONE)
         val plans = (0 until hours).map { offset ->
-            async { fetchPlan(eva, now.plusHours(offset.toLong())) }
+            async { fetchPlan(eva, start.plusHours(offset.toLong())) }
         }
         val changes = async { fetchChanges(eva) }
         val stops = plans.flatMap { it.await() }.distinctBy { it.id }
@@ -44,22 +52,27 @@ class IrisClient(
     private suspend fun fetchPlan(eva: String, slice: ZonedDateTime): List<TimetableStop> {
         val date = slice.format(DateTimeFormatter.ofPattern("yyMMdd"))
         val hour = slice.format(DateTimeFormatter.ofPattern("HH"))
-        return parser.parsePlan(get("$baseUrl/plan/$eva/$date/$hour"))
+        // IRIS publishes plan data only ~a day ahead; a missing future slice
+        // is not an error, just an empty board.
+        val xml = get("$baseUrl/plan/$eva/$date/$hour", notFoundAsEmpty = true) ?: return emptyList()
+        return parser.parsePlan(xml)
     }
 
     private suspend fun fetchChanges(eva: String): Map<String, StopChange> =
-        parser.parseChanges(get("$baseUrl/fchg/$eva"))
+        parser.parseChanges(get("$baseUrl/fchg/$eva")!!)
 
-    private suspend fun get(url: String): String = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(url)
-            .header("User-Agent", "BayesianBahn/0.1 (F-Droid; FOSS delay prediction)")
-            .build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
-            response.body?.string() ?: throw IOException("Empty body for $url")
+    private suspend fun get(url: String, notFoundAsEmpty: Boolean = false): String? =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "BayesianBahn/0.1 (F-Droid; FOSS delay prediction)")
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (notFoundAsEmpty && response.code == 404) return@withContext null
+                if (!response.isSuccessful) throw IOException("HTTP ${response.code} for $url")
+                response.body?.string() ?: throw IOException("Empty body for $url")
+            }
         }
-    }
 
     private companion object {
         val ZONE: ZoneId = ZoneId.of("Europe/Berlin")
