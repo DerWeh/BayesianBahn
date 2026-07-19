@@ -9,6 +9,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.intOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.File
 import java.io.IOException
 import java.time.LocalDate
@@ -26,10 +28,17 @@ data class StationHistory(val eva: String?, val runs: List<HistoricalRun>)
 
 /**
  * Loads per-train history shards produced by `pipeline/build_shards.py`.
- * Draft: shards are bundled as assets under `history/`; a remote shard host
- * with monthly updates replaces this later (same file format).
+ *
+ * Lookup order: downloaded base + recent overlay (or the bundled snapshot),
+ * then an *on-demand* fetch from the repo's `shards` branch for trains
+ * outside the local data — cached on disk, so a commuter's usual
+ * connections are fetched once and refreshed at most daily.
  */
-class HistoryRepository(private val context: Context) {
+class HistoryRepository(
+    private val context: Context,
+    private val client: OkHttpClient = OkHttpClient(),
+    private val shardUrl: String = SHARD_URL,
+) {
 
     /**
      * Finds the shard for a train, trying category+number ("ICE 512") first
@@ -37,10 +46,43 @@ class HistoryRepository(private val context: Context) {
      */
     suspend fun load(category: String, number: String, line: String?): TrainHistory? =
         withContext(Dispatchers.IO) {
-            candidateKeys(category, number, line).firstNotNullOfOrNull { key ->
-                readShard(key)
-            }
+            val keys = candidateKeys(category, number, line)
+            keys.firstNotNullOfOrNull { readShard(it) }
+                ?: keys.firstNotNullOfOrNull { onDemand(it) }
         }
+
+    /** Cached network fetch of one shard (a few KB gzipped). */
+    private fun onDemand(key: String): TrainHistory? {
+        val dir = File(context.filesDir, ONDEMAND_DIR).apply { mkdirs() }
+        val cached = File(dir, "$key.jgz")
+        val miss = File(dir, "$key.miss")
+        val now = System.currentTimeMillis()
+        fun fresh(f: File) = f.isFile && now - f.lastModified() < TTL_MILLIS
+
+        if (fresh(cached)) return readFile(cached)
+        if (fresh(miss)) return null
+        try {
+            val request = Request.Builder().url("$shardUrl$key.jgz").build()
+            client.newCall(request).execute().use { response ->
+                when {
+                    response.isSuccessful -> {
+                        cached.writeBytes(response.body!!.bytes())
+                        miss.delete()
+                    }
+                    response.code == 404 -> {
+                        // Unknown train: remember, don't re-ask every query.
+                        miss.writeBytes(ByteArray(0))
+                        cached.delete()
+                        return null
+                    }
+                    else -> throw IOException("HTTP ${response.code}")
+                }
+            }
+        } catch (_: IOException) {
+            // Offline or flaky: a stale cached shard beats nothing.
+        }
+        return readFile(cached)
+    }
 
     private fun candidateKeys(category: String, number: String, line: String?): List<String> {
         val keys = mutableListOf<String>()
@@ -84,6 +126,14 @@ class HistoryRepository(private val context: Context) {
     }
 
     companion object {
+        /** Per-shard host: the `shards` branch, updated daily by the workflow. */
+        const val SHARD_URL =
+            "https://raw.githubusercontent.com/DerWeh/BayesianBahn/refs/heads/shards/"
+        const val ONDEMAND_DIR = "ondemand"
+
+        /** Cached shards are refreshed at most this often. */
+        const val TTL_MILLIS = 18 * 60 * 60 * 1000L
+
         /** Mirrors `train_key` in build_shards.py. */
         fun shardKey(trainName: String): String =
             trainName.trim().replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').uppercase()
@@ -126,10 +176,50 @@ class HistoryRepository(private val context: Context) {
                     val obj = value.jsonObject
                     name to StationHistory(
                         eva = obj["eva"]?.jsonPrimitive?.content,
-                        runs = obj["runs"]?.jsonArray?.mapNotNull { parseRun(it) } ?: emptyList(),
+                        runs = if ("days" in obj) parseColumnarRuns(obj) else {
+                            obj["runs"]?.jsonArray?.mapNotNull { parseRun(it) } ?: emptyList()
+                        },
                     )
                 },
             )
+        }
+
+        /**
+         * v2 columnar station block: delta-coded epoch days, deduplicated
+         * planned times, arrival/prev arrays, sparse departure ("d" null or
+         * absent means "same as arrival" — the consumers fall back to the
+         * arrival delay either way) and cancelled indices.
+         */
+        private fun parseColumnarRuns(
+            obj: kotlinx.serialization.json.JsonObject,
+        ): List<HistoricalRun> {
+            val days = obj["days"]?.jsonArray ?: return emptyList()
+            val tods = obj["tod"]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 }
+                ?: return emptyList()
+            val t = obj["t"]?.jsonArray
+            val a = obj["a"]?.jsonArray
+            val d = obj["d"]?.jsonArray
+            val p = obj["p"]?.jsonArray
+            val cancelled = obj["c"]?.jsonArray
+                ?.mapNotNullTo(HashSet()) { it.jsonPrimitive.intOrNull } ?: emptySet()
+
+            fun int(arr: kotlinx.serialization.json.JsonArray?, i: Int): Int? =
+                arr?.getOrNull(i)?.jsonPrimitive?.intOrNull
+
+            var epochDay = 0L
+            return List(days.size) { i ->
+                epochDay += days[i].jsonPrimitive.intOrNull?.toLong() ?: 0L
+                val tod = tods.getOrElse(int(t, i) ?: 0) { 0 }
+                val arr = int(a, i)
+                HistoricalRun(
+                    date = LocalDate.ofEpochDay(epochDay),
+                    plannedTimeOfDay = "%02d:%02d".format(tod / 60, tod % 60),
+                    arrivalDelay = arr,
+                    departureDelay = int(d, i) ?: arr,
+                    previousStopDelay = int(p, i),
+                    cancelled = i in cancelled,
+                )
+            }
         }
 
         private fun parseRun(element: kotlinx.serialization.json.JsonElement): HistoricalRun? {

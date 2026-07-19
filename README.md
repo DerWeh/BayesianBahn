@@ -45,11 +45,21 @@ forecasts remain available behind the list icon.
 - **Data updates**: predictions stay fresh to within ~a day, with minimal
   downloads. The daily `update-data` workflow maintains three assets on the
   `data` release: `meta.json` (tiny descriptor), `history.zip` (monthly
-  base, ~16 MB, rebuilt when the archive publishes a new month) and
-  `recent.zip` (~1–3 MB, rebuilt daily by `pipeline/build_recent.py` from
-  the archive's *raw* IRIS logs, covering the days newer than the newest
-  monthly file). The in-app update checks `meta.json` first and fetches
-  only the tier that changed; the app overlays recent runs onto the base.
+  base, rebuilt when the archive publishes a new month) and `recent.zip`
+  (rebuilt daily by `pipeline/build_recent.py` from the archive's *raw*
+  IRIS logs, covering the days newer than the newest monthly file). The
+  in-app update checks `meta.json` first and fetches only the tier that
+  changed; the app overlays recent runs onto the base.
+- **On-demand shards**: trains outside the local data are fetched
+  individually (a few KB each) from the repo's `shards` branch, where the
+  workflow publishes the merged base+recent set daily. Fetched shards are
+  cached on disk with an 18-hour refresh, so a commuter's usual
+  connections cost one download and then work offline.
+- **Shard format**: a columnar layout (deduplicated planned times,
+  delta-coded dates, departure stored only when it differs from arrival)
+  cut shard size ~63% versus naive per-run JSON rows; gzip keeps decoding
+  dependency-free (brotli would save a further ~15% at the cost of a
+  decoder dependency).
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
   pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,

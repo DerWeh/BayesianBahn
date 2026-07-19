@@ -162,3 +162,24 @@ jobs:
             cp pipeline/output/history.zip release-assets/
           fi
           gh release upload data release-assets/* --clobber -R "$GITHUB_REPOSITORY"
+
+      - name: Publish per-shard on-demand set (shards branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${BASE_REBUILT:-0}" = 1 ]; then
+            base_zip=pipeline/output/history.zip
+          else
+            base_zip=/tmp/base.zip
+          fi
+          mkdir -p pipeline/recent-out/shards
+          python pipeline/merge_shards.py --base "$base_zip" \
+            --recent pipeline/recent-out/shards --out merged
+          cp release-assets/meta.json merged/meta.json
+          cd merged
+          git init -q -b shards
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git add -A
+          git commit -qm "shards $(date -u +%F)"
+          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" shards
