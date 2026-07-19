@@ -3,6 +3,9 @@
 Empirical arrival-time predictions for Deutsche Bahn trains — as a
 **distribution**, not a point estimate.
 
+> **Early release.** Predictions are experimental — always cross-check
+> times and connections with DB's official apps before relying on them.
+
 Enter from, to and a departure time (future trips included): the app finds
 direct trains and one-transfer connections and predicts when you will
 *actually* arrive — median arrival, an 80% credible interval, the full

@@ -98,6 +98,19 @@ fun JourneyScreen(viewModel: AppViewModel) {
                 .verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "Early release: predictions are experimental. Always " +
+                        "cross-check times and connections with DB's official apps.",
+                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
             StationSuggestField(
                 value = from,
                 onValueChange = { from = it },

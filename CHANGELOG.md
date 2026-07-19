@@ -7,7 +7,8 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [0.1.0] - 2026-07-19
 
-First draft release.
+First draft release. Predictions are experimental — always cross-check
+times and connections with DB's official apps.
 
 ### Added
 - From/to journey search with direct trains and one-transfer connections;

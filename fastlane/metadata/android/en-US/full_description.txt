@@ -1,3 +1,6 @@
+Early release: predictions are experimental — always cross-check
+times and connections with DB's official apps.
+
 BayesianBahn predicts when you will actually arrive — as a full
 probability distribution, not a single number.
 
