@@ -1,0 +1,4 @@
+Charts now show clock times instead of +X offsets; itinerary cards show
+the expected travel time; connections departing just before your
+arrival are listed with their (near-zero) catch probability instead of
+being hidden.
