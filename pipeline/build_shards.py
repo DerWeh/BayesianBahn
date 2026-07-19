@@ -58,12 +58,17 @@ def train_key(train_type: str, train_number: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", f"{train_type} {train_number}").strip("_").upper()
 
 
-def prepare_month(file: Path, station_evas: list[str] | None) -> pl.DataFrame:
+def prepare_month(
+    file: Path,
+    station_evas: list[str] | None,
+    bucket: tuple[int, int] | None = None,
+) -> pl.DataFrame:
     """One monthly file → filtered events with the prev-stop feature.
 
     Months are processed independently to bound memory: ride ids never span
     months, so the previous-stop computation loses nothing, and the semi-join
-    shrinks the data before the expensive sort.
+    (or the train-identity [bucket] for country-wide builds) shrinks the data
+    before the expensive sort.
     """
     minutes = lambda a, b: (pl.col(a) - pl.col(b)).dt.total_minutes()  # noqa: E731
 
@@ -79,6 +84,9 @@ def prepare_month(file: Path, station_evas: list[str] | None) -> pl.DataFrame:
             .unique()
         )
         lf = lf.join(wanted, on="identity", how="semi")
+    if bucket is not None:
+        b, n = bucket
+        lf = lf.filter(pl.col("identity").hash(seed=0) % n == b)
 
     return (
         lf.with_columns(
@@ -176,33 +184,7 @@ def station_v2(eva: str, runs: list[tuple]) -> dict:
     return block
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", type=Path, required=True)
-    ap.add_argument("--out-dir", type=Path, required=True)
-    ap.add_argument("--stations", help="comma-separated EVA numbers; keep only trains calling there")
-    args = ap.parse_args()
-
-    station_evas = args.stations.split(",") if args.stations else None
-    files = sorted(args.data_dir.glob("data-*.parquet"))
-    if not files:
-        raise SystemExit(f"no data-*.parquet files in {args.data_dir}")
-
-    # Stream one file at a time through the shard dict to bound memory.
-    shards: dict[str, dict] = defaultdict(lambda: {"stations": {}})
-    total = 0
-    for f in files:
-        df = prepare_month(f, station_evas)
-        build_into(shards, df)
-        total += df.height
-        print(f"  {f.name}: {df.height} events", flush=True)
-    print(f"{total} events after filtering")
-
-    shard_dir = args.out_dir / "shards"
-    shard_dir.mkdir(parents=True, exist_ok=True)
-    print(f"writing {len(shards)} shards to {shard_dir}")
-
-    index = {}
+def write_shards(shards: dict[str, dict], shard_dir: Path, index: dict[str, int]) -> None:
     for key, shard in shards.items():
         out = {
             "v": 2,
@@ -218,6 +200,47 @@ def main() -> None:
         blob = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
         (shard_dir / f"{key}.jgz").write_bytes(gzip.compress(blob.encode(), 9))
         index[key] = sum(len(s["runs"]) for s in shard["stations"].values())
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data-dir", type=Path, required=True)
+    ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--stations", help="comma-separated EVA numbers; keep only trains calling there")
+    ap.add_argument(
+        "--buckets",
+        type=int,
+        default=1,
+        help="hash-partition trains into N passes; use ~16 for country-wide "
+        "builds so only 1/N of the data is in memory at a time",
+    )
+    args = ap.parse_args()
+
+    station_evas = args.stations.split(",") if args.stations else None
+    files = sorted(args.data_dir.glob("data-*.parquet"))
+    if not files:
+        raise SystemExit(f"no data-*.parquet files in {args.data_dir}")
+
+    shard_dir = args.out_dir / "shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    index: dict[str, int] = {}
+    total = 0
+    for b in range(args.buckets):
+        bucket = (b, args.buckets) if args.buckets > 1 else None
+        # Stream one file at a time through the shard dict to bound memory.
+        shards: dict[str, dict] = defaultdict(lambda: {"stations": {}})
+        bucket_total = 0
+        for f in files:
+            df = prepare_month(f, station_evas, bucket)
+            build_into(shards, df)
+            bucket_total += df.height
+        write_shards(shards, shard_dir, index)
+        total += bucket_total
+        label = f"bucket {b + 1}/{args.buckets}: " if args.buckets > 1 else ""
+        print(f"  {label}{bucket_total} events, {len(shards)} shards", flush=True)
+    print(f"{total} events after filtering")
+    print(f"wrote {len(index)} shards to {shard_dir}")
 
     (args.out_dir / "index.json").write_text(json.dumps(index, ensure_ascii=False))
     meta = {

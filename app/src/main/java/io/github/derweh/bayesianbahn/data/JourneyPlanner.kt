@@ -88,10 +88,14 @@ class JourneyPlanner(
         }
         var transferBudget = MAX_TRANSFER_ATTEMPTS
         var found = 0
-        for (stop in others.take(MAX_TRANSFER_FEEDERS)) {
+        // Many feeders share the same best transfer (e.g. every S-Bahn via
+        // the same hub) — evaluate each transfer station only once so the
+        // budget reaches genuinely different routes.
+        val triedTransfers = mutableSetOf<String>()
+        for (stop in others.take(MAX_TRANSFER_SCAN)) {
             if (transferBudget <= 0 || found >= MAX_TRANSFER_RESULTS) break
             val itinerary = transferItinerary(
-                stop, to, transferMinutes, deutschlandTicketOnly,
+                stop, to, transferMinutes, deutschlandTicketOnly, triedTransfers,
             ) { transferBudget-- > 0 }
             if (itinerary != null) {
                 itineraries += itinerary
@@ -155,16 +159,19 @@ class JourneyPlanner(
         to: Station,
         transferMinutes: Int,
         deutschlandTicketOnly: Boolean,
+        triedTransfers: MutableSet<String>,
         tryAttempt: () -> Boolean,
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
         val transfers = stop.departure!!.plannedPath
             .mapNotNull { name -> stationRepository.byName(name) }
             .filter { it.eva != to.eva && it.weight >= MIN_TRANSFER_WEIGHT }
+            .filter { it.name !in triedTransfers }
             .sortedByDescending { it.weight }
             .take(TRANSFERS_PER_FEEDER)
         for (transfer in transfers) {
             if (!tryAttempt()) return null
+            triedTransfers += transfer.name
             val outcome = connectionPlanner.plan(
                 feeder = stop,
                 transferQuery = transfer.name,
@@ -190,7 +197,9 @@ class JourneyPlanner(
 
     companion object {
         const val MAX_DIRECT = 3
-        const val MAX_TRANSFER_FEEDERS = 5
+
+        /** Feeders considered; the attempt budget below limits network work. */
+        const val MAX_TRANSFER_SCAN = 15
         const val MAX_TRANSFER_RESULTS = 3
 
         /** Cap on connection evaluations (each fetches a transfer board). */

@@ -38,6 +38,7 @@ class HistoryRepository(
     private val context: Context,
     private val client: OkHttpClient = OkHttpClient(),
     private val shardUrl: String = SHARD_URL,
+    private val recentShardUrl: String = RECENT_SHARD_URL,
 ) {
 
     /**
@@ -51,18 +52,30 @@ class HistoryRepository(
                 ?: keys.firstNotNullOfOrNull { onDemand(it) }
         }
 
-    /** Cached network fetch of one shard (a few KB gzipped). */
+    /**
+     * Cached network fetch of one train's history: the country-wide base
+     * shard (rebuilt monthly, cached a week) merged with its small recent
+     * overlay (rebuilt daily, cached [TTL_MILLIS]).
+     */
     private fun onDemand(key: String): TrainHistory? {
-        val dir = File(context.filesDir, ONDEMAND_DIR).apply { mkdirs() }
+        val base = fetchCached(ONDEMAND_DIR, "$shardUrl$key.jgz", key, BASE_TTL_MILLIS)
+        val recent = fetchCached(
+            "$ONDEMAND_DIR-recent", "$recentShardUrl$key.jgz", key, TTL_MILLIS,
+        )
+        return mergeHistories(base, recent)
+    }
+
+    private fun fetchCached(dirName: String, url: String, key: String, ttl: Long): TrainHistory? {
+        val dir = File(context.filesDir, dirName).apply { mkdirs() }
         val cached = File(dir, "$key.jgz")
         val miss = File(dir, "$key.miss")
         val now = System.currentTimeMillis()
-        fun fresh(f: File) = f.isFile && now - f.lastModified() < TTL_MILLIS
+        fun fresh(f: File) = f.isFile && now - f.lastModified() < ttl
 
         if (fresh(cached)) return readFile(cached)
         if (fresh(miss)) return null
         try {
-            val request = Request.Builder().url("$shardUrl$key.jgz").build()
+            val request = Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 when {
                     response.isSuccessful -> {
@@ -126,13 +139,20 @@ class HistoryRepository(
     }
 
     companion object {
-        /** Per-shard host: the `shards` branch, updated daily by the workflow. */
+        /** Country-wide base shards: `shards` branch, rebuilt monthly. */
         const val SHARD_URL =
             "https://raw.githubusercontent.com/DerWeh/BayesianBahn/refs/heads/shards/"
+
+        /** Small recent-days overlays: `shards-recent` branch, rebuilt daily. */
+        const val RECENT_SHARD_URL =
+            "https://raw.githubusercontent.com/DerWeh/BayesianBahn/refs/heads/shards-recent/"
         const val ONDEMAND_DIR = "ondemand"
 
-        /** Cached shards are refreshed at most this often. */
+        /** Recent overlays are refreshed at most this often. */
         const val TTL_MILLIS = 18 * 60 * 60 * 1000L
+
+        /** Base shards change monthly; a week of cache is plenty fresh. */
+        const val BASE_TTL_MILLIS = 7 * 24 * 60 * 60 * 1000L
 
         /** Mirrors `train_key` in build_shards.py. */
         fun shardKey(trainName: String): String =

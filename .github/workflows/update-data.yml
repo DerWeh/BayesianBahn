@@ -1,9 +1,16 @@
-# Keeps the `data` release fresh with minimal app downloads via three assets:
+# Keeps the delay data fresh on two channels:
+#
+# `data` release (regional bulk, for offline use in the app):
 #   meta.json    tiny descriptor the app checks first
-#   history.zip  monthly base (~16 MB), rebuilt when a new month publishes
-#   recent.zip   daily overlay (~1-3 MB) built from the archive's raw day
-#                files, covering the days newer than the newest monthly file
-# Per-day condensed parquet is cached, so a daily run only processes new days.
+#   history.zip  monthly base for STATIONS, rebuilt when a month publishes
+#   recent.zip   daily overlay for STATIONS
+#
+# Per-shard branches (country-wide, fetched train-by-train on demand):
+#   shards          base shards, force-pushed when the base is rebuilt
+#   shards-recent   small recent-day overlays, force-pushed daily
+#
+# Per-day condensed parquet (country-wide) is cached, so a daily run only
+# processes newly published raw days.
 name: Update delay data
 
 on:
@@ -12,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       rebuild_base:
-        description: "Force rebuilding the monthly base (history.zip)"
+        description: "Force rebuilding the monthly base"
         type: boolean
         default: false
 
@@ -20,9 +27,8 @@ permissions:
   contents: write
 
 env:
-  # Bavaria/Schwaben hubs + neighbours: Augsburg, München Hbf/Ost, Nürnberg,
-  # Stuttgart, Regensburg, Ulm, Würzburg, Ingolstadt, Aalen, Buchloe,
-  # Donauwörth, Lindau-Reutin, Memmingen, Treuchtlingen, Kempten.
+  # Bulk-zip station set — Bavaria/Schwaben hubs + neighbours. The
+  # per-shard branches are built without a station filter (country-wide).
   STATIONS: "8000013,8000261,8000262,8000284,8000096,8000309,8000170,8000260,8000183,8000002,8000057,8000078,8003693,8000249,8000122,8000197"
   HF: https://huggingface.co/datasets/piebro/deutsche-bahn-data/resolve/main
 
@@ -43,9 +49,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: pipeline/recent-cache
-          # Keyed by station set: widening coverage rebuilds all days.
-          key: recent-cache-${{ env.STATIONS }}-${{ github.run_id }}
-          restore-keys: recent-cache-${{ env.STATIONS }}-
+          key: recent-cache-all-${{ github.run_id }}
+          restore-keys: recent-cache-all-
 
       - name: Determine coverage
         id: coverage
@@ -60,7 +65,7 @@ jobs:
             fi
           done
 
-      - name: Build missing recent days
+      - name: Build missing recent days (country-wide)
         run: |
           mkdir -p pipeline/recent-cache
           newest="${{ steps.coverage.outputs.newest_month }}"
@@ -83,8 +88,7 @@ jobs:
                 curl -fsSL --retry 3 -o "raw/hour_$h.parquet" "$url" || { ok=0; break; }
               done
               if [ "$ok" = 1 ]; then
-                python pipeline/build_recent.py --date "$day" --raw-dir raw \
-                  --out "$out" --stations "$STATIONS"
+                python pipeline/build_recent.py --date "$day" --raw-dir raw --out "$out"
               else
                 echo "skipping $day (raw files not fully published)"
               fi
@@ -94,7 +98,7 @@ jobs:
           done
           ls pipeline/recent-cache/
 
-      - name: Build recent.zip
+      - name: Build recent sets
         run: |
           mkdir -p pipeline/recent-out
           if ! ls pipeline/recent-cache/data-recent-*.parquet >/dev/null 2>&1; then
@@ -102,14 +106,19 @@ jobs:
             echo '{}' > pipeline/recent-out/meta.json
             exit 0
           fi
+          # Regional bulk zip for the data release.
           python pipeline/build_shards.py \
             --data-dir pipeline/recent-cache --out-dir pipeline/recent-out \
             --stations "$STATIONS"
           mv pipeline/recent-out/history.zip pipeline/recent-out/recent.zip
+          # Country-wide per-shard overlays for the shards-recent branch.
+          python pipeline/build_shards.py \
+            --data-dir pipeline/recent-cache --out-dir pipeline/recent-wide \
+            --buckets 4
 
       - name: Rebuild monthly base
         run: |
-          # Cheap daily check: rebuild only when a new month was published.
+          # Rebuild only when a new month was published (or forced).
           newest="${{ steps.coverage.outputs.newest_month }}"
           GH_TOKEN="${{ github.token }}" gh release download data -p history.zip -O /tmp/base.zip -R "$GITHUB_REPOSITORY" || true
           have=$( [ -f /tmp/base.zip ] && unzip -p /tmp/base.zip meta.json | python -c "import json,sys;m=json.load(sys.stdin);print(m['months'][-1], ','.join(m.get('stations',[])))" || echo none)
@@ -130,11 +139,15 @@ jobs:
             [ "$got" -ge 4 ] && break
           done
           [ "$got" -ge 3 ] || { echo "only $got months available"; exit 1; }
+          # Regional bulk zip for the data release.
           python pipeline/build_shards.py \
             --data-dir pipeline/data --out-dir pipeline/output --stations "$STATIONS"
+          # Country-wide base for the shards branch, in bounded-memory passes.
+          python pipeline/build_shards.py \
+            --data-dir pipeline/data --out-dir pipeline/output-wide --buckets 16
           echo "BASE_REBUILT=1" >> "$GITHUB_ENV"
 
-      - name: Compose meta.json and upload
+      - name: Compose meta.json and upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -163,23 +176,24 @@ jobs:
           fi
           gh release upload data release-assets/* --clobber -R "$GITHUB_REPOSITORY"
 
-      - name: Publish per-shard on-demand set (shards branch)
+      - name: Publish country-wide per-shard branches
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          push_branch() {
+            local dir=$1 branch=$2
+            [ -d "$dir" ] || { echo "$dir missing, skipping $branch"; return; }
+            cp "$dir/../meta.json" "$dir/meta.json" 2>/dev/null || true
+            git -C "$dir" init -q -b "$branch"
+            git -C "$dir" config user.email "actions@github.com"
+            git -C "$dir" config user.name "github-actions"
+            git -C "$dir" add -A
+            git -C "$dir" commit -qm "$branch $(date -u +%F)"
+            git -C "$dir" push -qf \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
+            echo "pushed $branch"
+          }
+          push_branch pipeline/recent-wide/shards shards-recent
           if [ "${BASE_REBUILT:-0}" = 1 ]; then
-            base_zip=pipeline/output/history.zip
-          else
-            base_zip=/tmp/base.zip
+            push_branch pipeline/output-wide/shards shards
           fi
-          mkdir -p pipeline/recent-out/shards
-          python pipeline/merge_shards.py --base "$base_zip" \
-            --recent pipeline/recent-out/shards --out merged
-          cp release-assets/meta.json merged/meta.json
-          cd merged
-          git init -q -b shards
-          git config user.email "actions@github.com"
-          git config user.name "github-actions"
-          git add -A
-          git commit -qm "shards $(date -u +%F)"
-          git push -qf "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" shards
