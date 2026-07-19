@@ -235,6 +235,7 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
         DelayDistributionChart(
             dist = dist,
             modifier = Modifier.fillMaxWidth().height(160.dp),
+            referenceMillis = result.referenceArrivalMillis,
         )
 
         Text("Which train will you catch?", style = MaterialTheme.typography.titleSmall)

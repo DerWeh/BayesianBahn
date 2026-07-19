@@ -257,6 +257,13 @@ internal fun departMillis(hour: Int?, minute: Int?, epochDay: Long?): Long {
     return ZonedDateTime.of(date, time, ZONE).toInstant().toEpochMilli()
 }
 
+internal fun formatDuration(millis: Long): String {
+    val totalMin = (millis / 60_000L).coerceAtLeast(0)
+    val h = totalMin / 60
+    val m = totalMin % 60
+    return if (h > 0) "$h h $m min" else "$m min"
+}
+
 private fun dateLabel(epochDay: Long?): String {
     val today = LocalDate.now(ZONE)
     val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today
@@ -344,7 +351,8 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "80% between ${formatTime(q10)} and ${formatTime(q90)}",
+                "~${formatDuration(median - itinerary.departureMillis)}  ·  " +
+                    "80% between ${formatTime(q10)} and ${formatTime(q90)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -352,6 +360,7 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
                 DelayDistributionChart(
                     dist = dist,
                     modifier = Modifier.fillMaxWidth().height(140.dp),
+                    referenceMillis = itinerary.referenceArrivalMillis,
                 )
                 itinerary.connection?.result?.candidates?.forEach { cand ->
                     Text(

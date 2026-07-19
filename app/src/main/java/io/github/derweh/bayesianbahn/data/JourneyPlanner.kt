@@ -197,8 +197,17 @@ class JourneyPlanner(
                 transferStation = outcome.transferStation.name,
                 distribution = outcome.result.distribution,
                 referenceArrivalMillis = outcome.result.referenceArrivalMillis,
+                // The first *plannable* connection (departing after the
+                // feeder's planned arrival) — normally-missed earlier trains
+                // are listed in the details but don't define the headline.
                 catchProbability = outcome.result.candidates
-                    .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
+                    .firstOrNull {
+                        !it.candidate.cancelledLive &&
+                            it.candidate.plannedDepartureMillis >=
+                            outcome.feederPlannedArrivalMillis
+                    }?.boardProbability
+                    ?: outcome.result.candidates
+                        .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
                 missProbability = outcome.result.missProbability,
                 connection = outcome,
             )

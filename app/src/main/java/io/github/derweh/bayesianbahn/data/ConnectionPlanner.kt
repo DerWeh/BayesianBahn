@@ -93,7 +93,10 @@ class ConnectionPlanner(
             }
             .filter { stop -> stop.departure!!.plannedPath.any { matches(it, destinationName) } }
             .filter { !deutschlandTicketOnly || DeutschlandTicket.covers(it.label.category) }
-            .filter { it.departure!!.plannedTime!! >= feederPlanned - 15 * 60_000 }
+            // Include trains departing up to 30 min before the feeder's planned
+            // arrival: usually missed (shown near 0%), but visible — and a
+            // delayed one is sometimes exactly the connection that works.
+            .filter { it.departure!!.plannedTime!! >= feederPlanned - 30 * 60_000 }
             .sortedBy { it.departure!!.plannedTime }
             .take(MAX_CANDIDATES)
             .toList()

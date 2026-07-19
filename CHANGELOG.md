@@ -5,6 +5,22 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [Unreleased]
+
+### Added
+- Histogram x-axis shows clock times (ticks on round minutes) instead of
+  bare +X delay offsets.
+- Itinerary cards show the expected travel time alongside the arrival.
+- Connections departing shortly before the feeder's arrival are listed
+  with their (near-zero) catch probability instead of being hidden — a
+  delayed one is occasionally exactly the train that works.
+- Opt-in cross-check test against DB's official journey planner
+  (`NavigatorCompareE2E`, via the transport.rest proxy).
+
+### Fixed
+- The headline "P(first connection)" refers to the first plannable
+  connection, not a normally-missed earlier train.
+
 ## [0.1.0] - 2026-07-19
 
 First draft release. Predictions are experimental — always cross-check

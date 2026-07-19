@@ -167,6 +167,7 @@ private fun PredictionContent(
         DelayDistributionChart(
             dist = dist,
             modifier = Modifier.fillMaxWidth().height(180.dp),
+            referenceMillis = planned,
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -224,10 +225,15 @@ private fun StatTile(label: String, value: String, modifier: Modifier = Modifier
  * Histogram of the forecast distribution, computed from CDF differences so
  * empirical and parametric distributions render identically. Single series:
  * primary hue for bars, ink for text, recessive baseline; quantile markers
- * at q10/median/q90.
+ * at q10/median/q90. With [referenceMillis] set, the x-axis is labelled
+ * with clock times (ticks on round minutes) instead of bare +X offsets.
  */
 @Composable
-fun DelayDistributionChart(dist: DelayDistribution, modifier: Modifier = Modifier) {
+fun DelayDistributionChart(
+    dist: DelayDistribution,
+    modifier: Modifier = Modifier,
+    referenceMillis: Long? = null,
+) {
     val barColor = MaterialTheme.colorScheme.primary
     val inkMuted = MaterialTheme.colorScheme.onSurfaceVariant
     val ink = MaterialTheme.colorScheme.onSurface
@@ -290,11 +296,17 @@ fun DelayDistributionChart(dist: DelayDistribution, modifier: Modifier = Modifie
             )
         }
 
-        // x-axis labels: ~5 ticks on whole minutes
+        // x-axis labels: ~4 ticks; with a reference, on round clock minutes.
         val tickStep = listOf(1, 2, 5, 10, 15, 30, 60).first { it * 4 >= range }
-        var tick = ceil(lo / tickStep).toInt() * tickStep
+        val refOffsetMin = referenceMillis?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.of("Europe/Berlin"))
+                .let { z -> z.hour * 60 + z.minute }
+        } ?: 0
+        var tick = ceil((lo + refOffsetMin) / tickStep).toInt() * tickStep - refOffsetMin
         while (tick <= hi) {
-            val label = if (tick > 0) "+$tick" else "$tick"
+            val label = if (referenceMillis != null) {
+                formatTime(referenceMillis + tick * 60_000L)
+            } else if (tick > 0) "+$tick" else "$tick"
             val measured = textMeasurer.measure(label, labelStyle)
             val tx = (x(tick.toDouble()) - measured.size.width / 2)
                 .coerceIn(0f, size.width - measured.size.width)
