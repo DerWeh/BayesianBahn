@@ -14,3 +14,8 @@ captures/
 # pipeline inputs/outputs (large)
 pipeline/data/
 pipeline/output/
+
+# Release signing — never commit
+keystore.properties
+*.jks
+*.keystore

@@ -1,0 +1,5 @@
+First draft release: from/to journey search with arrival-time
+distributions from real delay history, Bayesian transfer propagation
+with catch probabilities, live-delay conditioning, Deutschland-Ticket
+filter, future trips from the historical timetable, and country-wide
+on-demand data with offline caching.

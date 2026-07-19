@@ -1,0 +1,61 @@
+# Tag vX.Y.Z -> build the release APK, sign it with the keystore from the
+# repo secrets, and publish a GitHub release with the matching CHANGELOG
+# section as notes. Without the signing secrets the job fails early —
+# an unsigned APK would be uninstallable anyway.
+#
+# Required secrets: ANDROID_KEYSTORE_B64 (base64 of the .jks),
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Restore signing keystore
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          [ -n "$KS_B64" ] || { echo "signing secrets missing"; exit 1; }
+          echo "$KS_B64" | base64 -d > release.jks
+          cat > keystore.properties <<EOF
+          storeFile=release.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
+      - name: Build signed release APK
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          apk="BayesianBahn-$tag.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$apk"
+          # Extract this version's section from CHANGELOG.md as the notes.
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { on=1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          gh release create "$tag" "$apk" \
+            --title "BayesianBahn $version" \
+            --notes-file notes.md \
+            -R "$GITHUB_REPOSITORY"

@@ -3,6 +3,7 @@ package io.github.derweh.bayesianbahn.data
 import io.github.derweh.bayesianbahn.api.EventInfo
 import io.github.derweh.bayesianbahn.api.TimetableStop
 import io.github.derweh.bayesianbahn.api.TrainLabel
+import io.github.derweh.bayesianbahn.model.GermanCalendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -107,7 +108,10 @@ class SyntheticTimetable(
             // The window may cross midnight: try the start date and the next.
             for (dayOffset in 0..1) {
                 val date = start.toLocalDate().plusDays(dayOffset.toLong())
-                val weekdayBit = 1 shl (date.dayOfWeek.value - 1)
+                // Public holidays run the Sunday timetable.
+                val effectiveWeekday = if (GermanCalendar.isNationwideHoliday(date)) 7
+                else date.dayOfWeek.value
+                val weekdayBit = 1 shl (effectiveWeekday - 1)
                 for (entry in entries) {
                     if (entry.weekdayMask and weekdayBit == 0) continue
                     if (entry.lastSeenEpochDay < recentCutoff) continue

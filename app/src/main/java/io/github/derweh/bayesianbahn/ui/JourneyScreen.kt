@@ -49,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.github.derweh.bayesianbahn.R
 import io.github.derweh.bayesianbahn.data.JourneyPlanner
+import io.github.derweh.bayesianbahn.model.GermanCalendar
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -203,11 +204,20 @@ fun JourneyScreen(viewModel: AppViewModel) {
                         style = MaterialTheme.typography.titleSmall,
                     )
                     if (state.outcome.synthetic) {
+                        val change = GermanCalendar.nextTimetableChange(LocalDate.now(ZONE))
+                        val crossesChange = state.outcome.itineraries.firstOrNull()?.let {
+                            java.time.Instant.ofEpochMilli(it.departureMillis)
+                                .atZone(ZONE).toLocalDate() >= change
+                        } == true
                         Text(
                             "Planned from the historical timetable — DB publishes " +
-                                "live plans only about a day ahead. Times may shift " +
-                                "(timetable changes, construction); check again " +
-                                "closer to departure.",
+                                "live plans only about a day ahead. Times may shift; " +
+                                "check again closer to departure." +
+                                if (crossesChange) {
+                                    " Your date lies beyond the timetable change on " +
+                                        change.format(DateTimeFormatter.ofPattern("dd.MM.")) +
+                                        " — expect larger differences."
+                                } else "",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.tertiary,
                         )

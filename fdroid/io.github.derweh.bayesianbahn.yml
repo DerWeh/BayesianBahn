@@ -1,0 +1,36 @@
+# Ready-to-submit F-Droid build metadata. To publish on F-Droid:
+# fork https://gitlab.com/fdroid/fdroiddata, copy this file to
+# metadata/io.github.derweh.bayesianbahn.yml, and open a merge request.
+# Descriptions, changelogs and screenshots are read from this repo's
+# fastlane/metadata directory automatically.
+
+Categories:
+  - Navigation
+License: MIT
+AuthorName: DerWeh
+SourceCode: https://github.com/DerWeh/BayesianBahn
+IssueTracker: https://github.com/DerWeh/BayesianBahn/issues
+Changelog: https://github.com/DerWeh/BayesianBahn/blob/main/CHANGELOG.md
+
+AutoName: BayesianBahn
+
+RepoType: git
+Repo: https://github.com/DerWeh/BayesianBahn.git
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: v0.1.0
+    subdir: app
+    gradle:
+      - yes
+
+AntiFeatures:
+  # The app queries Deutsche Bahn's IRIS timetable service and fetches
+  # delay-history data hosted on GitHub.
+  - NonFreeNet
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1
