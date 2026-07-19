@@ -50,6 +50,12 @@ forecasts remain available behind the list icon.
   IRIS logs, covering the days newer than the newest monthly file). The
   in-app update checks `meta.json` first and fetches only the tier that
   changed; the app overlays recent runs onto the base.
+- **Future trips**: IRIS publishes live plans only ~a day ahead. Beyond
+  that the planner reconstructs station boards from the historical
+  timetable (`pipeline/build_boards.py`: per station, every train that
+  recently called there with typical times, weekday pattern and
+  last-seen date) and predicts blind — clearly labelled in the UI, since
+  timetable changes and construction can shift planned times.
 - **On-demand shards**: trains outside the local data are fetched
   individually (a few KB each) from the repo's `shards` branch, where the
   workflow publishes the merged base+recent set daily. Fetched shards are

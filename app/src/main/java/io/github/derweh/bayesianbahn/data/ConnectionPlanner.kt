@@ -22,6 +22,8 @@ class ConnectionPlanner(
     private val historyRepository: HistoryRepository,
     private val irisClient: IrisClient,
     private val predictor: Predictor = Predictor(),
+    /** Fallback for departure times beyond IRIS's plan horizon. */
+    private val syntheticTimetable: SyntheticTimetable? = null,
 ) {
 
     sealed interface Outcome {
@@ -49,10 +51,13 @@ class ConnectionPlanner(
         val destinationName = stationRepository.search(destinationQuery).firstOrNull()?.name
             ?: destinationQuery.trim()
 
-        val board = try {
+        var board = try {
             irisClient.board(transfer.eva, hours = 4, startMillis = boardStartMillis)
         } catch (e: Exception) {
             return Outcome.Error(e.message ?: "network error")
+        }
+        if (board.isEmpty() && syntheticTimetable != null && boardStartMillis != null) {
+            board = syntheticTimetable.board(transfer.eva, boardStartMillis, hours = 4)
         }
 
         // The feeder's own stop at the transfer station.

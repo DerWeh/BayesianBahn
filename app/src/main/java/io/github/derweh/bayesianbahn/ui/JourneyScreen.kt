@@ -15,10 +15,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -32,6 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -69,7 +73,8 @@ fun JourneyScreen(viewModel: AppViewModel) {
     var pickedHour by rememberSaveable { mutableStateOf<Int?>(null) }
     var pickedMinute by rememberSaveable { mutableStateOf<Int?>(null) }
     var showTimePicker by rememberSaveable { mutableStateOf(false) }
-    var tomorrow by rememberSaveable { mutableStateOf(false) }
+    var epochDay by rememberSaveable { mutableStateOf<Long?>(null) } // null = today
+    var showDatePicker by rememberSaveable { mutableStateOf(false) }
     var deutschlandTicket by rememberSaveable { mutableStateOf(true) }
 
     Scaffold(
@@ -118,16 +123,28 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                FilterChip(
-                    selected = !tomorrow,
-                    onClick = { tomorrow = false },
-                    label = { Text("Today") },
+                OutlinedButton(onClick = { showDatePicker = true }) {
+                    Icon(Icons.Default.CalendarMonth, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(dateLabel(epochDay))
+                }
+            }
+            if (showDatePicker) {
+                val state = rememberDatePickerState(
+                    initialSelectedDateMillis = (epochDay ?: LocalDate.now(ZONE).toEpochDay()) * 86_400_000L,
                 )
-                FilterChip(
-                    selected = tomorrow,
-                    onClick = { tomorrow = true },
-                    label = { Text("Tomorrow") },
-                )
+                DatePickerDialog(
+                    onDismissRequest = { showDatePicker = false },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            epochDay = state.selectedDateMillis?.let { it / 86_400_000L }
+                            showDatePicker = false
+                        }) { Text("OK") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+                    },
+                ) { DatePicker(state = state) }
             }
             if (showTimePicker) {
                 DepartureTimeDialog(
@@ -160,7 +177,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
             Button(
                 onClick = {
                     viewModel.planJourney(
-                        from, to, departMillis(pickedHour, pickedMinute, tomorrow),
+                        from, to, departMillis(pickedHour, pickedMinute, epochDay),
                         deutschlandTicket,
                     )
                 },
@@ -185,6 +202,16 @@ fun JourneyScreen(viewModel: AppViewModel) {
                         "${state.outcome.from.name} → ${state.outcome.to.name}",
                         style = MaterialTheme.typography.titleSmall,
                     )
+                    if (state.outcome.synthetic) {
+                        Text(
+                            "Planned from the historical timetable — DB publishes " +
+                                "live plans only about a day ahead. Times may shift " +
+                                "(timetable changes, construction); check again " +
+                                "closer to departure.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
                     state.outcome.itineraries.forEach { ItineraryCard(it) }
                     Text(
                         "Predicted from each train's real delay history; " +
@@ -198,12 +225,23 @@ fun JourneyScreen(viewModel: AppViewModel) {
     }
 }
 
-/** Picked time + today/tomorrow → epoch millis; null hour means now. */
-internal fun departMillis(hour: Int?, minute: Int?, tomorrow: Boolean): Long {
-    val date = LocalDate.now(ZONE).plusDays(if (tomorrow) 1 else 0)
+/** Picked time + date → epoch millis; null hour means now, null day today. */
+internal fun departMillis(hour: Int?, minute: Int?, epochDay: Long?): Long {
+    val today = LocalDate.now(ZONE)
+    val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today
     val time = hour?.let { LocalTime.of(it, minute ?: 0) }
-        ?: if (tomorrow) LocalTime.of(6, 0) else LocalTime.now(ZONE)
+        ?: if (date != today) LocalTime.of(6, 0) else LocalTime.now(ZONE)
     return ZonedDateTime.of(date, time, ZONE).toInstant().toEpochMilli()
+}
+
+private fun dateLabel(epochDay: Long?): String {
+    val today = LocalDate.now(ZONE)
+    val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today
+    return when (date) {
+        today -> "Today"
+        today.plusDays(1) -> "Tomorrow"
+        else -> date.format(DateTimeFormatter.ofPattern("EE dd.MM."))
+    }
 }
 
 /** Material time picker in a dialog, with a shortcut back to "depart now". */

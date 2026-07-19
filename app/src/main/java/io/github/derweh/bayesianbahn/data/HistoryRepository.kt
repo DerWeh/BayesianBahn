@@ -52,49 +52,20 @@ class HistoryRepository(
                 ?: keys.firstNotNullOfOrNull { onDemand(it) }
         }
 
+    private val fetcher = CachedFetcher(context, client)
+
     /**
      * Cached network fetch of one train's history: the country-wide base
      * shard (rebuilt monthly, cached a week) merged with its small recent
      * overlay (rebuilt daily, cached [TTL_MILLIS]).
      */
     private fun onDemand(key: String): TrainHistory? {
-        val base = fetchCached(ONDEMAND_DIR, "$shardUrl$key.jgz", key, BASE_TTL_MILLIS)
-        val recent = fetchCached(
-            "$ONDEMAND_DIR-recent", "$recentShardUrl$key.jgz", key, TTL_MILLIS,
-        )
+        val base = fetcher.bytes(ONDEMAND_DIR, key, "$shardUrl$key.jgz", BASE_TTL_MILLIS)
+            ?.let { parseShard(it.decodeToString()) }
+        val recent = fetcher
+            .bytes("$ONDEMAND_DIR-recent", key, "$recentShardUrl$key.jgz", TTL_MILLIS)
+            ?.let { parseShard(it.decodeToString()) }
         return mergeHistories(base, recent)
-    }
-
-    private fun fetchCached(dirName: String, url: String, key: String, ttl: Long): TrainHistory? {
-        val dir = File(context.filesDir, dirName).apply { mkdirs() }
-        val cached = File(dir, "$key.jgz")
-        val miss = File(dir, "$key.miss")
-        val now = System.currentTimeMillis()
-        fun fresh(f: File) = f.isFile && now - f.lastModified() < ttl
-
-        if (fresh(cached)) return readFile(cached)
-        if (fresh(miss)) return null
-        try {
-            val request = Request.Builder().url(url).build()
-            client.newCall(request).execute().use { response ->
-                when {
-                    response.isSuccessful -> {
-                        cached.writeBytes(response.body!!.bytes())
-                        miss.delete()
-                    }
-                    response.code == 404 -> {
-                        // Unknown train: remember, don't re-ask every query.
-                        miss.writeBytes(ByteArray(0))
-                        cached.delete()
-                        return null
-                    }
-                    else -> throw IOException("HTTP ${response.code}")
-                }
-            }
-        } catch (_: IOException) {
-            // Offline or flaky: a stale cached shard beats nothing.
-        }
-        return readFile(cached)
     }
 
     private fun candidateKeys(category: String, number: String, line: String?): List<String> {

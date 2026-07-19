@@ -22,6 +22,8 @@ class JourneyPlanner(
     private val irisClient: IrisClient,
     private val connectionPlanner: ConnectionPlanner,
     private val predictor: Predictor = Predictor(),
+    /** Fallback for departure times beyond IRIS's plan horizon. */
+    private val syntheticTimetable: SyntheticTimetable? = null,
 ) {
 
     /** One planned journey option with its predicted arrival distribution. */
@@ -50,6 +52,8 @@ class JourneyPlanner(
             val itineraries: List<Itinerary>,
             val from: Station,
             val to: Station,
+            /** True when planned from the historical timetable, not IRIS. */
+            val synthetic: Boolean = false,
         ) : Outcome
     }
 
@@ -66,10 +70,17 @@ class JourneyPlanner(
             ?: return Outcome.Error("Station \"$toQuery\" not found.")
         if (from.eva == to.eva) return Outcome.Error("Origin and destination are the same.")
 
-        val board = try {
+        var board = try {
             irisClient.board(from.eva, hours = 3, startMillis = departMillis)
         } catch (e: Exception) {
             return Outcome.Error(e.message ?: "network error")
+        }
+        var synthetic = false
+        if (board.isEmpty() && syntheticTimetable != null) {
+            // Beyond IRIS's ~1 day plan horizon: reconstruct the board from
+            // the historical timetable (weekday-aware, no live data).
+            board = syntheticTimetable.board(from.eva, departMillis, hours = 3)
+            synthetic = true
         }
 
         val departures = board
@@ -105,8 +116,7 @@ class JourneyPlanner(
         if (itineraries.isEmpty()) {
             return Outcome.Error(
                 if (departures.isEmpty()) {
-                    "No timetable data for ${from.name} at that time — IRIS " +
-                        "publishes plans only about a day ahead."
+                    "No timetable data for ${from.name} at that time."
                 } else {
                     "No plannable trains from ${from.name} towards ${to.name} " +
                         "found around that time."
@@ -117,6 +127,7 @@ class JourneyPlanner(
             itineraries.sortedBy { it.medianArrivalMillis }.take(MAX_RESULTS),
             from,
             to,
+            synthetic = synthetic,
         )
     }
 

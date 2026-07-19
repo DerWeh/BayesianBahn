@@ -145,6 +145,13 @@ jobs:
           # Country-wide base for the shards branch, in bounded-memory passes.
           python pipeline/build_shards.py \
             --data-dir pipeline/data --out-dir pipeline/output-wide --buckets 16
+          # Synthetic per-station boards (planning beyond IRIS's horizon),
+          # from the freshest ~6 weeks of monthly + recent data.
+          mkdir -p boards-data
+          ln -sf "$PWD"/pipeline/data/data-*.parquet boards-data/
+          ln -sf "$PWD"/pipeline/recent-cache/data-recent-*.parquet boards-data/ 2>/dev/null || true
+          python pipeline/build_boards.py --data-dir boards-data --out-dir pipeline/output-wide
+          cp -r pipeline/output-wide/boards pipeline/output-wide/shards/boards
           echo "BASE_REBUILT=1" >> "$GITHUB_ENV"
 
       - name: Compose meta.json and upload release assets
