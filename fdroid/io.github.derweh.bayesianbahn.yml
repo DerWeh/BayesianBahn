@@ -10,6 +10,8 @@ SourceCode: https://github.com/DerWeh/BayesianBahn
 IssueTracker: https://github.com/DerWeh/BayesianBahn/issues
 Changelog: https://github.com/DerWeh/BayesianBahn/blob/HEAD/CHANGELOG.md
 
+AutoName: BayesianBahn
+
 RepoType: git
 Repo: https://github.com/DerWeh/BayesianBahn.git
 
