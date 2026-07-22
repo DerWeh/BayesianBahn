@@ -14,14 +14,17 @@ AutoName: BayesianBahn
 
 RepoType: git
 Repo: https://github.com/DerWeh/BayesianBahn.git
+Binaries: https://github.com/DerWeh/BayesianBahn/releases/download/v%v/BayesianBahn-v%v.apk
 
 Builds:
   - versionName: 0.1.1
     versionCode: 2
-    commit: v0.1.1
+    commit: a4698bc8804ef12db5140b9cc9f91e49b51610a8
     subdir: app
     gradle:
       - yes
+
+AllowedAPKSigningKeys: 20856bfc1b57dcf49655572f132387b860bf93571a8111605c7d53bf84120fca
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9]+\.[0-9]+\.[0-9]+$
