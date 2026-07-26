@@ -14,7 +14,8 @@ AutoName: BayesianBahn
 
 RepoType: git
 Repo: https://github.com/DerWeh/BayesianBahn.git
-Binaries: https://github.com/DerWeh/BayesianBahn/releases/download/v%v/BayesianBahn-v%v.apk
+Binaries: 
+  https://github.com/DerWeh/BayesianBahn/releases/download/v%v/BayesianBahn-v%v.apk
 
 Builds:
   - versionName: 0.1.1
