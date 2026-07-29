@@ -1,0 +1,51 @@
+# Catch F-Droid metadata problems here instead of on the fdroiddata merge
+# request, where every round trip costs a reviewer's attention.
+#
+# The job runs in debian:trixie-slim and installs fdroidserver the same way
+# fdroiddata's pipeline does, so formatting verdicts match bit for bit — the
+# YAML library version alone decides where long lines get folded.
+#
+# The weekly run matters as much as the per-PR one: fdroiddata's CI tracks
+# fdroidserver *master*, so a file that is canonical today can stop being
+# canonical without us touching it.
+name: F-Droid metadata
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - fdroid/**
+      - tools/fdroid-check.sh
+      - .github/workflows/fdroid-metadata.yml
+  pull_request:
+    paths:
+      - fdroid/**
+      - tools/fdroid-check.sh
+      - .github/workflows/fdroid-metadata.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    container: debian:trixie-slim
+    steps:
+      # Before the checkout: without git installed, actions/checkout falls back
+      # to a tarball download and the working tree is not a git repository.
+      - name: Install fdroidserver
+        run: |
+          apt-get --allow-releaseinfo-change update
+          apt-get -qy dist-upgrade
+          apt-get install -qy --no-install-recommends \
+            fdroidserver apksigner git curl ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - name: Run fdroiddata's metadata checks
+        env:
+          FDROID_SYSTEM_DEPS: "1"
+        run: tools/fdroid-check.sh --checkupdates

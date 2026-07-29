@@ -1,2 +1,8 @@
 # SCM syntax highlighting & preventing 3-way merges
 pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
+
+# fdroiddata's pipeline byte-compares this file against `fdroid rewritemeta`
+# output. A single CR makes its anchored greps miss and produces a failure whose
+# diff looks empty. Note the canonical form also carries a *meaningful* trailing
+# space on folded lines — never run a trailing-whitespace stripper over it.
+fdroid/*.yml text eol=lf

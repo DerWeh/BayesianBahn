@@ -41,6 +41,33 @@ jobs:
       - name: Build signed release APK
         run: ./gradlew --no-daemon assembleRelease
 
+      # AllowedAPKSigningKeys in the F-Droid metadata pins this app to exactly
+      # one certificate forever. An APK signed with any other key would fail
+      # F-Droid's verification and break every user's update path, so catch it
+      # here rather than after the release is public.
+      - name: Verify signing certificate matches F-Droid metadata
+        run: |
+          apk=app/build/outputs/apk/release/app-release.apk
+          expected=$(python3 - <<'PY'
+          import re
+          text = open("fdroid/io.github.derweh.bayesianbahn.yml").read()
+          m = re.search(r"^AllowedAPKSigningKeys:\s*([0-9a-f]{64})", text, re.M)
+          print(m.group(1) if m else "")
+          PY
+          )
+          [ -n "$expected" ] || { echo "no AllowedAPKSigningKeys in metadata"; exit 1; }
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -1)
+          [ -n "$apksigner" ] || { echo "apksigner not found"; exit 1; }
+          actual=$("$apksigner" verify --print-certs "$apk" \
+            | sed -n 's/.*certificate SHA-256 digest: *//p' | head -1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::APK signed with the wrong key — F-Droid would reject it"
+            echo "expected $expected"
+            echo "actual   $actual"
+            exit 1
+          fi
+          echo "signing certificate matches metadata: $actual"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
