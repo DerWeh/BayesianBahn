@@ -47,7 +47,7 @@ jobs:
 
       # fetch-depth: 0 for the tags — the check verifies that the commit pinned
       # in the metadata is the one the release tag points at.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

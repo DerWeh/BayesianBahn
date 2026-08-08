@@ -158,16 +158,24 @@ def test_monthly_fixture_matches_archive() -> None:
     assert dict(pl.scan_parquet(real).collect_schema()) == MONTHLY_SCHEMA
 
 
-def test_workflow_pins_the_polars_these_tests_ran_against() -> None:
-    """Otherwise these tests vouch for a version the nightly job never installs."""
+def test_nightly_job_runs_the_environment_these_tests_ran_in() -> None:
+    """Otherwise these tests vouch for an environment production never installs.
+
+    The job used to `pip install "polars>=1.0"`, so the nightly data build could
+    silently be a different polars from the one anything had been tested with.
+    pixi.lock is now the single definition of both.
+    """
     workflow = (
         Path(__file__).resolve().parents[2] / ".github/workflows/update-data.yml"
     ).read_text()
-    pinned = re.search(r"polars==([0-9][0-9a-z.]*)", workflow)
-    assert pinned, "update-data.yml must pin polars to an exact version"
-    assert pinned.group(1) == pl.__version__, (
-        f"update-data.yml pins polars {pinned.group(1)} but the tests run "
-        f"{pl.__version__}; bump pixi.toml/pixi.lock and the workflow together"
+    assert "prefix-dev/setup-pixi" in workflow
+    assert re.search(r"activate-environment:\s*pipeline", workflow), (
+        "the pipeline environment must be on PATH, or the steps run the runner's "
+        "bare python"
+    )
+    assert not re.search(r"^\s*run:.*pip install", workflow, re.M), (
+        "installing dependencies outside pixi.lock reintroduces the drift this "
+        "test exists to prevent"
     )
 
 

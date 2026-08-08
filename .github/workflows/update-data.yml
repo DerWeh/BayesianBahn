@@ -36,21 +36,22 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      # pixi.lock is the one definition of this environment, so the nightly job
+      # runs exactly what `pixi run -e pipeline test-pipeline` was tested
+      # against — no pin to keep in sync, and nothing that can resolve
+      # differently at 03:17 because someone published a release.
+      # activate-environment puts it on PATH, so the steps below just say
+      # `python`.
+      - uses: prefix-dev/setup-pixi@v0.10.1
         with:
-          python-version: "3.12"
-
-      # Pinned, and pinned to what pixi.lock resolves, so this job runs the
-      # polars the tests ran against. An unpinned data job breaks on someone
-      # else's release date, at 03:17, with nobody looking. Bump both together:
-      # pipeline/tests/test_pipeline.py fails if they drift apart.
-      - name: Install pipeline dependencies
-        run: pip install "polars==1.42.1"
+          environments: pipeline
+          activate-environment: pipeline
+          cache: true
 
       - name: Restore per-day cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: pipeline/recent-cache
           key: recent-cache-all-${{ github.run_id }}

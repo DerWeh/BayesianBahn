@@ -28,4 +28,6 @@ pytest = ">=8,<9"
 test-pipeline = "pytest pipeline/tests -q"
 
 [environments]
-pipeline = ["pipeline"]
+# no-default-feature: without it this environment also pulls in gradle and a
+# JDK from [dependencies] — 1.4 GB that the data job and its tests never touch.
+pipeline = { features = ["pipeline"], no-default-feature = true }
