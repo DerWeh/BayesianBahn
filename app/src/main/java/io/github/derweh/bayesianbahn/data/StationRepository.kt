@@ -53,10 +53,23 @@ class StationRepository(private val context: Context) {
         }
     }
 
-    /** Exact (normalized) name lookup, e.g. for stations named in an IRIS route. */
+    /**
+     * Name lookup for stations named in an IRIS route.
+     *
+     * Uses [StationNames] rather than [normalize]: the latter treats
+     * "Türkheim(Bay)Bf" and "Türkheim (Bay) Bahnhof" as different stations, so
+     * IRIS route entries for anything with a designation resolved to null and
+     * were dropped as transfer candidates without a trace.
+     */
     fun byName(name: String): Station? {
-        val n = normalize(name)
-        return stations.firstOrNull { normalize(it.name) == n }
+        val core = StationNames.core(name)
+        if (core.isEmpty()) return null
+        return stations.firstOrNull { StationNames.core(it.name) == core }
+    }
+
+    fun byEva(eva: String): Station? {
+        val e = eva.trimStart('0')
+        return stations.firstOrNull { it.eva.trimStart('0') == e }
     }
 
     fun search(query: String, limit: Int = 30): List<Station> {

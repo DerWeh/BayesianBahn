@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.net.URLEncoder
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -47,6 +48,37 @@ class IrisClient(
         val changes = async { fetchChanges(eva) }
         val stops = plans.flatMap { it.await() }.distinctBy { it.id }
         IrisParser.merge(stops, changes.await())
+    }
+
+    /**
+     * IRIS's own name for a station, which is what its route lists (`ppth`)
+     * contain — "Türkheim(Bay)Bf" where the bundled list says "Türkheim (Bay)
+     * Bahnhof". Resolving the name once per destination turns route matching
+     * from a spelling comparison into an identity comparison.
+     *
+     * Null when the station is unknown or IRIS cannot be reached; callers fall
+     * back to comparing names.
+     */
+    suspend fun stationName(eva: String): String? {
+        val wanted = eva.trimStart('0')
+        return stations(eva).firstOrNull { it.eva.trimStart('0') == wanted }?.name
+    }
+
+    /**
+     * The EVA number IRIS gives a station it names [name] — the inverse lookup,
+     * for turning a route entry into a station we know.
+     */
+    suspend fun stationEva(name: String): String? {
+        val found = stations(name)
+        return (found.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            ?: found.singleOrNull())?.eva
+    }
+
+    /** Raw `station/{query}` lookup; the query may be an EVA number or a name. */
+    suspend fun stations(query: String): List<IrisStation> {
+        val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+        val xml = get("$baseUrl/station/$encoded", notFoundAsEmpty = true) ?: return emptyList()
+        return parser.parseStations(xml)
     }
 
     private suspend fun fetchPlan(eva: String, slice: ZonedDateTime): List<TimetableStop> {

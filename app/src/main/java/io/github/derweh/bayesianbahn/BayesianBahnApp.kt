@@ -8,6 +8,7 @@ import io.github.derweh.bayesianbahn.data.ConnectionPlanner
 import io.github.derweh.bayesianbahn.data.DataUpdater
 import io.github.derweh.bayesianbahn.data.HistoryRepository
 import io.github.derweh.bayesianbahn.data.JourneyPlanner
+import io.github.derweh.bayesianbahn.data.RouteStationMatcher
 import io.github.derweh.bayesianbahn.data.StationRepository
 import io.github.derweh.bayesianbahn.data.SyntheticTimetable
 
@@ -21,16 +22,20 @@ class BayesianBahnApp : Application() {
     val syntheticTimetable by lazy {
         SyntheticTimetable(CachedFetcher(this, httpClient), historyRepository)
     }
+    /** Shared so a station's IRIS name is resolved once for the whole session. */
+    val routeStations by lazy { RouteStationMatcher(irisClient, stationRepository) }
     val connectionPlanner by lazy {
         ConnectionPlanner(
             stationRepository, historyRepository, irisClient,
             syntheticTimetable = syntheticTimetable,
+            routeStations = routeStations,
         )
     }
     val journeyPlanner by lazy {
         JourneyPlanner(
             stationRepository, historyRepository, irisClient, connectionPlanner,
             syntheticTimetable = syntheticTimetable,
+            routeStations = routeStations,
         )
     }
 }

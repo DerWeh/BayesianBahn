@@ -59,3 +59,6 @@ data class StopChange(
     val departureChangedPlatform: String?,
     val departureCancelled: Boolean,
 )
+
+/** One entry of a `station/{query}` document: IRIS's own name for an EVA number. */
+data class IrisStation(val name: String, val eva: String)

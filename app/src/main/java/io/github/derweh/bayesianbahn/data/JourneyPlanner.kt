@@ -24,6 +24,7 @@ class JourneyPlanner(
     private val predictor: Predictor = Predictor(),
     /** Fallback for departure times beyond IRIS's plan horizon. */
     private val syntheticTimetable: SyntheticTimetable? = null,
+    private val routeStations: RouteStationMatcher = RouteStationMatcher(irisClient),
 ) {
 
     /** One planned journey option with its predicted arrival distribution. */
@@ -99,8 +100,9 @@ class JourneyPlanner(
             .filter { !deutschlandTicketOnly || DeutschlandTicket.covers(it.label.category) }
             .sortedBy { it.departure!!.plannedTime }
 
+        val isDestination = routeStations.matcherFor(to)
         val (direct, others) = departures.partition { stop ->
-            stop.departure!!.plannedPath.any { pathMatches(it, to.name) }
+            stop.departure!!.plannedPath.any { isDestination(it) }
         }
 
         val itineraries = mutableListOf<Itinerary>()
@@ -190,7 +192,7 @@ class JourneyPlanner(
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
         val transfers = transferCandidates(
-            path = stop.departure!!.plannedPath.mapNotNull { stationRepository.byName(it) },
+            path = routeStations.stationsOn(stop.departure!!.plannedPath),
             origin = from,
             destination = to,
             exclude = triedTransfers,

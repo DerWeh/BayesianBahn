@@ -61,6 +61,22 @@ class IrisParser(private val newPullParser: () -> XmlPullParser) {
         return stops
     }
 
+    /** Parses a `station/{query}` document into its station entries. */
+    fun parseStations(xml: String): List<IrisStation> {
+        val parser = newPullParser().apply { setInput(xml.reader()) }
+        val stations = mutableListOf<IrisStation>()
+        var event = parser.eventType
+        while (event != XmlPullParser.END_DOCUMENT) {
+            if (event == XmlPullParser.START_TAG && parser.name == "station") {
+                val name = parser.getAttributeValue(null, "name")
+                val eva = parser.getAttributeValue(null, "eva")
+                if (name != null && eva != null) stations += IrisStation(name, eva)
+            }
+            event = parser.next()
+        }
+        return stations
+    }
+
     /** Parses a `fchg/{eva}` document into partial changes keyed by stop id. */
     fun parseChanges(xml: String): Map<String, StopChange> {
         val parser = newPullParser().apply { setInput(xml.reader()) }

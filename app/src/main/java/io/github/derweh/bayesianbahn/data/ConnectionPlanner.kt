@@ -24,6 +24,7 @@ class ConnectionPlanner(
     private val predictor: Predictor = Predictor(),
     /** Fallback for departure times beyond IRIS's plan horizon. */
     private val syntheticTimetable: SyntheticTimetable? = null,
+    private val routeStations: RouteStationMatcher = RouteStationMatcher(irisClient),
 ) {
 
     sealed interface Outcome {
@@ -48,8 +49,13 @@ class ConnectionPlanner(
     ): Outcome {
         val transfer = stationRepository.search(transferQuery).firstOrNull()
             ?: return Outcome.Error("Transfer station \"$transferQuery\" not found.")
-        val destinationName = stationRepository.search(destinationQuery).firstOrNull()?.name
-            ?: destinationQuery.trim()
+        val destination = stationRepository.search(destinationQuery).firstOrNull()
+        val destinationName = destination?.name ?: destinationQuery.trim()
+        // Identity against IRIS's own spelling where the station is known,
+        // canonicalised names otherwise.
+        val isDestination: (String) -> Boolean = destination
+            ?.let { routeStations.matcherFor(it) }
+            ?: { entry -> StationNames.matches(entry, destinationName) }
 
         // As in JourneyPlanner: fall through to the historical timetable rather
         // than failing, so a connection can still be evaluated without a
@@ -99,7 +105,7 @@ class ConnectionPlanner(
                 !(stop.label.category == feeder.label.category &&
                     stop.label.number == feeder.label.number)
             }
-            .filter { stop -> stop.departure!!.plannedPath.any { matches(it, destinationName) } }
+            .filter { stop -> stop.departure!!.plannedPath.any(isDestination) }
             .filter { !deutschlandTicketOnly || DeutschlandTicket.covers(it.label.category) }
             // Include trains departing up to 30 min before the feeder's planned
             // arrival: usually missed (shown near 0%), but visible — and a
@@ -117,7 +123,7 @@ class ConnectionPlanner(
         }
 
         val modelCandidates = candidates.mapNotNull { stop ->
-            buildCandidate(stop, transfer, destinationName, today)
+            buildCandidate(stop, transfer, destination, destinationName, today)
         }
         val result = ConnectionModel.propagate(
             feederArrival = feederForecast.distribution,
@@ -135,6 +141,7 @@ class ConnectionPlanner(
     private suspend fun buildCandidate(
         stop: TimetableStop,
         transfer: Station,
+        destination: Station?,
         destinationName: String,
         today: LocalDate,
     ): ConnectionModel.Candidate? {
@@ -147,8 +154,11 @@ class ConnectionPlanner(
         val transferHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
             sh.eva == transfer.eva || StationNames.matches(name, transfer.name)
         }?.value
-        val destinationHistory = history?.stations?.entries?.firstOrNull { (name, _) ->
-            matches(name, destinationName)
+        // Shards carry the eva, so prefer it and fall back to the name only
+        // for entries that predate it.
+        val destinationHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
+            (destination != null && sh.eva == destination.eva) ||
+                StationNames.matches(name, destinationName)
         }?.value
 
         val depHhmm = Instant.ofEpochMilli(plannedDep).atZone(ZONE).format(HHMM)
@@ -199,9 +209,6 @@ class ConnectionPlanner(
         private val HHMM = DateTimeFormatter.ofPattern("HH:mm")
         const val MAX_CANDIDATES = 6
         const val MIN_JOINT_RUNS = 5
-
-        private fun matches(pathStation: String, destination: String): Boolean =
-            StationNames.matches(pathStation, destination)
 
         /** Absolute planned arrival: departure date + arrival time of day (may wrap midnight). */
         fun arrivalMillis(plannedDepMillis: Long, arrivalHhmm: String): Long? {

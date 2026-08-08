@@ -16,11 +16,12 @@ fixes; expect breaking changes between minors until 1.0).
   attempts. The bundled station list now carries coordinates for this.
 
 ### Fixed
-- Journeys to stations whose name carries a designation ("Türkheim (Bay)
-  Bahnhof") reported "No plannable trains found" even for routes served every
-  hour. The station list, IRIS routes and the delay history spell such names
-  three different ways, and they are now compared as station names rather than
-  as raw strings.
+- Journeys to stations whose name differs between data sources ("Türkheim (Bay)
+  Bahnhof" in the station list, "Türkheim(Bay)Bf" in DB's route data) reported
+  "No plannable trains found" even for routes served every hour. Stations are
+  now identified by their EVA number, asking DB which name it uses, instead of
+  by comparing spellings. On a sample of 100 stations, about one in five is
+  spelled too differently for any string comparison to match.
 - Losing the network no longer ends a search with a raw socket error. The
   downloaded history is a timetable in its own right, so the search falls back
   to it and says that the times carry no live delays.
