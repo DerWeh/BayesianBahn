@@ -120,7 +120,16 @@ cp pipeline/output/shards/*.jgz pipeline/output/index.json app/src/main/assets/h
 ```
 
 The bundled station list (`app/src/main/assets/stations.csv`) derives from
-[db-stations](https://github.com/derhuerst/db-stations) (DB open data, CC BY 4.0).
+[db-stations](https://github.com/derhuerst/db-stations) (DB open data, CC BY 4.0):
+
+```sh
+pixi run -e pipeline python pipeline/build_stations.py
+```
+
+Its `eva;name;weight;lat;lon` rows carry coordinates because the journey search
+ranks possible transfer stations by how far they are from the destination —
+ranked by station size instead, a search from Ulm to Türkheim spent its first
+attempts on Stuttgart Hbf, 130 km the wrong way.
 
 ## License
 

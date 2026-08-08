@@ -116,7 +116,7 @@ class JourneyPlanner(
         for (stop in others.take(MAX_TRANSFER_SCAN)) {
             if (transferBudget <= 0 || found >= MAX_TRANSFER_RESULTS) break
             val itinerary = transferItinerary(
-                stop, to, transferMinutes, deutschlandTicketOnly, triedTransfers,
+                stop, from, to, transferMinutes, deutschlandTicketOnly, triedTransfers,
             ) { transferBudget-- > 0 }
             if (itinerary != null) {
                 itineraries += itinerary
@@ -181,6 +181,7 @@ class JourneyPlanner(
      */
     private suspend fun transferItinerary(
         stop: TimetableStop,
+        from: Station,
         to: Station,
         transferMinutes: Int,
         deutschlandTicketOnly: Boolean,
@@ -188,12 +189,12 @@ class JourneyPlanner(
         tryAttempt: () -> Boolean,
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
-        val transfers = stop.departure!!.plannedPath
-            .mapNotNull { name -> stationRepository.byName(name) }
-            .filter { it.eva != to.eva && it.weight >= MIN_TRANSFER_WEIGHT }
-            .filter { it.name !in triedTransfers }
-            .sortedByDescending { it.weight }
-            .take(TRANSFERS_PER_FEEDER)
+        val transfers = transferCandidates(
+            path = stop.departure!!.plannedPath.mapNotNull { stationRepository.byName(it) },
+            origin = from,
+            destination = to,
+            exclude = triedTransfers,
+        ).take(TRANSFERS_PER_FEEDER)
         for (transfer in transfers) {
             if (!tryAttempt()) return null
             triedTransfers += transfer.name
@@ -243,6 +244,48 @@ class JourneyPlanner(
 
         /** Skip pure village halts; real junctions can be small (Buchloe: 167). */
         const val MIN_TRANSFER_WEIGHT = 40
+
+        /**
+         * How much farther from the destination than the origin a transfer may
+         * lie. Above 1.0 so that changing at a hub slightly "behind" the origin
+         * stays possible, which is sometimes the only way out of a small station.
+         */
+        const val DETOUR_TOLERANCE = 1.25
+
+        /**
+         * Transfer stations worth spending an attempt on, best first.
+         *
+         * Ranking by station size alone sent Ulm → Türkheim (Bay) through
+         * Stuttgart Hbf (weight 1009, and 130 km the wrong way) and then
+         * Göppingen, exhausting the attempt budget before reaching the change
+         * at Memmingen that actually works. Distance to the destination is a
+         * far better predictor of a useful change than importance is, so rank
+         * by it and drop candidates that clearly lead away.
+         *
+         * Stations without coordinates keep the old weight ordering and go
+         * last, so a gap in the station list can only cost ranking quality.
+         */
+        fun transferCandidates(
+            path: List<Station>,
+            origin: Station,
+            destination: Station,
+            exclude: Set<String> = emptySet(),
+        ): List<Station> {
+            val usable = path.filter {
+                it.eva != destination.eva &&
+                    it.weight >= MIN_TRANSFER_WEIGHT &&
+                    it.name !in exclude
+            }
+            val goal = origin.distanceKm(destination)
+                ?: return usable.sortedByDescending { it.weight }
+            val (located, unlocated) = usable.partition { it.distanceKm(destination) != null }
+            return located
+                .map { it to it.distanceKm(destination)!! }
+                .filter { (_, d) -> d <= goal * DETOUR_TOLERANCE }
+                .sortedBy { (_, d) -> d }
+                .map { (station, _) -> station } +
+                unlocated.sortedByDescending { it.weight }
+        }
 
         /** IRIS route entries spell stations differently — see [StationNames]. */
         fun pathMatches(pathStation: String, destination: String): Boolean =

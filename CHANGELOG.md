@@ -7,6 +7,14 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [Unreleased]
 
+### Changed
+- The journey search picks transfer stations by how close they are to the
+  destination instead of by how big they are. It used to spend its limited
+  search budget on the largest station on a train's route — for Ulm →
+  Türkheim (Bay) that meant Stuttgart Hbf, 130 km the wrong way, and the
+  change at Memmingen that works was reached only on the fourth of six
+  attempts. The bundled station list now carries coordinates for this.
+
 ### Fixed
 - Journeys to stations whose name carries a designation ("Türkheim (Bay)
   Bahnhof") reported "No plannable trains found" even for routes served every

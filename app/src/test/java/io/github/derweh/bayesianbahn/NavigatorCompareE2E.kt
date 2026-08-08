@@ -1,6 +1,7 @@
 package io.github.derweh.bayesianbahn
 
 import io.github.derweh.bayesianbahn.data.HistoryRepository
+import io.github.derweh.bayesianbahn.data.StationNames
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -60,8 +61,11 @@ class NavigatorCompareE2E {
                         ?.jsonPrimitive?.content ?: continue
                     val time = OffsetDateTime.parse(planned)
                     val tod = time.hour * 60 + time.minute
+                    // Same matching the app uses: the navigator, the shards and
+                    // the station list spell stations differently, and an
+                    // `equals` here silently compared nothing.
                     val runs = history.stations.entries
-                        .firstOrNull { (n, _) -> n.equals(stationName, ignoreCase = true) }
+                        .firstOrNull { (n, _) -> StationNames.matches(n, stationName) }
                         ?.value?.runs ?: continue
                     val nearest = runs.mapNotNull { run ->
                         run.plannedTimeOfDay.split(':').takeIf { it.size == 2 }

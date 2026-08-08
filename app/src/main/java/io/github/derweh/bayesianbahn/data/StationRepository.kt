@@ -1,8 +1,37 @@
 package io.github.derweh.bayesianbahn.data
 
 import android.content.Context
+import kotlin.math.asin
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.pow
+import kotlin.math.sin
+import kotlin.math.sqrt
 
-data class Station(val eva: String, val name: String, val weight: Int)
+data class Station(
+    val eva: String,
+    val name: String,
+    val weight: Int,
+    val lat: Double? = null,
+    val lon: Double? = null,
+) {
+    /** Great-circle distance in km, or null when either station lacks coordinates. */
+    fun distanceKm(other: Station): Double? {
+        val lat1 = lat ?: return null
+        val lon1 = lon ?: return null
+        val lat2 = other.lat ?: return null
+        val lon2 = other.lon ?: return null
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2).pow(2) +
+            cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
+        return 2 * EARTH_RADIUS_KM * asin(min(1.0, sqrt(a)))
+    }
+
+    private companion object {
+        const val EARTH_RADIUS_KM = 6371.0
+    }
+}
 
 /**
  * Offline station search over the bundled `stations.csv` asset
@@ -14,7 +43,13 @@ class StationRepository(private val context: Context) {
         context.assets.open("stations.csv").bufferedReader().readLines().mapNotNull { line ->
             val parts = line.split(';')
             if (parts.size < 3) return@mapNotNull null
-            Station(parts[0], parts[1], parts[2].toIntOrNull() ?: 0)
+            Station(
+                eva = parts[0],
+                name = parts[1],
+                weight = parts[2].toIntOrNull() ?: 0,
+                lat = parts.getOrNull(3)?.toDoubleOrNull(),
+                lon = parts.getOrNull(4)?.toDoubleOrNull(),
+            )
         }
     }
 
