@@ -42,8 +42,12 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Pinned, and pinned to what pixi.lock resolves, so this job runs the
+      # polars the tests ran against. An unpinned data job breaks on someone
+      # else's release date, at 03:17, with nobody looking. Bump both together:
+      # pipeline/tests/test_pipeline.py fails if they drift apart.
       - name: Install pipeline dependencies
-        run: pip install "polars>=1.0"
+        run: pip install "polars==1.42.1"
 
       - name: Restore per-day cache
         uses: actions/cache@v4

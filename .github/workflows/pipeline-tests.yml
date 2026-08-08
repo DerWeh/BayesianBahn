@@ -1,0 +1,44 @@
+# The data pipeline's monthly path (rebuild the base and the synthetic boards)
+# only runs when a new monthly archive file appears, so a break in it sits
+# unnoticed for weeks — that is exactly how the nanosecond/microsecond schema
+# mismatch in build_boards.py survived. These tests exercise both the daily and
+# the monthly path on synthetic fixtures on every push.
+#
+# Runs through pixi so the tests use the same resolved polars as local
+# development, and so the pin in update-data.yml can be checked against a real
+# installed version.
+name: Pipeline tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pipeline/**
+      - pixi.toml
+      - pixi.lock
+      - .github/workflows/update-data.yml # the tests assert its polars pin
+      - .github/workflows/pipeline-tests.yml
+  pull_request:
+    paths:
+      - pipeline/**
+      - pixi.toml
+      - pixi.lock
+      - .github/workflows/update-data.yml
+      - .github/workflows/pipeline-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.10.1
+        with:
+          environments: pipeline
+          cache: true
+
+      - run: pixi run -e pipeline test-pipeline

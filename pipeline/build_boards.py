@@ -31,6 +31,13 @@ import polars as pl
 LOOKBACK_DAYS = 42
 MIN_RUNS = 3
 
+# The monthly archive stores timestamps as nanoseconds while build_recent.py
+# writes microseconds, and this is the one script that reads both kinds in a
+# single `concat` — which rejects the mix outright. Normalising on the reading
+# side rather than in build_recent.py is what keeps already-cached daily files
+# usable; the cache outlives any change to the writer.
+TIME_UNIT = pl.Datetime("us")
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -49,8 +56,8 @@ def main() -> None:
             "train_type",
             "train_number",
             "line_number",
-            "arrival_planned_time",
-            "departure_planned_time",
+            pl.col("arrival_planned_time").cast(TIME_UNIT),
+            pl.col("departure_planned_time").cast(TIME_UNIT),
         )
         for f in files
     ]).with_columns(

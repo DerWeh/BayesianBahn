@@ -96,7 +96,12 @@ available via `local.properties` or `ANDROID_HOME`.
 ```sh
 pixi run ./gradlew assembleDebug      # build the APK
 pixi run ./gradlew testDebugUnitTest  # run unit tests
+pixi run -e pipeline test-pipeline    # data-pipeline tests
 ```
+
+The pipeline tests matter more than their size suggests: the nightly job's
+monthly path only executes when a new archive file appears, so without them a
+break in it stays invisible for weeks.
 
 ### Backtesting
 
