@@ -18,6 +18,11 @@ fixes; expect breaking changes between minors until 1.0).
   over 44 journeys that provably have a one-transfer connection, 6 attempts
   find 93% of them and 8 find 98%, with no further gain up to 12.
 
+- "No plannable trains found" now says what it means: only direct journeys and
+  journeys with one change are searched, so DB's apps may still find a route
+  with more changes. The restriction is also stated in the results list, the
+  README and the store description.
+
 ### Fixed
 - Journeys to stations whose name differs between data sources ("Türkheim (Bay)
   Bahnhof" in the station list, "Türkheim(Bay)Bf" in DB's route data) reported
@@ -40,6 +45,11 @@ fixes; expect breaking changes between minors until 1.0).
   delayed one is occasionally exactly the train that works.
 - Opt-in cross-check test against DB's official journey planner
   (`NavigatorCompareE2E`, via the transport.rest proxy).
+
+- "No plannable trains found" now says what it means: only direct journeys and
+  journeys with one change are searched, so DB's apps may still find a route
+  with more changes. The restriction is also stated in the results list, the
+  README and the store description.
 
 ### Fixed
 - The headline "P(first connection)" refers to the first plannable

@@ -11,10 +11,22 @@ import io.github.derweh.bayesianbahn.model.DeutschlandTicket
  * direct trains and one-transfer connections and predicts the *arrival
  * distribution* at the destination for each.
  *
- * Routing is heuristic, not exhaustive: candidate trains come from the
- * origin's IRIS board; for trains not running through the destination, the
- * highest-weight station on their route serves as the transfer, evaluated
- * via [ConnectionPlanner]'s Bayesian propagation.
+ * **This searches direct journeys and journeys with one change only.** Two or
+ * more changes are not attempted at all, so "nothing found" here never means
+ * "no connection exists" — see [UserMessages.ONE_CHANGE_ONLY], which is what
+ * the user is told.
+ *
+ * Routing is heuristic, not exhaustive, even within that one-change scope:
+ * candidate trains come from the origin's IRIS board for [ORIGIN_HOURS] hours;
+ * for trains not reaching the destination, stations on their route are ranked
+ * by distance to the destination (see [transferCandidates]) and at most
+ * [MAX_TRANSFER_ATTEMPTS] of them are evaluated via [ConnectionPlanner]'s
+ * Bayesian propagation.
+ *
+ * `tools/journey_bench.py` measures what that costs: over 44 journeys that
+ * provably have a one-change connection, 98% were found. The residual misses
+ * are transfer stations that never enter the candidate list, which no amount
+ * of budget reaches.
  */
 class JourneyPlanner(
     private val stationRepository: StationRepository,
@@ -78,7 +90,7 @@ class JourneyPlanner(
         // fallback that covers dates beyond IRIS's horizon covers this too.
         var offline = false
         var board = try {
-            irisClient.board(from.eva, hours = 3, startMillis = departMillis)
+            irisClient.board(from.eva, hours = ORIGIN_HOURS, startMillis = departMillis)
         } catch (e: Exception) {
             offline = true
             emptyList()
@@ -87,7 +99,7 @@ class JourneyPlanner(
         if (board.isEmpty() && syntheticTimetable != null) {
             // Beyond IRIS's ~1 day plan horizon: reconstruct the board from
             // the historical timetable (weekday-aware, no live data).
-            board = syntheticTimetable.board(from.eva, departMillis, hours = 3)
+            board = syntheticTimetable.board(from.eva, departMillis, hours = ORIGIN_HOURS)
             synthetic = true
         }
         if (board.isEmpty() && offline) {
@@ -133,8 +145,7 @@ class JourneyPlanner(
                     // claiming no train goes there.
                     offline -> UserMessages.TIMETABLE_UNREACHABLE
                     departures.isEmpty() -> "No timetable data for ${from.name} at that time."
-                    else -> "No plannable trains from ${from.name} towards ${to.name} " +
-                        "found around that time."
+                    else -> UserMessages.noConnection(from.name, to.name)
                 },
             )
         }
@@ -234,6 +245,9 @@ class JourneyPlanner(
 
     companion object {
         const val MAX_DIRECT = 3
+
+        /** Hours of the origin's board that are searched for departures. */
+        const val ORIGIN_HOURS = 3
 
         /** Feeders considered; the attempt budget below limits network work. */
         const val MAX_TRANSFER_SCAN = 15

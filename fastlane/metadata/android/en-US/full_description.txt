@@ -5,8 +5,9 @@ BayesianBahn predicts when you will actually arrive — as a full
 probability distribution, not a single number.
 
 Enter where you start, where you want to go and when (also future trips):
-the app finds direct trains and one-transfer connections and shows for
-each option:
+the app searches direct trains and journeys with one change — routes
+needing two or more changes are not covered yet, so it will sometimes
+find fewer connections than DB's own apps. For each option it shows:
 
 * the median predicted arrival time at your destination,
 * an 80% credible interval,

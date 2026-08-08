@@ -24,4 +24,18 @@ object UserMessages {
     const val TIMETABLE_UNREACHABLE_NO_HISTORY =
         "Could not reach DB's live timetable, and no downloaded timetable covers " +
             "this station and time. Check your connection and try again."
+
+    /**
+     * The search only covers journeys with at most one change, so "nothing
+     * found" must not be reported as "no connection exists" — that is exactly
+     * the reading the old wording invited.
+     */
+    const val ONE_CHANGE_ONLY =
+        "Only direct journeys and journeys with one change are searched so far, " +
+            "so DB's own apps may still find a route with more changes."
+
+    /** Shown when the origin has departures but none of them lead anywhere useful. */
+    fun noConnection(from: String, to: String) =
+        "No direct or one-change connection from $from to $to found around that " +
+            "time. $ONE_CHANGE_ONLY"
 }

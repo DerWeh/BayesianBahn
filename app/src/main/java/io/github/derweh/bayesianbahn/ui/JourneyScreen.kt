@@ -242,7 +242,9 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     }
                     state.outcome.itineraries.forEach { ItineraryCard(it) }
                     Text(
-                        "Predicted from each train's real delay history; " +
+                        "Direct journeys and journeys with one change only — " +
+                            "routes with more changes are not searched yet. " +
+                            "Predicted from each train's real delay history; " +
                             "transfers use the first catchable connection.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -77,8 +77,33 @@ forecasts remain available behind the list icon.
   explicit holiday handling showed no benefit even across the April–June
   holidays. Parameters above are the backtest winners.
 
+## What the journey search does not do
+
+Current restrictions, all of them temporary and all of them things that make
+the app report *fewer* connections than DB does — never wrong ones:
+
+- **At most one change.** Journeys needing two or more changes are not
+  searched at all. "No connection found" therefore means "none with at most
+  one change", not "none exists".
+- **A three-hour window** from the requested departure at the origin, and four
+  hours at the transfer station.
+- **The transfer search is a heuristic**, not an exhaustive one: stations on a
+  train's route are ranked by distance to the destination and at most eight are
+  evaluated, because each one costs a live board request. Measured with
+  `tools/journey_bench.py` over 44 journeys that provably have a one-change
+  connection, it finds 98% of them; the misses are transfer stations that never
+  enter the candidate list.
+- **Predictions need history.** A connection can be found and still not be
+  shown when too few historical runs exist for the trains involved.
+
+Cross-check with DB's own apps before relying on any of it.
+
 ## Roadmap
 
+- Journeys with more than one change. The current board-scanning heuristic
+  cannot be extended to two changes without the number of live board requests
+  exploding; doing this properly means an exact timetable router (RAPTOR or the
+  Connection Scan Algorithm) over a real timetable feed such as GTFS.
 - Widen the data beyond the draft subset (trains calling at Augsburg Hbf /
   München Hbf) — the pipeline and the update mechanism already handle any
   station list.
