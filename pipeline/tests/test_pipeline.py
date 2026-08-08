@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import build_boards  # noqa: E402
 import build_recent  # noqa: E402
 import build_shards  # noqa: E402
+import fetch_raw_day  # noqa: E402
 
 # The schema of piebro/deutsche-bahn-data's monthly_processed_data files. Kept
 # here so a fixture cannot silently drift from the real input;
@@ -132,9 +133,13 @@ def mixed_dir(tmp_path: Path) -> Path:
     return data
 
 
-def _run(module, monkeypatch, data_dir: Path, out_dir: Path, *extra: str) -> None:
+def _run(module, monkeypatch, data_dir, out_dir: Path, *extra: str) -> None:
+    dirs = [data_dir] if isinstance(data_dir, (str, Path)) else data_dir
     monkeypatch.setattr(sys, "argv", [
-        module.__name__, "--data-dir", str(data_dir), "--out-dir", str(out_dir), *extra,
+        module.__name__,
+        "--data-dir", *[str(d) for d in dirs],
+        "--out-dir", str(out_dir),
+        *extra,
     ])
     module.main()
 
@@ -220,6 +225,56 @@ def test_boards_drop_rare_and_stale_entries(tmp_path, monkeypatch) -> None:
     out = tmp_path / "out"
     _run(build_boards, monkeypatch, data, out)
     assert {t[1] for t in _board(out, ULM)["trains"]} == {"4711"}
+
+
+def test_boards_reads_several_data_dirs(tmp_path, monkeypatch) -> None:
+    """The monthly archive and the daily cache are read where they lie."""
+    monthly, recent = tmp_path / "data", tmp_path / "recent-cache"
+    june = _days(dt.date(2026, 6, 25), 4)
+    _write(monthly / "data-2026-06.parquet", MONTHLY_SCHEMA, [
+        _stop(MONTHLY_SCHEMA, d, eva=ULM, station="Ulm Hbf", ttype="RE",
+              number="4711", line="9", minute=5) for d in june
+    ])
+    for day in _days(dt.date(2026, 7, 1), 3):
+        _write(recent / f"data-recent-{day:%Y-%m-%d}.parquet", RECENT_SCHEMA, [
+            _stop(RECENT_SCHEMA, day, eva=AUGSBURG, station="Augsburg Hbf",
+                  ttype="RB", number="5000", line="7", minute=30)
+        ])
+
+    out = tmp_path / "out"
+    _run(build_boards, monkeypatch, [monthly, recent], out)
+    assert _board(out, ULM)["trains"] and _board(out, AUGSBURG)["trains"]
+
+
+def test_boards_tolerate_an_empty_or_missing_cache(tmp_path, monkeypatch) -> None:
+    """Regression: the nightly job crashed with a bare `FileNotFoundError`.
+
+    A new monthly archive file supersedes everything in the daily cache, so the
+    cache is legitimately empty for a few days afterwards — which is precisely
+    when the monthly rebuild runs.
+    """
+    monthly, missing = tmp_path / "data", tmp_path / "recent-cache"
+    _write(monthly / "data-2026-06.parquet", MONTHLY_SCHEMA, [
+        _stop(MONTHLY_SCHEMA, d, eva=ULM, station="Ulm Hbf", ttype="RE",
+              number="4711", line="9", minute=5)
+        for d in _days(dt.date(2026, 6, 25), 4)
+    ])
+    assert not missing.exists()
+    _run(build_boards, monkeypatch, [monthly, missing], tmp_path / "out-missing")
+    assert _board(tmp_path / "out-missing", ULM)["trains"]
+
+    missing.mkdir()
+    _run(build_boards, monkeypatch, [monthly, missing], tmp_path / "out-empty")
+    assert _board(tmp_path / "out-empty", ULM)["trains"]
+
+
+def test_boards_refuse_to_run_on_no_data(tmp_path, monkeypatch) -> None:
+    """Every directory empty is a broken job, not an empty board set."""
+    empty = tmp_path / "nothing"
+    empty.mkdir()
+    with pytest.raises(SystemExit) as excinfo:
+        _run(build_boards, monkeypatch, [empty], tmp_path / "out")
+    assert "nothing" in str(excinfo.value)
 
 
 def test_shards_reads_monthly_and_recent_together(mixed_dir, tmp_path, monkeypatch) -> None:
@@ -330,6 +385,168 @@ def test_recent_marks_cancellations(tmp_path: Path) -> None:
     assert build_recent.process_day(sorted(raw.glob("hour_*.parquet")), None).row(0, named=True)[
         "is_canceled"
     ] is True
+
+
+# Real listings from the archive, before and after it changed naming mid-day on
+# 2026-07-26. The old workflow asked for four fixed names and got 404 for each.
+LEGACY_LISTING = [
+    "hour_00_01_02_03_04_05.parquet",
+    "hour_06_07_08_09_10_11.parquet",
+    "hour_12_13_14_15_16_17.parquet",
+    "hour_18_19_20_21_22_23.parquet",
+]
+CURRENT_LISTING = [
+    "date_2026-08-07_hour_00_01_02_03_04_05.parquet",
+    "date_2026-08-07_hour_06_07_08_09.parquet",
+    "date_2026-08-07_hour_10_11_12_13_14.parquet",
+    "date_2026-08-07_hour_15_16_17_18_19_20.parquet",
+    "date_2026-08-07_hour_21_22_23.parquet",
+    "date_2026-08-08_hour_00_01.parquet",  # belongs to the next day
+]
+
+
+def test_select_files_current_layout() -> None:
+    """Take this day's files, leave the next day's, take the spill-over from
+    the previous partition — a day's 00-02 hours are published there."""
+    day = dt.date(2026, 8, 7)
+    listings = {
+        day - dt.timedelta(days=1): [
+            "date_2026-08-06_hour_21_22_23.parquet",
+            "date_2026-08-07_hour_00_01_02.parquet",
+        ],
+        day: CURRENT_LISTING,
+    }
+    chosen = fetch_raw_day.select_files(day, listings)
+    assert [name for _, name in chosen] == [
+        "date_2026-08-07_hour_00_01_02.parquet",
+        "date_2026-08-07_hour_00_01_02_03_04_05.parquet",
+        "date_2026-08-07_hour_06_07_08_09.parquet",
+        "date_2026-08-07_hour_10_11_12_13_14.parquet",
+        "date_2026-08-07_hour_15_16_17_18_19_20.parquet",
+        "date_2026-08-07_hour_21_22_23.parquet",
+    ]
+    # The spill-over is fetched from the previous day's partition, not this one.
+    assert dict(chosen)  # names unique across partitions
+    assert next(p for p, n in chosen if n.endswith("hour_00_01_02.parquet")) == (
+        day - dt.timedelta(days=1)
+    )
+
+
+def test_select_files_legacy_layout() -> None:
+    """Days published before the rename must still be fetchable."""
+    day = dt.date(2026, 7, 15)
+    chosen = fetch_raw_day.select_files(day, {day: LEGACY_LISTING})
+    assert [name for _, name in chosen] == LEGACY_LISTING
+    assert {part for part, _ in chosen} == {day}
+
+
+def test_select_files_partial_legacy_day() -> None:
+    day = dt.date(2026, 7, 19)
+    chosen = fetch_raw_day.select_files(day, {day: LEGACY_LISTING[1:]})
+    assert [name for _, name in chosen] == LEGACY_LISTING[1:]
+
+
+def test_hours_covered_spans_both_layouts() -> None:
+    assert fetch_raw_day.hours_covered(LEGACY_LISTING) == set(range(24))
+    # The current layout needs the previous partition's spill-over to be whole:
+    # a day's own partition starts at hour 03.
+    own = [
+        "date_2026-07-28_hour_03_04_05_06_07_08_09_10.parquet",
+        "date_2026-07-28_hour_11_12_13_14_15.parquet",
+        "date_2026-07-28_hour_16_17_18_19_20.parquet",
+        "date_2026-07-28_hour_21_22_23.parquet",
+    ]
+    assert fetch_raw_day.hours_covered(own) == set(range(3, 24))
+    spill = ["date_2026-07-28_hour_00_01_02.parquet"]
+    assert fetch_raw_day.hours_covered(own + spill) == set(range(24))
+
+
+def test_fetch_raw_day_waits_for_a_partly_published_day(tmp_path, monkeypatch) -> None:
+    """A day is condensed once and cached forever, so half a day must not be
+    fetched — it would silently bias every prediction that uses it."""
+    day = dt.date(2026, 7, 19)
+    monkeypatch.setattr(
+        fetch_raw_day, "list_partition",
+        lambda d: LEGACY_LISTING[1:] if d == day else [],
+    )
+    monkeypatch.setattr(fetch_raw_day, "_get", lambda *a, **k: pytest.fail("must not download"))
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", day.isoformat(), "--out-dir", str(tmp_path / "raw"),
+    ])
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_raw_day.main()
+    assert excinfo.value.code == fetch_raw_day.NOT_PUBLISHED
+
+
+def test_select_files_reports_an_unknown_layout() -> None:
+    """The next rename must surface as a red job, not as a silently skipped day."""
+    day = dt.date(2026, 9, 1)
+    assert fetch_raw_day.select_files(day, {day: ["chunk-0.parquet", "chunk-1.parquet"]}) == []
+
+
+def test_fetch_raw_day_exits_2_when_unpublished(tmp_path, monkeypatch) -> None:
+    """Distinguishing "not yet" from "changed shape" is the whole point."""
+    monkeypatch.setattr(fetch_raw_day, "list_partition", lambda day: [])
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", "2026-08-07", "--out-dir", str(tmp_path / "raw"),
+    ])
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_raw_day.main()
+    assert excinfo.value.code == fetch_raw_day.NOT_PUBLISHED
+
+
+def test_fetch_raw_day_fails_loudly_on_unknown_layout(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(fetch_raw_day, "list_partition", lambda day: ["chunk-0.parquet"])
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", "2026-08-07", "--out-dir", str(tmp_path / "raw"),
+    ])
+    with pytest.raises(SystemExit) as excinfo:
+        fetch_raw_day.main()
+    assert excinfo.value.code != 0
+    assert excinfo.value.code != fetch_raw_day.NOT_PUBLISHED
+    assert "naming changed" in str(excinfo.value)
+
+
+def test_fetch_raw_day_downloads_under_upstream_names(tmp_path, monkeypatch) -> None:
+    day = dt.date(2026, 8, 7)
+    monkeypatch.setattr(
+        fetch_raw_day, "list_partition",
+        lambda d: CURRENT_LISTING if d == day else [],
+    )
+    fetched: list[str] = []
+
+    def fake_get(url: str, tries: int = 3) -> bytes:
+        fetched.append(url)
+        return b"payload"
+
+    monkeypatch.setattr(fetch_raw_day, "_get", fake_get)
+    out = tmp_path / "raw"
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", day.isoformat(), "--out-dir", str(out),
+    ])
+    fetch_raw_day.main()
+
+    names = sorted(f.name for f in out.glob("*.parquet"))
+    assert names == sorted(n for n in CURRENT_LISTING if "2026-08-07" in n)
+    # Unpadded month/day in the partition path, as the archive publishes it.
+    assert all("year=2026/month=8/day=7/" in url for url in fetched)
+
+
+def test_recent_reads_date_prefixed_files(tmp_path, monkeypatch) -> None:
+    """build_recent must accept whatever fetch_raw_day.py saved, under any name."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    _hour_file(raw / "date_2026-07-06_hour_10_11_12.parquet", [
+        ("timetables/v1/plan", f"https://x/timetables/v1/plan/0{ULM}/260706/12",
+         _plan_xml("Ulm Hbf", "4711-2607061200-3", "2607061205", "2607061207")),
+    ])
+    out = tmp_path / "day.parquet"
+    monkeypatch.setattr(sys, "argv", [
+        "build_recent.py", "--date", "2026-07-06",
+        "--raw-dir", str(raw), "--out", str(out),
+    ])
+    build_recent.main()
+    assert pl.read_parquet(out).height == 1
 
 
 def test_recent_station_filter_keeps_the_whole_run(tmp_path: Path) -> None:

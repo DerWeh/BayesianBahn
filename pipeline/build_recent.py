@@ -13,7 +13,12 @@ the position on the route — exactly what the previous-stop feature needs.
 A stop with no `fchg` entry counts as on time (change = planned), matching
 the monthly files' semantics.
 
+Fetch the inputs with `pipeline/fetch_raw_day.py`, which knows where a day's
+files live and what they are called; this script reads every *.parquet in the
+directory it is given.
+
 Usage:
+    python pipeline/fetch_raw_day.py --date 2026-07-17 --out-dir RAW_DIR
     python pipeline/build_recent.py --date 2026-07-17 \
         --raw-dir RAW_DIR --out FILE.parquet [--stations 8000013,8000261]
 """
@@ -167,9 +172,12 @@ def main() -> None:
     ap.add_argument("--stations", help="comma-separated EVA numbers; keep only runs calling there")
     args = ap.parse_args()
 
-    files = sorted(args.raw_dir.glob("hour_*.parquet"))
+    # Any name: upstream has published these as both `hour_*.parquet` and
+    # `date_<day>_hour_*.parquet`, and fetch_raw_day.py keeps the upstream name.
+    # Lexicographic order stays chronological either way (zero-padded hours).
+    files = sorted(args.raw_dir.glob("*.parquet"))
     if not files:
-        raise SystemExit(f"no hour_*.parquet files in {args.raw_dir}")
+        raise SystemExit(f"no *.parquet files in {args.raw_dir}")
     evas = args.stations.split(",") if args.stations else None
     df = process_day(files, evas)
     args.out.parent.mkdir(parents=True, exist_ok=True)

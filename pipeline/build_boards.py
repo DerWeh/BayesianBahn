@@ -13,7 +13,13 @@ weekdayMask bit i = ran on ISO weekday i+1 (bit 0 = Monday) within the
 lookback window. Entries seen fewer than MIN_RUNS times are dropped.
 
 Usage:
-    python pipeline/build_boards.py --data-dir DATA_DIR --out-dir OUT_DIR
+    python pipeline/build_boards.py --data-dir DIR [DIR ...] --out-dir OUT_DIR
+
+Several --data-dir arguments are accepted so the monthly archive and the daily
+cache can be read where they lie. They used to be collected into one directory
+with `ln -sf .../data-recent-*.parquet`, which on an empty cache created a
+symlink literally named `data-recent-*.parquet` pointing nowhere — and polars
+reported that as a bare `FileNotFoundError` with no path in it.
 """
 
 from __future__ import annotations
@@ -41,13 +47,21 @@ TIME_UNIT = pl.Datetime("us")
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", type=Path, required=True)
+    ap.add_argument("--data-dir", type=Path, nargs="+", required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     args = ap.parse_args()
 
-    files = sorted(args.data_dir.glob("data-*.parquet"))
+    # A missing directory is normal — the daily cache does not exist on a fresh
+    # runner, and is empty for a few days after a new monthly file supersedes
+    # everything in it. Having no data at all anywhere is not normal.
+    files = sorted(
+        (f for d in args.data_dir for f in d.glob("data-*.parquet")),
+        key=lambda f: f.name,
+    )
     if not files:
-        raise SystemExit(f"no data-*.parquet files in {args.data_dir}")
+        raise SystemExit(
+            "no data-*.parquet files in " + ", ".join(str(d) for d in args.data_dir)
+        )
 
     lf = pl.concat([
         pl.scan_parquet(f).select(

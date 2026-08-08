@@ -85,17 +85,16 @@ jobs:
           while [ "$day" \< "$yesterday" ] || [ "$day" = "$yesterday" ]; do
             out="pipeline/recent-cache/data-recent-$day.parquet"
             if [ ! -f "$out" ]; then
-              y=$(date -d "$day" +%Y); m=$(date -d "$day" +%-m); dd=$(date -d "$day" +%-d)
-              mkdir -p raw && ok=1
-              for h in 00_01_02_03_04_05 06_07_08_09_10_11 12_13_14_15_16_17 18_19_20_21_22_23; do
-                url="$HF/raw_data/year%3D$y/month%3D$m/day%3D$dd/hour_$h.parquet"
-                curl -fsSL --retry 3 -o "raw/hour_$h.parquet" "$url" || { ok=0; break; }
-              done
-              if [ "$ok" = 1 ]; then
-                python pipeline/build_recent.py --date "$day" --raw-dir raw --out "$out"
-              else
-                echo "skipping $day (raw files not fully published)"
-              fi
+              # fetch_raw_day.py discovers the day's files instead of guessing
+              # their names: exit 2 means "not published yet", anything else
+              # means the archive changed shape and must not be shrugged off.
+              rc=0
+              python pipeline/fetch_raw_day.py --date "$day" --out-dir raw || rc=$?
+              case "$rc" in
+                0) python pipeline/build_recent.py --date "$day" --raw-dir raw --out "$out" ;;
+                2) echo "skipping $day (not published yet)" ;;
+                *) exit "$rc" ;;
+              esac
               rm -rf raw
             fi
             day=$(date -d "$day +1 day" +%Y-%m-%d)
@@ -150,11 +149,12 @@ jobs:
           python pipeline/build_shards.py \
             --data-dir pipeline/data --out-dir pipeline/output-wide --buckets 16
           # Synthetic per-station boards (planning beyond IRIS's horizon),
-          # from the freshest ~6 weeks of monthly + recent data.
-          mkdir -p boards-data
-          ln -sf "$PWD"/pipeline/data/data-*.parquet boards-data/
-          ln -sf "$PWD"/pipeline/recent-cache/data-recent-*.parquet boards-data/ 2>/dev/null || true
-          python pipeline/build_boards.py --data-dir boards-data --out-dir pipeline/output-wide
+          # from the freshest ~6 weeks of monthly + recent data. Both dirs are
+          # passed directly: collecting them via `ln -sf` broke whenever the
+          # recent cache was empty, because the unexpanded glob became a
+          # dangling symlink.
+          python pipeline/build_boards.py \
+            --data-dir pipeline/data pipeline/recent-cache --out-dir pipeline/output-wide
           cp -r pipeline/output-wide/boards pipeline/output-wide/shards/boards
           echo "BASE_REBUILT=1" >> "$GITHUB_ENV"
 
