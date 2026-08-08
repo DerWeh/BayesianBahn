@@ -51,13 +51,21 @@ class ConnectionPlanner(
         val destinationName = stationRepository.search(destinationQuery).firstOrNull()?.name
             ?: destinationQuery.trim()
 
+        // As in JourneyPlanner: fall through to the historical timetable rather
+        // than failing, so a connection can still be evaluated without a
+        // network — blind to live delays, but evaluated.
+        var offline = false
         var board = try {
             irisClient.board(transfer.eva, hours = 4, startMillis = boardStartMillis)
         } catch (e: Exception) {
-            return Outcome.Error(e.message ?: "network error")
+            offline = true
+            emptyList()
         }
         if (board.isEmpty() && syntheticTimetable != null && boardStartMillis != null) {
             board = syntheticTimetable.board(transfer.eva, boardStartMillis, hours = 4)
+        }
+        if (board.isEmpty() && offline) {
+            return Outcome.Error(UserMessages.TIMETABLE_UNREACHABLE)
         }
 
         // The feeder's own stop at the transfer station.
@@ -137,7 +145,7 @@ class ConnectionPlanner(
 
         val history = historyRepository.load(stop.label.category, stop.label.number, stop.label.line)
         val transferHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
-            sh.eva == transfer.eva || name.equals(transfer.name, ignoreCase = true)
+            sh.eva == transfer.eva || StationNames.matches(name, transfer.name)
         }?.value
         val destinationHistory = history?.stations?.entries?.firstOrNull { (name, _) ->
             matches(name, destinationName)
@@ -193,8 +201,7 @@ class ConnectionPlanner(
         const val MIN_JOINT_RUNS = 5
 
         private fun matches(pathStation: String, destination: String): Boolean =
-            pathStation.equals(destination, ignoreCase = true) ||
-                pathStation.contains(destination, ignoreCase = true)
+            StationNames.matches(pathStation, destination)
 
         /** Absolute planned arrival: departure date + arrival time of day (may wrap midnight). */
         fun arrivalMillis(plannedDepMillis: Long, arrivalHhmm: String): Long? {

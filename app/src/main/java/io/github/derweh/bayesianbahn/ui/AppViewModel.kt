@@ -15,6 +15,7 @@ import io.github.derweh.bayesianbahn.data.Forecast
 import io.github.derweh.bayesianbahn.data.JourneyPlanner
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.Station
+import io.github.derweh.bayesianbahn.data.UserMessages
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -135,7 +136,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             boardState = try {
                 BoardState.Loaded(container.irisClient.board(station.eva, hours = 3))
             } catch (e: Exception) {
-                BoardState.Error(e.message ?: "network error")
+                BoardState.Error(UserMessages.TIMETABLE_UNREACHABLE)
             }
         }
     }

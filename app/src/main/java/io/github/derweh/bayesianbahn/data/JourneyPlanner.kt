@@ -54,6 +54,8 @@ class JourneyPlanner(
             val to: Station,
             /** True when planned from the historical timetable, not IRIS. */
             val synthetic: Boolean = false,
+            /** True when IRIS was unreachable, so nothing here reflects live data. */
+            val offline: Boolean = false,
         ) : Outcome
     }
 
@@ -70,10 +72,15 @@ class JourneyPlanner(
             ?: return Outcome.Error("Station \"$toQuery\" not found.")
         if (from.eva == to.eva) return Outcome.Error("Origin and destination are the same.")
 
+        // A dead connection costs live delays, not the whole search: the
+        // downloaded history is a timetable in its own right, and the same
+        // fallback that covers dates beyond IRIS's horizon covers this too.
+        var offline = false
         var board = try {
             irisClient.board(from.eva, hours = 3, startMillis = departMillis)
         } catch (e: Exception) {
-            return Outcome.Error(e.message ?: "network error")
+            offline = true
+            emptyList()
         }
         var synthetic = false
         if (board.isEmpty() && syntheticTimetable != null) {
@@ -81,6 +88,9 @@ class JourneyPlanner(
             // the historical timetable (weekday-aware, no live data).
             board = syntheticTimetable.board(from.eva, departMillis, hours = 3)
             synthetic = true
+        }
+        if (board.isEmpty() && offline) {
+            return Outcome.Error(UserMessages.TIMETABLE_UNREACHABLE_NO_HISTORY)
         }
 
         val departures = board
@@ -115,10 +125,13 @@ class JourneyPlanner(
         }
         if (itineraries.isEmpty()) {
             return Outcome.Error(
-                if (departures.isEmpty()) {
-                    "No timetable data for ${from.name} at that time."
-                } else {
-                    "No plannable trains from ${from.name} towards ${to.name} " +
+                when {
+                    // Transfers need the transfer station's board, so offline
+                    // only direct trains can be planned. Say that rather than
+                    // claiming no train goes there.
+                    offline -> UserMessages.TIMETABLE_UNREACHABLE
+                    departures.isEmpty() -> "No timetable data for ${from.name} at that time."
+                    else -> "No plannable trains from ${from.name} towards ${to.name} " +
                         "found around that time."
                 },
             )
@@ -128,6 +141,7 @@ class JourneyPlanner(
             from,
             to,
             synthetic = synthetic,
+            offline = offline,
         )
     }
 
@@ -230,10 +244,8 @@ class JourneyPlanner(
         /** Skip pure village halts; real junctions can be small (Buchloe: 167). */
         const val MIN_TRANSFER_WEIGHT = 40
 
-        /** Route entries sometimes differ in suffixes ("Hbf") — match loosely. */
+        /** IRIS route entries spell stations differently — see [StationNames]. */
         fun pathMatches(pathStation: String, destination: String): Boolean =
-            pathStation.equals(destination, ignoreCase = true) ||
-                pathStation.contains(destination, ignoreCase = true) ||
-                destination.contains(pathStation, ignoreCase = true)
+            StationNames.matches(pathStation, destination)
     }
 }

@@ -223,9 +223,14 @@ fun JourneyScreen(viewModel: AppViewModel) {
                                 .atZone(ZONE).toLocalDate() >= change
                         } == true
                         Text(
-                            "Planned from the historical timetable — DB publishes " +
-                                "live plans only about a day ahead. Times may shift; " +
-                                "check again closer to departure." +
+                            "Planned from the historical timetable — " +
+                                if (state.outcome.offline) {
+                                    "DB's live timetable could not be reached, so these " +
+                                        "times carry no live delays."
+                                } else {
+                                    "DB publishes live plans only about a day ahead."
+                                } +
+                                " Times may shift; check again closer to departure." +
                                 if (crossesChange) {
                                     " Your date lies beyond the timetable change on " +
                                         change.format(DateTimeFormatter.ofPattern("dd.MM.")) +

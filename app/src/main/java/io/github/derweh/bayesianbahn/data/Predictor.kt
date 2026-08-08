@@ -48,7 +48,7 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         today: LocalDate = LocalDate.now(ZONE),
     ): Forecast {
         val stationHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
-            sh.eva == stationEva || name.equals(stationName, ignoreCase = true)
+            sh.eva == stationEva || StationNames.matches(name, stationName)
         }?.value
 
         if (stationHistory != null) {

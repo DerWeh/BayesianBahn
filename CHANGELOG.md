@@ -5,6 +5,18 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [Unreleased]
+
+### Fixed
+- Journeys to stations whose name carries a designation ("Türkheim (Bay)
+  Bahnhof") reported "No plannable trains found" even for routes served every
+  hour. The station list, IRIS routes and the delay history spell such names
+  three different ways, and they are now compared as station names rather than
+  as raw strings.
+- Losing the network no longer ends a search with a raw socket error. The
+  downloaded history is a timetable in its own right, so the search falls back
+  to it and says that the times carry no live delays.
+
 ## [0.1.1] - 2026-07-19
 
 ### Added

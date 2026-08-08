@@ -1,0 +1,54 @@
+# The app's unit tests existed but nothing ran them — the station-name bug that
+# made "No plannable trains found" appear for a route served every hour reached
+# a release that way. Run them on every change to the app.
+#
+# The E2E tests (SmokeE2E, NavigatorCompareE2E) stay opt-in behind $E2E: they
+# need the live IRIS API, and CI should not depend on DB being up, nor add load
+# to a keyless public endpoint.
+name: App tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - app/**
+      - gradle/**
+      - build.gradle.kts
+      - settings.gradle.kts
+      - gradle.properties
+      - .github/workflows/app-tests.yml
+  pull_request:
+    paths:
+      - app/**
+      - gradle/**
+      - build.gradle.kts
+      - settings.gradle.kts
+      - gradle.properties
+      - .github/workflows/app-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The Android SDK is preinstalled on the runner; only the JDK and the
+      # Gradle cache need setting up.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
