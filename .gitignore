@@ -17,6 +17,9 @@ pipeline/output/
 __pycache__/
 .pytest_cache/
 
+# Benchmark's IRIS document cache
+tools/.iris-cache/
+
 # Release signing — never commit
 keystore.properties
 *.jks

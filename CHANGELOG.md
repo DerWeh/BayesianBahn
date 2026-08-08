@@ -14,6 +14,9 @@ fixes; expect breaking changes between minors until 1.0).
   Türkheim (Bay) that meant Stuttgart Hbf, 130 km the wrong way, and the
   change at Memmingen that works was reached only on the fourth of six
   attempts. The bundled station list now carries coordinates for this.
+- The journey search tries up to 8 transfer stations instead of 6. Measured
+  over 44 journeys that provably have a one-transfer connection, 6 attempts
+  find 93% of them and 8 find 98%, with no further gain up to 12.
 
 ### Fixed
 - Journeys to stations whose name differs between data sources ("Türkheim (Bay)

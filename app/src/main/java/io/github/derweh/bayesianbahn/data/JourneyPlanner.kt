@@ -239,8 +239,25 @@ class JourneyPlanner(
         const val MAX_TRANSFER_SCAN = 15
         const val MAX_TRANSFER_RESULTS = 3
 
-        /** Cap on connection evaluations (each fetches a transfer board). */
-        const val MAX_TRANSFER_ATTEMPTS = 6
+        /**
+         * Cap on connection evaluations (each fetches a transfer board, which
+         * is five IRIS requests).
+         *
+         * Measured with `tools/journey_bench.py` over 44 journeys that provably
+         * have a one-transfer connection: 84% of them are found within 4
+         * attempts, 93% within 6, 98% within 8 — and nothing more up to 12. The
+         * remaining case fails for a different reason (its transfer station
+         * never enters the candidate list), so more budget cannot reach it.
+         * Eight is where the curve flattens; it costs on average one extra
+         * board fetch per search over six.
+         */
+        const val MAX_TRANSFER_ATTEMPTS = 8
+
+        /**
+         * Two per feeder beat one (98% vs 95% found) and three (95%, and slower
+         * to the first result): a third candidate is usually a worse station on
+         * a route already shown not to work.
+         */
         const val TRANSFERS_PER_FEEDER = 2
         const val MAX_RESULTS = 5
 
