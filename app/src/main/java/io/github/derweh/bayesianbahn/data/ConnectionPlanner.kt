@@ -47,7 +47,11 @@ class ConnectionPlanner(
         boardStartMillis: Long? = null,
         today: LocalDate = LocalDate.now(ZONE),
     ): Outcome {
-        val transfer = stationRepository.search(transferQuery).firstOrNull()
+        // The transfer is usually named by IRIS (the chips on the connection
+        // screen come straight from a train's route), so resolve it as a route
+        // entry first and only then as free text the user typed.
+        val transfer = routeStations.station(transferQuery)
+            ?: stationRepository.search(transferQuery).firstOrNull()
             ?: return Outcome.Error("Transfer station \"$transferQuery\" not found.")
         val destination = stationRepository.search(destinationQuery).firstOrNull()
         val destinationName = destination?.name ?: destinationQuery.trim()

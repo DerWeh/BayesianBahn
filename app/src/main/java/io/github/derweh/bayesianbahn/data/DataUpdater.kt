@@ -13,6 +13,30 @@ import java.io.File
 import java.io.IOException
 import java.util.zip.ZipInputStream
 
+/**
+ * Runs [block], retrying an [IOException] up to [attempts] times.
+ *
+ * Separate and internal so the retry semantics can be tested without an
+ * Android context; [sleep] is injectable for the same reason.
+ */
+internal fun <T> retryingIo(
+    attempts: Int,
+    sleepMillis: Long = 400,
+    sleep: (Long) -> Unit = { Thread.sleep(it) },
+    block: () -> T,
+): T {
+    var last: IOException? = null
+    for (attempt in 1..attempts) {
+        try {
+            return block()
+        } catch (e: IOException) {
+            last = e
+            if (attempt < attempts) sleep(sleepMillis * attempt)
+        }
+    }
+    throw last ?: IOException("no attempt was made")
+}
+
 /** Provenance of the delay-history data currently in use. */
 data class DataMeta(
     /** Build date of the monthly base data. */
@@ -64,7 +88,17 @@ class DataUpdater(
         }
     }
 
-    private fun downloadZip(asset: String, target: File) {
+    /**
+     * A 15 MB body over HTTP/2 gets its stream reset often enough that a single
+     * failed tap ("stream was reset: REFUSED_STREAM") looked like a broken
+     * updater — tapping again worked. OkHttp does not retry a reset that
+     * happens while the body is being read, so do it here rather than leaving
+     * it to the user.
+     */
+    private fun downloadZip(asset: String, target: File) =
+        retryingIo(DOWNLOAD_ATTEMPTS) { downloadZipOnce(asset, target) }
+
+    private fun downloadZipOnce(asset: String, target: File) {
         val tmp = File(context.filesDir, "$asset.tmp")
         tmp.deleteRecursively()
         tmp.mkdirs()
@@ -98,6 +132,8 @@ class DataUpdater(
         /** The `update-data` workflow keeps these three assets current. */
         const val RELEASE_URL =
             "https://github.com/DerWeh/BayesianBahn/releases/download/data/"
+        /** Tries for a zip download; a reset stream is a transient failure. */
+        const val DOWNLOAD_ATTEMPTS = 3
         const val HISTORY_DIR = "history"
         const val RECENT_DIR = "recent"
         const val META_FILE = "meta.json"

@@ -37,21 +37,13 @@ data class Station(
  * Offline station search over the bundled `stations.csv` asset
  * (derived from DB's CC BY 4.0 station dataset, sorted by importance).
  */
-class StationRepository(private val context: Context) {
+class StationRepository private constructor(loader: () -> List<Station>) {
 
-    private val stations: List<Station> by lazy {
-        context.assets.open("stations.csv").bufferedReader().readLines().mapNotNull { line ->
-            val parts = line.split(';')
-            if (parts.size < 3) return@mapNotNull null
-            Station(
-                eva = parts[0],
-                name = parts[1],
-                weight = parts[2].toIntOrNull() ?: 0,
-                lat = parts.getOrNull(3)?.toDoubleOrNull(),
-                lon = parts.getOrNull(4)?.toDoubleOrNull(),
-            )
-        }
-    }
+    constructor(context: Context) : this({
+        parse(context.assets.open("stations.csv").bufferedReader().readLines())
+    })
+
+    private val stations: List<Station> by lazy(loader)
 
     /**
      * Name lookup for stations named in an IRIS route.
@@ -80,6 +72,23 @@ class StationRepository(private val context: Context) {
             .sortedByDescending { (if (normalize(it.name).startsWith(q)) 1_000_000 else 0) + it.weight }
             .take(limit)
             .toList()
+    }
+
+    companion object {
+        /** A repository over an explicit list, for tests and tools. */
+        fun of(stations: List<Station>) = StationRepository { stations }
+
+        internal fun parse(lines: List<String>): List<Station> = lines.mapNotNull { line ->
+            val parts = line.split(';')
+            if (parts.size < 3) return@mapNotNull null
+            Station(
+                eva = parts[0],
+                name = parts[1],
+                weight = parts[2].toIntOrNull() ?: 0,
+                lat = parts.getOrNull(3)?.toDoubleOrNull(),
+                lon = parts.getOrNull(4)?.toDoubleOrNull(),
+            )
+        }
     }
 
     private fun normalize(s: String): String = s.lowercase()

@@ -202,10 +202,28 @@ fun JourneyScreen(viewModel: AppViewModel) {
 
             when (val state = viewModel.journeyState) {
                 JourneyState.Idle -> {}
-                JourneyState.Loading -> Box(
+                // A future date is planned from the downloaded history, which
+                // means fetching a shard per train — minutes on a slow device.
+                // A bare spinner for that long is indistinguishable from a hang,
+                // so say what is happening and roughly how long it takes.
+                JourneyState.Loading -> Column(
                     Modifier.fillMaxWidth().padding(24.dp),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator()
+                    Text(
+                        if (beyondLivePlan(epochDay)) {
+                            "Planning from the downloaded timetable — DB publishes " +
+                                "live plans only about a day ahead. This can take a " +
+                                "few minutes for dates further out."
+                        } else {
+                            "Searching connections…"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 is JourneyState.Error -> Text(
                     state.message,
                     color = MaterialTheme.colorScheme.error,
@@ -256,6 +274,13 @@ fun JourneyScreen(viewModel: AppViewModel) {
 }
 
 /** Picked time + date → epoch millis; null hour means now, null day today. */
+/**
+ * True when the requested date is past IRIS's ~1-day plan horizon, so the
+ * search falls back to the historical timetable and takes much longer.
+ */
+internal fun beyondLivePlan(epochDay: Long?, today: LocalDate = LocalDate.now(ZONE)): Boolean =
+    epochDay != null && epochDay > today.toEpochDay() + 1
+
 internal fun departMillis(hour: Int?, minute: Int?, epochDay: Long?): Long {
     val today = LocalDate.now(ZONE)
     val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today

@@ -30,6 +30,16 @@ fixes; expect breaking changes between minors until 1.0).
   now identified by their EVA number, asking DB which name it uses, instead of
   by comparing spellings. On a sample of 100 stations, about one in five is
   spelled too differently for any string comparison to match.
+- "Plan a connection from this train" no longer dead-ends with `Transfer
+  station "..." not found.` The transfer stations it offers are named by DB's
+  route data ("Frankfurt(M) Flughafen Regionalbf") while the station list
+  spells them out ("Frankfurt (Main) Flughafen Regionalbahnhof"); they are now
+  matched by station number.
+- Refreshing the delay history retries a reset connection instead of showing an
+  error. A 15 MB download hit by an HTTP/2 stream reset used to fail the tap,
+  and worked when tapped again.
+- Searching a date more than a day ahead says what it is doing and that it can
+  take a few minutes, instead of showing a bare spinner that looks like a hang.
 - Losing the network no longer ends a search with a raw socket error. The
   downloaded history is a timetable in its own right, so the search falls back
   to it and says that the times carry no live delays.

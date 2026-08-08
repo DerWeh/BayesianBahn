@@ -53,6 +53,26 @@ class RouteStationMatcher(
      * differently to match locally ("Ostkreuz" vs "Berlin Ostkreuz"), and for a
      * route made only of those the alternative is finding no transfer at all.
      */
+    /**
+     * The station an IRIS route entry names.
+     *
+     * The bundled list is tried first because it costs nothing, and IRIS is
+     * asked only when that fails — which it does for names like
+     * "Frankfurt(M) Flughafen Regionalbf", spelled "Frankfurt (Main) Flughafen
+     * Regionalbahnhof" in the station list. No string rule bridges that pair
+     * ("M"/"Main", "Regionalbf"/"Regionalbahnhof"), so offering such a station
+     * as a transfer and then failing to find it was unavoidable without asking
+     * IRIS which station it means.
+     */
+    suspend fun station(routeName: String): Station? {
+        val repository = stationRepository ?: return null
+        repository.byName(routeName)?.let { return it }
+        val eva = evas.getOrPut(routeName) {
+            runCatching { irisClient.stationEva(routeName) }.getOrNull() ?: UNRESOLVED
+        }
+        return eva.takeIf { it != UNRESOLVED }?.let { repository.byEva(it) }
+    }
+
     suspend fun stationsOn(path: List<String>): List<Station> {
         val repository = stationRepository ?: return emptyList()
         val local = path.mapNotNull { repository.byName(it) }
