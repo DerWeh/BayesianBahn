@@ -3,7 +3,7 @@ AntiFeatures:
     en-US: Fetches timetable data from Deutsche Bahn's IRIS service and delay history
       hosted on GitHub.
 Categories:
-  - Navigation
+  - Public Transport
 License: MIT
 AuthorName: DerWeh
 SourceCode: https://github.com/DerWeh/BayesianBahn

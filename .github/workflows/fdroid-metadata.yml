@@ -16,11 +16,13 @@ on:
     paths:
       - fdroid/**
       - tools/fdroid-check.sh
+      - app/build.gradle.kts # the metadata restates versionName/versionCode
       - .github/workflows/fdroid-metadata.yml
   pull_request:
     paths:
       - fdroid/**
       - tools/fdroid-check.sh
+      - app/build.gradle.kts
       - .github/workflows/fdroid-metadata.yml
   schedule:
     - cron: "17 5 * * 1"
@@ -43,9 +45,20 @@ jobs:
           apt-get install -qy --no-install-recommends \
             fdroidserver apksigner git curl ca-certificates
 
+      # fetch-depth: 0 for the tags — the check verifies that the commit pinned
+      # in the metadata is the one the release tag points at.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The checker has silently stopped checking before, so prove it still
+      # rejects each way the metadata has broken in the past.
+      - name: Self-test the checker
+        env:
+          FDROID_SYSTEM_DEPS: "1"
+        run: tools/fdroid-check.sh --self-test
 
       - name: Run fdroiddata's metadata checks
         env:
           FDROID_SYSTEM_DEPS: "1"
-        run: tools/fdroid-check.sh --checkupdates
+        run: tools/fdroid-check.sh --checkupdates --fork

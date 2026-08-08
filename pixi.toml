@@ -8,6 +8,8 @@ version = "0.1.0"
 [tasks]
 # Reproduces fdroiddata's merge-request pipeline for our metadata file.
 fdroid-check = "tools/fdroid-check.sh"
+# Asserts that check still rejects every way the metadata has broken before.
+fdroid-self-test = "tools/fdroid-check.sh --self-test"
 
 [dependencies]
 gradle = ">=8.10,<9"
