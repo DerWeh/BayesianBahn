@@ -5,7 +5,7 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
-## [Unreleased]
+## [0.1.2] - 2026-08-10
 
 ### Changed
 - The journey search picks transfer stations by how close they are to the

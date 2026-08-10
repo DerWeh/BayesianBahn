@@ -38,6 +38,9 @@ class RouteStationMatcherTest {
 
     private var requests = mutableListOf<String>()
 
+    /** Only the destination matters here; the list is needed for construction. */
+    private val stations = StationRepository.of(listOf(turkheim))
+
     private fun client(body: String?, fail: Boolean = false): IrisClient {
         val http = OkHttpClient.Builder().addInterceptor { chain: Interceptor.Chain ->
             requests += chain.request().url.encodedPath
@@ -55,14 +58,14 @@ class RouteStationMatcherTest {
 
     @Test
     fun `the IRIS spelling of the destination matches its route entries`() = runBlocking {
-        val isDestination = RouteStationMatcher(client(turkheimXml)).matcherFor(turkheim)
+        val isDestination = RouteStationMatcher(client(turkheimXml), stations).matcherFor(turkheim)
         assertTrue(isDestination("Türkheim(Bay)Bf"))
         assertEquals(listOf("/iris-tts/timetable/station/8000144"), requests)
     }
 
     @Test
     fun `other stations on the route are not the destination`() = runBlocking {
-        val isDestination = RouteStationMatcher(client(turkheimXml)).matcherFor(turkheim)
+        val isDestination = RouteStationMatcher(client(turkheimXml), stations).matcherFor(turkheim)
         assertFalse(isDestination("Buchloe"))
         assertFalse(isDestination("Mindelheim"))
         assertFalse(isDestination("Rammingen(Bay)"))
@@ -70,7 +73,7 @@ class RouteStationMatcherTest {
 
     @Test
     fun `the name is resolved once and reused`() = runBlocking {
-        val matcher = RouteStationMatcher(client(turkheimXml))
+        val matcher = RouteStationMatcher(client(turkheimXml), stations)
         matcher.matcherFor(turkheim)
         matcher.matcherFor(turkheim)
         matcher.matcherFor(turkheim.copy(name = "spelled differently"))
@@ -79,21 +82,21 @@ class RouteStationMatcherTest {
 
     @Test
     fun `without a network it falls back to comparing names`() = runBlocking {
-        val isDestination = RouteStationMatcher(client(null, fail = true)).matcherFor(turkheim)
+        val isDestination = RouteStationMatcher(client(null, fail = true), stations).matcherFor(turkheim)
         assertTrue("the fallback must still find the station", isDestination("Türkheim(Bay)Bf"))
         assertFalse(isDestination("Buchloe"))
     }
 
     @Test
     fun `a station IRIS does not know falls back to comparing names`() = runBlocking {
-        val isDestination = RouteStationMatcher(client(null)).matcherFor(turkheim)  // 404
+        val isDestination = RouteStationMatcher(client(null), stations).matcherFor(turkheim)  // 404
         assertTrue(isDestination("Türkheim (Bay)"))
         assertFalse(isDestination("Buchloe"))
     }
 
     @Test
     fun `a failed lookup is not retried for every route entry`() = runBlocking {
-        val matcher = RouteStationMatcher(client(null, fail = true))
+        val matcher = RouteStationMatcher(client(null, fail = true), stations)
         matcher.matcherFor(turkheim)
         matcher.matcherFor(turkheim)
         assertEquals(1, requests.size)
@@ -109,7 +112,7 @@ class RouteStationMatcherTest {
             </stations>
         """.trimIndent()
         val soflingen = Station("8006724", "Ulm-Söflingen", 50)
-        val isDestination = RouteStationMatcher(client(many)).matcherFor(soflingen)
+        val isDestination = RouteStationMatcher(client(many), stations).matcherFor(soflingen)
         assertTrue(isDestination("Ulm-Söflingen"))
         assertFalse("must not take the first entry in the document", isDestination("Ulm Hbf"))
     }
@@ -119,14 +122,14 @@ class RouteStationMatcherTest {
         // The real ppth of a Memmingen departure, as IRIS serves it.
         val route = "Augsburg Hbf|Buchloe|Türkheim(Bay)Bf|Rammingen(Bay)|Mindelheim"
             .split("|")
-        val isDestination = RouteStationMatcher(client(turkheimXml)).matcherFor(turkheim)
+        val isDestination = RouteStationMatcher(client(turkheimXml), stations).matcherFor(turkheim)
         assertEquals(listOf("Türkheim(Bay)Bf"), route.filter(isDestination))
     }
 
     @Test
     fun `zero-padded evas resolve to the same station`() = runBlocking {
         val padded = """<stations><station name="Türkheim(Bay)Bf" eva="08000144"/></stations>"""
-        val isDestination = RouteStationMatcher(client(padded)).matcherFor(turkheim)
+        val isDestination = RouteStationMatcher(client(padded), stations).matcherFor(turkheim)
         assertTrue(isDestination("Türkheim(Bay)Bf"))
     }
 }

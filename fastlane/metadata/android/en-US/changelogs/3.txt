@@ -1,0 +1,7 @@
+Journeys to stations DB spells differently in its route data are found
+again, instead of reporting "no plannable trains"; picking a transfer
+station offered on the connection screen works. Transfers are chosen
+towards the destination, so more connections are found. Searches survive
+a lost connection, and refreshing the delay history retries a dropped
+download. Only direct journeys and journeys with one change are searched
+— the app now says so.

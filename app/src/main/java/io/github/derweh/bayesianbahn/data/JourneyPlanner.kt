@@ -36,7 +36,8 @@ class JourneyPlanner(
     private val predictor: Predictor = Predictor(),
     /** Fallback for departure times beyond IRIS's plan horizon. */
     private val syntheticTimetable: SyntheticTimetable? = null,
-    private val routeStations: RouteStationMatcher = RouteStationMatcher(irisClient),
+    private val routeStations: RouteStationMatcher =
+        RouteStationMatcher(irisClient, stationRepository),
 ) {
 
     /** One planned journey option with its predicted arrival distribution. */

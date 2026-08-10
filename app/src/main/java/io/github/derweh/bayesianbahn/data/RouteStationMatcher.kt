@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class RouteStationMatcher(
     private val irisClient: IrisClient,
-    private val stationRepository: StationRepository? = null,
+    private val stationRepository: StationRepository,
 ) {
 
     /** eva -> IRIS's name, or [UNRESOLVED] when the lookup did not answer. */
@@ -44,16 +44,6 @@ class RouteStationMatcher(
     }
 
     /**
-     * The stations named by a train's route, for picking a transfer.
-     *
-     * This is the inverse lookup and cannot be done with one request the way
-     * [matcherFor] can, so it stays off the common path: names are resolved
-     * against the bundled list first, and IRIS is only asked when that leaves
-     * nothing to work with. Roughly one station in five is spelled too
-     * differently to match locally ("Ostkreuz" vs "Berlin Ostkreuz"), and for a
-     * route made only of those the alternative is finding no transfer at all.
-     */
-    /**
      * The station an IRIS route entry names.
      *
      * The bundled list is tried first because it costs nothing, and IRIS is
@@ -65,24 +55,34 @@ class RouteStationMatcher(
      * IRIS which station it means.
      */
     suspend fun station(routeName: String): Station? {
-        val repository = stationRepository ?: return null
-        repository.byName(routeName)?.let { return it }
+        stationRepository.byName(routeName)?.let { return it }
+        return evaFor(routeName)?.let { stationRepository.byEva(it) }
+    }
+
+    /**
+     * The stations named by a train's route, for picking a transfer.
+     *
+     * This is the inverse lookup and cannot be done with one request the way
+     * [matcherFor] can, so it stays off the common path: names are resolved
+     * against the bundled list first, and IRIS is only asked when that leaves
+     * nothing to work with. Roughly one station in five is spelled too
+     * differently to match locally ("Ostkreuz" vs "Berlin Ostkreuz"), and for a
+     * route made only of those the alternative is finding no transfer at all.
+     */
+    suspend fun stationsOn(path: List<String>): List<Station> {
+        val local = path.mapNotNull { stationRepository.byName(it) }
+        if (local.isNotEmpty()) return local
+        return path.take(MAX_INVERSE_LOOKUPS).mapNotNull { name ->
+            evaFor(name)?.let { stationRepository.byEva(it) }
+        }
+    }
+
+    /** IRIS's EVA number for a name it uses, asked once and remembered. */
+    private suspend fun evaFor(routeName: String): String? {
         val eva = evas.getOrPut(routeName) {
             runCatching { irisClient.stationEva(routeName) }.getOrNull() ?: UNRESOLVED
         }
-        return eva.takeIf { it != UNRESOLVED }?.let { repository.byEva(it) }
-    }
-
-    suspend fun stationsOn(path: List<String>): List<Station> {
-        val repository = stationRepository ?: return emptyList()
-        val local = path.mapNotNull { repository.byName(it) }
-        if (local.isNotEmpty()) return local
-        return path.take(MAX_INVERSE_LOOKUPS).mapNotNull { name ->
-            val eva = evas.getOrPut(name) {
-                runCatching { irisClient.stationEva(name) }.getOrNull() ?: UNRESOLVED
-            }
-            eva.takeIf { it != UNRESOLVED }?.let { repository.byEva(it) }
-        }
+        return eva.takeIf { it != UNRESOLVED }
     }
 
     private suspend fun irisName(eva: String): String? {

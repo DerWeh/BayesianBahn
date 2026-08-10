@@ -24,7 +24,8 @@ class ConnectionPlanner(
     private val predictor: Predictor = Predictor(),
     /** Fallback for departure times beyond IRIS's plan horizon. */
     private val syntheticTimetable: SyntheticTimetable? = null,
-    private val routeStations: RouteStationMatcher = RouteStationMatcher(irisClient),
+    private val routeStations: RouteStationMatcher =
+        RouteStationMatcher(irisClient, stationRepository),
 ) {
 
     sealed interface Outcome {
