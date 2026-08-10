@@ -128,6 +128,70 @@ The pipeline tests matter more than their size suggests: the nightly job's
 monthly path only executes when a new archive file appears, so without them a
 break in it stays invisible for weeks.
 
+### Running it on an emulator
+
+The unit tests cover the logic; the emulator is for what they cannot check —
+that a search actually returns something, and how long it takes.
+
+One-time setup. `emulator` and a system image are separate SDK packages and are
+not pulled in by a Gradle build:
+
+```sh
+# local.properties points Gradle at the SDK, but not the shell.
+export ANDROID_HOME=$HOME/android-sdk        # or whatever sdk.dir says there
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+
+sdkmanager platform-tools emulator "platforms;android-35" \
+           "system-images;android-35;default;x86_64"
+avdmanager create avd -n bb -k "system-images;android-35;default;x86_64" -d pixel_6
+```
+
+Start it, and wait until Android is actually up — `adb devices` reports the
+device long before the system has booted:
+
+```sh
+$ANDROID_HOME/emulator/emulator -avd bb -no-boot-anim &
+adb wait-for-device
+until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2; done
+```
+
+Install and launch:
+
+```sh
+pixi run ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb shell monkey -p io.github.derweh.bayesianbahn -c android.intent.category.LAUNCHER 1
+```
+
+To test what F-Droid will publish, install the release APK instead
+(`assembleRelease`, needs `keystore.properties`). Debug and release builds are
+signed with different keys, so switching between them needs
+`adb uninstall io.github.derweh.bayesianbahn` first.
+
+While testing:
+
+```sh
+adb logcat --pid=$(adb shell pidof io.github.derweh.bayesianbahn)  # app log only
+adb exec-out screencap -p > screen.png                            # screenshot
+adb shell dumpsys package io.github.derweh.bayesianbahn | grep version
+adb emu kill                                                      # stop it
+```
+
+Some notes that cost time to rediscover:
+
+- **Hardware acceleration.** Without `/dev/kvm` the emulator falls back to
+  software and a cold boot takes many minutes. Check with `ls -l /dev/kvm`; the
+  user must be in the `kvm` group (`sudo usermod -aG kvm $USER`, then log in
+  again).
+- **Under WSL2** this works when WSLg provides the display (`echo $DISPLAY`
+  should print something) and nested virtualisation is enabled on the Windows
+  host. If the window stays black, `-gpu swiftshader_indirect` renders on the
+  CPU. Alternatively run the emulator on Windows and reach it from WSL with
+  `adb connect`.
+- **The app needs the network** — every search hits DB's IRIS API — so an
+  emulator without working DNS shows only "could not reach DB's live
+  timetable".
+
 ### Backtesting
 
 ```sh
