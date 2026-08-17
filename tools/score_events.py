@@ -43,6 +43,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import collect_forecasts as cf  # noqa: E402
+from route_bench import candidate_files  # noqa: E402
 
 BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
@@ -210,6 +211,80 @@ def build_events(stops: dict, polls: dict, horizons=HORIZONS) -> list[dict]:
     return events
 
 
+def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
+    """Realised arrival delays from the archive, keyed as the journal keys them.
+
+    Delay is `arrival_change_time - arrival_planned_time`, the same definition
+    build_shards.py uses for the history the model learns from — a different one
+    here would score the model against a target it was never trained on. A null
+    change time is not missing data: it means the train ran to plan, exactly as
+    a stop absent from `fchg` does.
+    """
+    import polars as pl
+
+    files = candidate_files(data_dirs, day)
+    if not files:
+        raise SystemExit(f"no archive file covering {day}; run the pipeline's "
+                         "fetch_raw_day.py for that day first")
+    unit = pl.Datetime("us")
+    planned = pl.col("arrival_planned_time").cast(unit)
+    changed = pl.col("arrival_change_time").cast(unit)
+    frames = [
+        pl.scan_parquet(f)
+        .with_columns(arrival_planned_time=planned, arrival_change_time=changed)
+        .filter(planned.dt.date() == day)
+        .with_columns(eva0=pl.col("eva").str.strip_chars_start("0"))
+        .filter(pl.col("eva0").is_in(list(evas)))
+        .select(
+            eva=pl.col("eva0"),
+            cat=pl.col("train_type"),
+            num=pl.col("train_number"),
+            # Wall clock as if UTC, the convention collect_forecasts.iris_time
+            # stores journal times in; anything else shifts the join by an hour.
+            planned=(planned.cast(pl.Int64) // 60_000_000),
+            delay=((changed.cast(pl.Int64) - planned.cast(pl.Int64)) // 60_000_000),
+            cancelled=pl.col("is_canceled"),
+        )
+        for f in files
+    ]
+    rows = pl.concat(frames).unique(subset=["eva", "cat", "num", "planned"]).collect()
+    return {
+        (r["eva"], r["cat"], r["num"], r["planned"]):
+            {"delay": 0 if r["delay"] is None else int(r["delay"]),
+             "cancelled": bool(r["cancelled"])}
+        for r in rows.iter_rows(named=True)
+    }
+
+
+def attach_truth(events: list[dict], truth: dict) -> dict[str, tuple[int, int]]:
+    """Join events to the archive; report the hit rate per train type.
+
+    A type that silently fails to join disappears from the comparison rather
+    than failing it, so the rate is reported by type and not just in total.
+    """
+    rate: dict[str, tuple[int, int]] = {}
+    for e in events:
+        key = (e["eva"], e["cat"], e["num"], e["planned"])
+        found = truth.get(key)
+        if found is not None:
+            e["archive"] = found["delay"]
+            e["cancelled"] = e["cancelled"] or found["cancelled"]
+        hit, total = rate.get(e["cat"], (0, 0))
+        rate[e["cat"]] = (hit + (found is not None), total + 1)
+    return rate
+
+
+def report_join(rate: dict[str, tuple[int, int]]) -> None:
+    hit = sum(h for h, _ in rate.values())
+    total = sum(t for _, t in rate.values())
+    print(f"archive join: {hit}/{total} events matched "
+          f"({hit / total:.0%})\n" if total else "no events\n")
+    print(f"  {'type':<8}{'matched':>9}{'events':>8}{'rate':>7}")
+    for cat, (h, t) in sorted(rate.items(), key=lambda p: -p[1][1]):
+        flag = "  <- nothing joined" if h == 0 else ""
+        print(f"  {cat:<8}{h:>9}{t:>8}{h / t:>7.0%}{flag}")
+
+
 def score(events: list[dict], truth_key: str) -> None:
     usable = [e for e in events if e.get(truth_key) is not None and not e["cancelled"]]
     print(f"{len(events)} events, {len(usable)} with settled truth and not cancelled")
@@ -246,6 +321,10 @@ def main() -> None:
     ap.add_argument("--day", required=True)
     ap.add_argument("--out", type=Path, default=cf.OUT)
     ap.add_argument("--truth", choices=["settled", "archive"], default="settled")
+    ap.add_argument("--data-dir", type=Path, nargs="+",
+                    default=[Path(__file__).resolve().parents[1] / "pipeline/data"])
+    ap.add_argument("--stations", type=Path,
+                    default=Path(__file__).parent / "forecast_stations.csv")
     args = ap.parse_args()
 
     day = dt.date.fromisoformat(args.day)
@@ -258,8 +337,13 @@ def main() -> None:
             print(json.dumps(e, sort_keys=True))
         return
     if args.truth == "archive":
-        raise SystemExit("archive truth needs the next day's data; not wired up yet")
-    score(events, "settled")
+        truth = load_truth(args.data_dir, day, {s.eva for s in
+                                                cf.load_stations(args.stations)})
+        report_join(attach_truth(events, truth))
+        print()
+        score(events, "archive")
+    else:
+        score(events, "settled")
 
 
 if __name__ == "__main__":

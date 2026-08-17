@@ -209,3 +209,71 @@ def test_lead_time_runs_from_the_poll_even_with_no_observation(tmp_path: Path) -
     stops, polls = se.read_day(out, DAY)
     event = se.build_events(stops, polls, horizons=(5,))[0]
     assert event["db"] == 0 and event["lead"] == 15.0
+
+
+# --- the archive join --------------------------------------------------------
+
+
+def archive_file(path: Path, rows: list[dict]) -> Path:
+    import polars as pl
+    schema = {"eva": pl.String, "train_type": pl.String, "train_number": pl.String,
+              "arrival_planned_time": pl.Datetime("ns"),
+              "arrival_change_time": pl.Datetime("ns"), "is_canceled": pl.Boolean}
+    path.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows, schema=schema).write_parquet(path / "data-2026-08.parquet")
+    return path
+
+
+def arch_row(minute_delay, *, eva="08000001", cat="RE", num="1", cancelled=False):
+    planned = dt.datetime(2026, 8, 17, 18, 0)
+    return {"eva": eva, "train_type": cat, "train_number": num,
+            "arrival_planned_time": planned,
+            "arrival_change_time": (planned + dt.timedelta(minutes=minute_delay)
+                                    if minute_delay is not None else None),
+            "is_canceled": cancelled}
+
+
+def test_archive_truth_joins_on_the_journal_key(tmp_path: Path) -> None:
+    data = archive_file(tmp_path / "arch", [arch_row(7)])
+    truth = se.load_truth([data], DAY, {"8000001"})
+    assert truth[("8000001", "RE", "1", PLANNED)]["delay"] == 7
+
+
+def test_archive_padding_does_not_break_the_join(tmp_path: Path) -> None:
+    """The archive zero-pads EVAs, IRIS does not."""
+    data = archive_file(tmp_path / "arch", [arch_row(3, eva="08000001")])
+    assert ("8000001", "RE", "1", PLANNED) in se.load_truth([data], DAY, {"8000001"})
+
+
+def test_no_change_time_in_the_archive_means_on_time(tmp_path: Path) -> None:
+    data = archive_file(tmp_path / "arch", [arch_row(None)])
+    assert se.load_truth([data], DAY, {"8000001"})[
+        ("8000001", "RE", "1", PLANNED)]["delay"] == 0
+
+
+def test_join_rate_is_reported_per_train_type() -> None:
+    """A whole operator failing to join would vanish from the comparison
+    instead of failing it — as TR nearly did against a two-month-old archive."""
+    events = [{"eva": "8000001", "cat": "RE", "num": "1", "planned": PLANNED,
+               "cancelled": False},
+              {"eva": "8000310", "cat": "TR", "num": "33622", "planned": PLANNED,
+               "cancelled": False}]
+    truth = {("8000001", "RE", "1", PLANNED): {"delay": 4, "cancelled": False}}
+    rate = se.attach_truth(events, truth)
+    assert rate == {"RE": (1, 1), "TR": (0, 1)}
+    assert events[0]["archive"] == 4 and "archive" not in events[1]
+
+
+def test_a_cancellation_in_the_archive_marks_the_event(tmp_path: Path) -> None:
+    data = archive_file(tmp_path / "arch", [arch_row(None, cancelled=True)])
+    events = [{"eva": "8000001", "cat": "RE", "num": "1", "planned": PLANNED,
+               "cancelled": False}]
+    se.attach_truth(events, se.load_truth([data], DAY, {"8000001"}))
+    assert events[0]["cancelled"] is True
+
+
+def test_a_day_the_archive_does_not_cover_fails_loudly(tmp_path: Path) -> None:
+    import pytest
+    (tmp_path / "arch").mkdir()
+    with pytest.raises(SystemExit, match="no archive file"):
+        se.load_truth([tmp_path / "arch"], DAY, {"8000001"})
