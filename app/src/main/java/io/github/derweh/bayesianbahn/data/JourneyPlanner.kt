@@ -258,20 +258,27 @@ class JourneyPlanner(
          * Cap on connection evaluations (each fetches a transfer board, which
          * is five IRIS requests).
          *
-         * Measured with `tools/journey_bench.py` over 44 journeys that provably
-         * have a one-transfer connection: 84% of them are found within 4
-         * attempts, 93% within 6, 98% within 8 — and nothing more up to 12. The
-         * remaining case fails for a different reason (its transfer station
-         * never enters the candidate list), so more budget cannot reach it.
-         * Eight is where the curve flattens; it costs on average one extra
-         * board fetch per search over six.
+         * Measured with `tools/route_bench.py` over 1200 journeys of one
+         * archived day, against exhaustive ground truth: 59% are found within 4
+         * attempts, 70% within 6, 76% within 8, 85% within 12, and 90% is the
+         * ceiling at any budget. The curve has no elbow — it just flattens
+         * slowly — so this constant trades recall against requests rather than
+         * finding a natural stopping point, and eight is a compromise, not an
+         * optimum.
+         *
+         * An earlier measurement over 44 live journeys reported 98% at eight
+         * attempts. Its ground truth came from walking the same boards this
+         * search walks, so it could only pose journeys the heuristic already
+         * finds; the number was an artefact of the harness.
          */
         const val MAX_TRANSFER_ATTEMPTS = 8
 
         /**
-         * Two per feeder beat one (98% vs 95% found) and three (95%, and slower
-         * to the first result): a third candidate is usually a worse station on
-         * a route already shown not to work.
+         * Two per feeder beat one and three at the shipped budget (77% / 77% /
+         * 74% found): a third candidate is usually a worse station on a route
+         * already shown not to work, and spends budget a fresh feeder would use
+         * better. One per feeder ties at eight attempts but falls behind as the
+         * budget grows (82% vs 88% at sixteen).
          */
         const val TRANSFERS_PER_FEEDER = 2
         const val MAX_RESULTS = 5

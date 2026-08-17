@@ -90,9 +90,16 @@ the app report *fewer* connections than DB does — never wrong ones:
 - **The transfer search is a heuristic**, not an exhaustive one: stations on a
   train's route are ranked by distance to the destination and at most eight are
   evaluated, because each one costs a live board request. Measured with
-  `tools/journey_bench.py` over 44 journeys that provably have a one-change
-  connection, it finds 98% of them; the misses are transfer stations that never
-  enter the candidate list.
+  `tools/route_bench.py` against exhaustive ground truth — 2400 journeys over
+  two days of the archive, each with a one-change connection that provably
+  exists inside the windows the app itself searches — it finds **77%** of them
+  at the shipped budget, and 90% given unlimited attempts. Of the misses, three
+  quarters are transfer stations the ranking never reaches and the rest are
+  excluded by the detour or weight filters.
+
+  An earlier live measurement over 44 journeys reported 98%. That number was
+  too kind: its ground truth was built by walking the same station boards the
+  search walks, so it could only ever pose journeys the mechanism already sees.
 - **Predictions need history.** A connection can be found and still not be
   shown when too few historical runs exist for the trains involved.
 
@@ -198,6 +205,27 @@ Some notes that cost time to rediscover:
 pixi run -e pipeline python pipeline/backtest.py \
     --data-dir pipeline/data --stations 8000013,8000261 --eval-weeks 12
 ```
+
+### Benchmarking the journey search
+
+`tools/route_bench.py` measures the routing heuristic offline. Each archived
+stop carries a ride id and a stop number, so one day of the archive rebuilds
+into the whole national timetable — ~42k train runs over ~5200 stations, which
+covers 97% of the transfer-eligible stations in the app's station list. Ground
+truth is then exhaustive rather than sampled, and costs no API requests:
+
+```sh
+pixi run -e pipeline python tools/route_bench.py snapshot --day 2026-06-10
+pixi run -e pipeline python tools/route_bench.py bench --day 2026-06-10 --queries 1200
+pixi run -e pipeline python tools/route_bench.py sweep --day 2026-06-10 --queries 1200
+```
+
+`tools/journey_bench.py` does the same thing against live IRIS. It is limited to
+a few dozen journeys by politeness to a keyless public API, so it is no longer
+what the constants are tuned on — but it is the only one of the two that
+exercises name resolution, since offline every station is an EVA number and
+identity is exact. Use it to confirm that a change measured offline survives
+contact with the real API, on a handful of journeys.
 
 ### Regenerating data
 

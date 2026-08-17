@@ -12,6 +12,15 @@ provably exists for every query, so a miss is the search's fault and not a
 journey that needs two changes. Pairs reachable without changing are excluded,
 so the transfer search is what is being measured.
 
+That construction is also this tool's blind spot, and the reason it no longer
+sets the constants. It walks the same station boards the search walks, so it can
+only pose journeys the mechanism already sees: it reported 98% recall where
+`tools/route_bench.py`, whose ground truth is exhaustive, reports 77%. What this
+tool still does uniquely is exercise *name* resolution against the real API —
+offline every station is an EVA number and identity is exact, so the spelling
+problem RouteStationMatcher exists to solve is invisible there. Use it to check
+that an offline result survives contact with IRIS, on a handful of journeys.
+
     python tools/journey_bench.py --generate queries.json --count 24
     python tools/journey_bench.py --run queries.json --max-attempts 14
 
@@ -49,7 +58,20 @@ MIN_TRANSFER_WEIGHT = 40
 DETOUR_TOLERANCE = 1.25
 TRANSFER_MINUTES = 5
 ORIGIN_HOURS, TRANSFER_HOURS = 3, 4
-DT_CATEGORIES = {"RE", "RB", "S", "IRE", "RS"}
+
+# TrainClass.LONG_DISTANCE in DelayModel.kt. This used to be a hand-written
+# allow-list of {RE, RB, S, IRE, RS}, which silently measured a *different*
+# algorithm than the app runs: DeutschlandTicket.covers() excludes only
+# long-distance trains, so the private regional operators (HLB, NWB, ARV, AVG,
+# ag, MEX, BRB, …) count — thousands of runs a day, and in their regions they
+# are the only feeders there are.
+LONG_DISTANCE = {"ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV",
+                 "D", "IR", "WB"}
+
+
+def covers(category: str) -> bool:
+    """Mirrors DeutschlandTicket.covers."""
+    return category.upper() not in LONG_DISTANCE
 
 DESIGNATIONS = {"bahnhof", "hauptbahnhof", "personenbahnhof", "haltepunkt", "haltestelle"}
 ABBREVIATIONS = {"hbf": "hauptbahnhof", "bf": "bahnhof", "bhf": "bahnhof",
@@ -152,7 +174,7 @@ def search(origin, destination, depart, by_name, *, ranking, per_feeder, max_att
                 or core(entry) == core(destination["name"]))
 
     deps = sorted((s for s in board(origin["eva"], depart, ORIGIN_HOURS)
-                   if s["dep"] and when(s["dep"]) >= depart and s["cat"] in DT_CATEGORIES),
+                   if s["dep"] and when(s["dep"]) >= depart and covers(s["cat"])),
                   key=lambda s: s["dep"])
     others = [s for s in deps if not any(is_dest(p) for p in s["path"])]
     direct = len(deps) - len(others)
@@ -183,7 +205,7 @@ def search(origin, destination, depart, by_name, *, ranking, per_feeder, max_att
             if not here:
                 continue
             arrival = when(here[0]["arr"])
-            if any(x["dep"] and x["cat"] in DT_CATEGORIES
+            if any(x["dep"] and covers(x["cat"])
                    and any(is_dest(p) for p in x["path"])
                    and when(x["dep"]) >= arrival + dt.timedelta(minutes=TRANSFER_MINUTES)
                    for x in at):
@@ -206,7 +228,7 @@ def generate(out: Path, count: int, seed: int) -> None:
         depart = dt.datetime.fromisoformat(f"{day}T{times[len(queries) % 3]}")
         deps = sorted((s for s in board(origin["eva"], depart, ORIGIN_HOURS)
                        if s["dep"] and when(s["dep"]) >= depart
-                       and s["cat"] in DT_CATEGORIES and s["path"]), key=lambda s: s["dep"])
+                       and covers(s["cat"]) and s["path"]), key=lambda s: s["dep"])
         # Anything reachable without changing cannot measure the transfer search.
         direct_reach = {core(p) for s in deps for p in s["path"]}
         for feeder in deps[:8]:
@@ -222,7 +244,7 @@ def generate(out: Path, count: int, seed: int) -> None:
                     continue
                 arrival = when(here[0]["arr"])
                 for onward in at:
-                    if (not onward["dep"] or onward["cat"] not in DT_CATEGORIES
+                    if (not onward["dep"] or not covers(onward["cat"])
                             or when(onward["dep"]) < arrival + dt.timedelta(minutes=TRANSFER_MINUTES)):
                         continue
                     for dest_name in onward["path"]:

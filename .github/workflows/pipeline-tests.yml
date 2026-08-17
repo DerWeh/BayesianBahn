@@ -4,6 +4,11 @@
 # mismatch in build_boards.py survived. These tests exercise both the daily and
 # the monthly path on synthetic fixtures on every push.
 #
+# The same suite covers tools/: the routing benchmarks mirror constants from
+# JourneyPlanner.kt, and a benchmark measuring an app that no longer exists
+# produces numbers that look like evidence. That is why app/src/main is a
+# trigger here — the drift guard has to run when the mirrored side changes.
+#
 # Runs through pixi so the tests use the same resolved polars as local
 # development, and so the pin in update-data.yml can be checked against a real
 # installed version.
@@ -14,6 +19,8 @@ on:
     branches: [main]
     paths:
       - pipeline/**
+      - tools/**
+      - app/src/main/**
       - pixi.toml
       - pixi.lock
       - .github/workflows/update-data.yml # the tests assert its polars pin
@@ -21,6 +28,8 @@ on:
   pull_request:
     paths:
       - pipeline/**
+      - tools/**
+      - app/src/main/**
       - pixi.toml
       - pixi.lock
       - .github/workflows/update-data.yml

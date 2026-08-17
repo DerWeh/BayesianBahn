@@ -17,7 +17,8 @@ pipeline/output/
 __pycache__/
 .pytest_cache/
 
-# Benchmark's IRIS document cache
+# Benchmarks: archive-day timetable snapshots and the IRIS document cache
+tools/.timetable/
 tools/.iris-cache/
 
 # Release signing — never commit

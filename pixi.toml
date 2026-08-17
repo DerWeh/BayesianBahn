@@ -25,7 +25,7 @@ pytest = ">=8,<9"
 
 [feature.pipeline.tasks]
 # The monthly rebuild path runs once a month in production; run it every push.
-test-pipeline = "pytest pipeline/tests -q"
+test-pipeline = "pytest pipeline/tests tools/tests -q"
 
 [environments]
 # no-default-feature: without it this environment also pulls in gradle and a
