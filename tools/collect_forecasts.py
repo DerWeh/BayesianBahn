@@ -21,6 +21,15 @@ What it records, per station, every [CADENCE_MINUTES]:
   * `hafas`  a small sample cross-checked against the Navigator's own backend,
              to confirm `fchg` says what the app people actually use says.
 
+`fchg` reports every change DB currently knows about, which includes stops that
+have *already happened* — on the first round of a fresh run about 70% of them.
+Those carry no trajectory (we never saw them while they were still ahead), so
+they are not prediction targets and analysis must keep only stops first seen
+while still in the future. They cost one baseline round of disk and nothing
+after that, since a finished stop never changes again; filtering here instead
+would throw away the tail of the trajectory, which is what answers when DB's
+number stops moving.
+
 `fchg` also reports trips further out than the plan horizon, so some `obs`
 records have no matching `plan` yet. That is recoverable rather than lost: the
 trip id embeds the trip's start (`...-2608171718-14`), so the analysis can fetch
