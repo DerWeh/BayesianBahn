@@ -362,27 +362,68 @@ class Collector:
             self.journal.close()
 
 
-def status(out: Path) -> None:
+def health(records: list[dict], expected_stations: int, cadence: int = CADENCE_MINUTES
+           ) -> dict:
+    """Whether a run is actually collecting, not merely alive.
+
+    A process can sit there polling nothing — wrong station file, DNS gone, a
+    slot silently skipped every time — and `ps` cannot tell the difference. What
+    distinguishes a healthy run is that every scheduled slot produced a round,
+    every station answered, and the last round was recent.
+    """
+    polls = [r for r in records if r["t"] == "poll"]
+    slots = sorted({r["at"] // (cadence * 60) for r in polls})
+    stations = {r["eva"] for r in polls}
+    return {
+        "rounds": len(slots),
+        # Slots between the first and the last that produced no poll at all: a
+        # crash, a suspend, or a machine that was asleep.
+        "missed_slots": (slots[-1] - slots[0] + 1 - len(slots)) if slots else 0,
+        "polls": len(polls),
+        "failed": sum(1 for r in polls if not r.get("ok")),
+        "stations_seen": len(stations),
+        "stations_expected": expected_stations,
+        "stops": sum(r.get("stops", 0) for r in polls if r.get("ok")),
+        "last_at": max((r["at"] for r in records if "at" in r), default=None),
+        "first_at": min((r["at"] for r in records if "at" in r), default=None),
+    }
+
+
+def status(out: Path, stations_path: Path, now=time.time) -> None:
     days = sorted(out.glob("forecasts-*.jsonl"))
     if not days:
         print(f"nothing collected in {out}")
         return
+    try:
+        expected = len(load_stations(stations_path))
+    except OSError:
+        expected = 0
     for path in days:
         records, torn = Journal.read(path)
         kinds: dict[str, int] = {}
         for record in records:
             kinds[record["t"]] = kinds.get(record["t"], 0) + 1
-        polls = [r for r in records if r["t"] == "poll"]
-        failed = sum(1 for r in polls if not r.get("ok"))
-        stamps = [r["at"] for r in records if "at" in r]
+        h = health(records, expected)
         span = ""
-        if stamps:
-            first = dt.datetime.fromtimestamp(min(stamps)).strftime("%H:%M")
-            last = dt.datetime.fromtimestamp(max(stamps)).strftime("%H:%M")
-            span = f"  {first}-{last}"
-        print(f"{path.name}{span}  " + "  ".join(f"{k}={v}" for k, v in sorted(kinds.items()))
-              + (f"  poll-failures={failed}" if failed else "")
+        if h["first_at"]:
+            span = ("  " + dt.datetime.fromtimestamp(h["first_at"]).strftime("%H:%M")
+                    + "-" + dt.datetime.fromtimestamp(h["last_at"]).strftime("%H:%M"))
+        print(f"{path.name}{span}  "
+              + "  ".join(f"{k}={v}" for k, v in sorted(kinds.items()))
               + (f"  torn-lines={torn}" if torn else ""))
+        warn = []
+        if h["failed"]:
+            warn.append(f"{h['failed']} failed polls")
+        if h["missed_slots"]:
+            warn.append(f"{h['missed_slots']} missed slots")
+        if expected and h["stations_seen"] < expected:
+            warn.append(f"only {h['stations_seen']}/{expected} stations")
+        print(f"  {h['rounds']} rounds, {h['stops']} stops seen"
+              + (("  ** " + ", ".join(warn)) if warn else "  (clean)"))
+        age = (now() - h["last_at"]) / 60 if h["last_at"] else None
+        if age is not None and path == days[-1]:
+            state = "alive" if age < 2 * CADENCE_MINUTES else "STALLED?"
+            print(f"  last record {age:.1f} min ago  [{state}]")
 
 
 def main() -> None:
@@ -395,7 +436,7 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.command == "status":
-        status(args.out)
+        status(args.out, args.stations)
         return
 
     collector = Collector(load_stations(args.stations), args.out)

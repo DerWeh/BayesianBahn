@@ -314,3 +314,34 @@ def test_hafas_recovers_on_the_first_success(tmp_path: Path) -> None:
     records, _ = cf.Journal.read(tmp_path / f"forecasts-{got._today()}.jsonl")
     rows = [r for r in records if r["t"] == "hafas" and r["ok"]]
     assert rows and rows[0]["rows"][0]["delay"] == 360
+
+
+def poll_records(slots: list[int], evas: list[str], *, ok=True, cadence=10) -> list[dict]:
+    return [{"t": "poll", "at": s * cadence * 60 + 1, "eva": e,
+             "ok": ok, "stops": 100}
+            for s in slots for e in evas]
+
+
+def test_health_counts_rounds_and_stations() -> None:
+    got = cf.health(poll_records([100, 101, 102], ["a", "b"]), expected_stations=2)
+    assert got["rounds"] == 3 and got["missed_slots"] == 0
+    assert got["stations_seen"] == 2 and got["stops"] == 600
+
+
+def test_health_notices_a_slot_that_produced_nothing() -> None:
+    """A suspended laptop or a crash-and-restart leaves a hole; `ps` cannot see it."""
+    got = cf.health(poll_records([100, 101, 104], ["a"]), expected_stations=1)
+    assert got["rounds"] == 3 and got["missed_slots"] == 2
+
+
+def test_health_notices_a_station_that_never_answers() -> None:
+    records = poll_records([100, 101], ["a"]) + poll_records([100], ["b"], ok=False)
+    got = cf.health(records, expected_stations=3)
+    assert got["stations_seen"] == 2 and got["stations_expected"] == 3
+    assert got["failed"] == 1
+    assert got["stops"] == 200, "a failed poll contributes no stops"
+
+
+def test_health_of_an_empty_journal_is_not_an_error() -> None:
+    got = cf.health([], expected_stations=20)
+    assert got["rounds"] == 0 and got["missed_slots"] == 0 and got["last_at"] is None
