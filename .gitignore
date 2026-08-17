@@ -19,6 +19,7 @@ __pycache__/
 
 # Benchmarks: archive-day timetable snapshots and the IRIS document cache
 tools/.timetable/
+tools/.forecasts/
 tools/.iris-cache/
 
 # Release signing — never commit

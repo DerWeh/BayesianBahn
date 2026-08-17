@@ -1,0 +1,26 @@
+# Pre-registered station set for the forecast comparison.
+# Chosen 2026-08-17, before any forecast data was collected, by
+# stratified sampling of stations.csv with seed 20260817:
+#   6 hubs (weight >=250), 6 towns (100-250), 5 small (40-100),
+#   3 village halts (<40), all required to have real traffic.
+# eva;name;weight
+8089105;Hermannstraße;598
+8000323;Saarbrücken Hbf;425
+8002561;Wilhelmsburg;400
+8000001;Aachen Hbf;387
+8002681;HD-Weststadt/Südstadt;293
+8089030;Plänterwald;270
+8000037;Schwerte (Ruhr);172
+8001375;Darmstadt Nord;170
+8006710;Bochum-Hamme;156
+8004288;Dortmund-Oespel;139
+8089031;Poelchaustraße;131
+8000310;Remagen;122
+8001957;Fallersleben;93
+8005245;Saarburg (Bz Trier);66
+8000818;Ochsenfurt;49
+8001865;Erzingen (Baden);48
+8004327;Neustadt (Holst);42
+8004753;Pappenheim;27
+8001209;Ahrbrück;21
+8012036;Kleinröhrsdorf;18
