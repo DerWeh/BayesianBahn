@@ -21,6 +21,8 @@ sys.path.insert(0, str(TOOLS))
 import collect_forecasts as cf  # noqa: E402
 import score_events as se  # noqa: E402
 
+ROOT_APP = TOOLS.parent / "app/src/main/java/io/github/derweh/bayesianbahn"
+
 DAY = dt.date(2026, 8, 17)
 # 18:00 German wall clock on that day, in both bases.
 PLANNED = cf.iris_time("2608171800")
@@ -277,3 +279,28 @@ def test_a_day_the_archive_does_not_cover_fails_loudly(tmp_path: Path) -> None:
     (tmp_path / "arch").mkdir()
     with pytest.raises(SystemExit, match="no archive file"):
         se.load_truth([tmp_path / "arch"], DAY, {"8000001"})
+
+
+# --- shard keys --------------------------------------------------------------
+
+
+def test_shard_keys_mirror_the_repository() -> None:
+    """The harness reads shards by the key the app derives; a divergence would
+    silently give the model no history and score the prior instead."""
+    import fetch_shards as fs
+    source = (ROOT_APP / "data/HistoryRepository.kt").read_text(encoding="utf-8")
+    assert 'replace(Regex("[^A-Za-z0-9]+"), "_").trim(\'_\').uppercase()' in source, (
+        "shardKey changed; the Python mirror in fetch_shards.py must follow"
+    )
+    assert fs.shard_key("ICE 512") == "ICE_512"
+    assert fs.shard_key("  RE  9  ") == "RE_9"
+    assert fs.shard_key("RB26") == "RB26"
+
+
+def test_candidate_keys_try_the_number_then_the_line() -> None:
+    import fetch_shards as fs
+    assert fs.candidate_keys("RE", "10924", None) == ["RE_10924"]
+    assert fs.candidate_keys("RB", "25441", "RB26") == ["RB_25441", "RB26"]
+    # A line not already prefixed by the category gets it prepended.
+    assert fs.candidate_keys("S", "42687", "1") == ["S_42687", "S_1"]
+    assert fs.candidate_keys("RE", "", "RE9") == ["RE9"]

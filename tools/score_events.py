@@ -314,18 +314,64 @@ def score(events: list[dict], truth_key: str) -> None:
           f"{SURPRISE_MINUTES} min later than predicted) — the missed connection.")
 
 
+def compare(scored: Path) -> None:
+    """Our model against DB's number, on the events the JVM harness scored.
+
+    Both forecasters see the same information state at each lead time, so every
+    row is paired by construction. CRPS and coverage have no DB counterpart —
+    DB publishes a time, not a distribution — so they are ours alone and belong
+    to the second test, the one that measures distribution quality.
+    """
+    rows = [json.loads(line) for line in scored.read_text(encoding="utf-8").splitlines()
+            if line.strip()]
+    if not rows:
+        raise SystemExit(f"no scored events in {scored}")
+    sources: dict[str, int] = {}
+    for r in rows:
+        sources[r["source"]] = sources.get(r["source"], 0) + 1
+    print(f"n = {len(rows)} scored events; forecast source {sources}\n")
+    print(f"{'bucket':>7}{'n':>6}{'DB MAE':>8}{'ours':>7}{'DB bias':>9}{'ours':>7}"
+          f"{'DB surp':>9}{'ours':>7}{'CRPS':>7}{'cover80':>9}")
+    for tau in sorted({r["tau"] for r in rows}, reverse=True):
+        g = [r for r in rows if r["tau"] == tau]
+        db = [r["db"] - r["truth"] for r in g]
+        us = [r["q50"] - r["truth"] for r in g]
+        db_surprise = sum(1 for r in g
+                          if r["truth"] > r["db"] + SURPRISE_MINUTES) / len(g)
+        our_surprise = sum(1 for r in g
+                           if r["truth"] > r["q50"] + SURPRISE_MINUTES) / len(g)
+        covered = sum(1 for r in g if r["q10"] <= r["truth"] <= r["q90"]) / len(g)
+        label = f"{tau // 60}h" if tau >= 60 else f"{tau}m"
+        print(f"{label:>7}{len(g):>6}{st.mean(abs(x) for x in db):>8.2f}"
+              f"{st.mean(abs(x) for x in us):>7.2f}{st.mean(db):>9.2f}"
+              f"{st.mean(us):>7.2f}{db_surprise:>9.0%}{our_surprise:>7.0%}"
+              f"{st.mean(r['crps'] for r in g):>7.2f}{covered:>9.0%}")
+    print(f"\nsurp = P(actual more than {SURPRISE_MINUTES} min later than predicted).")
+    print("cover80 = share of truths inside q10..q90; nominal is 80%, so a lower")
+    print("number means the distribution is too confident.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["events", "score"])
-    ap.add_argument("--day", required=True)
+    ap.add_argument("command", choices=["events", "score", "compare"])
+    ap.add_argument("--day", default="1970-01-01")
     ap.add_argument("--out", type=Path, default=cf.OUT)
     ap.add_argument("--truth", choices=["settled", "archive"], default="settled")
     ap.add_argument("--data-dir", type=Path, nargs="+",
                     default=[Path(__file__).resolve().parents[1] / "pipeline/data"])
     ap.add_argument("--stations", type=Path,
                     default=Path(__file__).parent / "forecast_stations.csv")
+    ap.add_argument("--scored", type=Path, help="JVM harness output, for `compare`")
+    ap.add_argument("--events-out", type=Path,
+                    help="write every event as JSONL here, for the JVM harness")
     args = ap.parse_args()
+
+    if args.command == "compare":
+        if not args.scored:
+            raise SystemExit("compare needs --scored, the JVM harness output")
+        compare(args.scored)
+        return
 
     day = dt.date.fromisoformat(args.day)
     stops, polls = read_day(args.out, day)
@@ -333,8 +379,18 @@ def main() -> None:
     print(f"{len(stops)} scheduled arrivals, {len(events)} events "
           f"over {len(polls)} stations", file=sys.stderr)
     if args.command == "events":
-        for e in events[:10]:
-            print(json.dumps(e, sort_keys=True))
+        if args.truth == "archive":
+            truth = load_truth(args.data_dir, day,
+                               {s.eva for s in cf.load_stations(args.stations)})
+            report_join(attach_truth(events, truth))
+        if not args.events_out:
+            for e in events[:10]:
+                print(json.dumps(e, sort_keys=True))
+            return
+        with args.events_out.open("w", encoding="utf-8") as fh:
+            for e in events:
+                fh.write(json.dumps(e, sort_keys=True) + "\n")
+        print(f"wrote {len(events)} events to {args.events_out}", file=sys.stderr)
         return
     if args.truth == "archive":
         truth = load_truth(args.data_dir, day, {s.eva for s in
