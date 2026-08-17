@@ -278,7 +278,7 @@ def test_search_counts_the_direct_trains_separately() -> None:
     tt = tt_of(("RE", "9", [("O", None, BASE + 5), ("D", BASE + 50, None)]))
     got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
     assert got == {"direct": 1, "first_hit": None, "attempts": 0,
-                   "first_arrival": None}
+                   "first_arrival": None, "feeders": 1}
 
 
 def test_search_stops_at_the_budget() -> None:
@@ -412,3 +412,21 @@ def test_a_day_no_archive_file_can_cover_is_refused(tmp_path: Path) -> None:
     (data / "data-2026-06.parquet").touch()
     with pytest.raises(SystemExit, match="covering"):
         rb.snapshot([data], dt.date(2011, 1, 1), tmp_path / "out.parquet")
+
+
+def test_recall_is_reported_per_origin_size() -> None:
+    """The aggregate hides the structure: a headline number mixes village halts
+    (~89% solved) with the big hubs (~52%), and most journeys start at hubs."""
+    by_eva = {"S": station("S", 10, 48.0), "B": station("B", 900, 48.0),
+              "D": station("D", 60, 48.5)}
+    rows = [
+        {"query": {"from": "S", "to": "D"}, "first_hit": 2, "feeders": 4},
+        {"query": {"from": "S", "to": "D"}, "first_hit": 30, "feeders": 6},
+        {"query": {"from": "B", "to": "D"}, "first_hit": None, "feeders": 40},
+    ]
+    got = rb.by_origin_size(rows, by_eva, budget=rb.MAX_TRANSFER_ATTEMPTS)
+    assert [(label, n) for label, n, *_ in got] == [("0-40", 2), (">=250", 1)]
+    small, big = got
+    assert small[2] == 0.5, "one of the two is found within the budget"
+    assert small[3] == 1.0, "but both are found eventually"
+    assert big[2] == 0.0 and big[4] == 40, "the hub's haystack is reported"

@@ -23,10 +23,11 @@ import io.github.derweh.bayesianbahn.model.DeutschlandTicket
  * [MAX_TRANSFER_ATTEMPTS] of them are evaluated via [ConnectionPlanner]'s
  * Bayesian propagation.
  *
- * `tools/journey_bench.py` measures what that costs: over 44 journeys that
- * provably have a one-change connection, 98% were found. The residual misses
- * are transfer stations that never enter the candidate list, which no amount
- * of budget reaches.
+ * `tools/route_bench.py` measures what that costs, against ground truth that is
+ * exhaustive within these same windows: of journeys that provably have a
+ * one-change connection, 82% are found — but that average spans 89% from a
+ * village halt down to 55% from a big hub, where forty-five departures compete
+ * for the same eight attempts. See [MAX_TRANSFER_ATTEMPTS].
  */
 class JourneyPlanner(
     private val stationRepository: StationRepository,
@@ -258,13 +259,20 @@ class JourneyPlanner(
          * Cap on connection evaluations (each fetches a transfer board, which
          * is five IRIS requests).
          *
-         * Measured with `tools/route_bench.py` over 1200 journeys of one
-         * archived day, against exhaustive ground truth: 59% are found within 4
-         * attempts, 70% within 6, 76% within 8, 85% within 12, and 90% is the
-         * ceiling at any budget. The curve has no elbow — it just flattens
-         * slowly — so this constant trades recall against requests rather than
-         * finding a natural stopping point, and eight is a compromise, not an
-         * optimum.
+         * Measured with `tools/route_bench.py` against exhaustive ground truth
+         * over five archived days: 66% are found within 4 attempts, 76% within
+         * 6, 82% within 8, 86% within 12, and 89% is the ceiling at any budget.
+         * The curve has no elbow — it just flattens — so this constant trades
+         * recall against requests rather than finding a natural stopping point,
+         * and eight is a compromise, not an optimum.
+         *
+         * It is also the binding constraint at busy stations, and only there.
+         * Recall runs 89% from a village halt (five departures in the window)
+         * down to 55% from a hub (forty-five), because the budget opens the same
+         * eight transfer boards either way. Raising it helps exactly the
+         * journeys that start where most journeys start, at a cost paid on every
+         * search; scaling it with the size of the origin board would be the
+         * targeted fix.
          *
          * An earlier measurement over 44 live journeys reported 98% at eight
          * attempts. Its ground truth came from walking the same boards this

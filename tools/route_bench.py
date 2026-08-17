@@ -381,8 +381,10 @@ def search(tt: Timetable, origin: Station, dest: Station, depart: int,
                     first_arrival = next(a for eva, a in onward[0].path
                                          if eva == dest.eva)
                 break  # transferItinerary returns on its first success
+    # `feeders` is how many departures the origin offered at all: the budget has
+    # to reach a working transfer among them, so it is the size of the haystack.
     return {"direct": direct, "first_hit": first_hit, "attempts": attempts,
-            "first_arrival": first_arrival}
+            "first_arrival": first_arrival, "feeders": len(board)}
 
 
 # --- query sets ---------------------------------------------------------------
@@ -456,7 +458,37 @@ def bench(tt: Timetable, by_eva: dict[str, Station], queries: list[dict],
     return rows
 
 
-def report(rows: list[dict], budget: int) -> None:
+ORIGIN_BANDS = ((0, 40), (40, 100), (100, 250), (250, 10 ** 9))
+
+
+def by_origin_size(rows: list[dict], by_eva: dict[str, Station], budget: int
+                   ) -> list[tuple[str, int, float, float, float]]:
+    """Recall split by how big the origin is: (label, n, solved, ceiling, feeders).
+
+    A single headline number hides the structure that matters. Recall falls from
+    ~89% at village halts to ~52% at the big hubs, because a hub puts 30-40
+    departures in the origin's board and the budget can only open eight transfer
+    boards. Most journeys start at the busy end, so the aggregate is optimistic
+    for the stations people actually use.
+    """
+    out = []
+    for lo, hi in ORIGIN_BANDS:
+        band = [r for r in rows
+                if lo <= by_eva[r["query"]["from"]].weight < hi]
+        if not band:
+            continue
+        hit = [r for r in band if r["first_hit"]]
+        out.append((
+            f"{lo}-{hi}" if hi < 10 ** 9 else f">={lo}",
+            len(band),
+            sum(1 for r in hit if r["first_hit"] <= budget) / len(band),
+            len(hit) / len(band),
+            sum(r["feeders"] for r in band) / len(band),
+        ))
+    return out
+
+
+def report(rows: list[dict], by_eva: dict[str, Station], budget: int) -> None:
     n = len(rows)
     print(f"\nn = {n} journeys, each with a one-change connection that provably")
     print("exists inside the windows the app itself searches\n")
@@ -475,6 +507,16 @@ def report(rows: list[dict], budget: int) -> None:
             reasons[r["why"]] = reasons.get(r["why"], 0) + 1
         for why, c in sorted(reasons.items(), key=lambda p: -p[1]):
             print(f"  {c:4}  ({c / n:4.0%})  {why}")
+
+    bands = by_origin_size(rows, by_eva, MAX_TRANSFER_ATTEMPTS)
+    if len(bands) > 1:
+        print(f"\nshare solved at the shipped budget of {MAX_TRANSFER_ATTEMPTS}, "
+              "by how big the origin is")
+        print(f"  {'origin weight':<16}{'n':>6}{'solved':>8}{'ceiling':>9}"
+              f"{'feeders':>9}")
+        for label, count, solved, ceiling, feeders in bands:
+            print(f"  {label:<16}{count:>6}{solved:>8.0%}{ceiling:>9.0%}"
+                  f"{feeders:>9.0f}")
 
     hits = [r["first_hit"] for r in rows if r["first_hit"]]
     if hits:
@@ -531,7 +573,11 @@ def main() -> None:
     ap.add_argument("--budget", type=int, default=32,
                     help="attempts to allow while measuring (>= the shipped cap)")
     ap.add_argument("--times", default="08:00,12:00,16:00,19:00")
-    ap.add_argument("--min-origin-weight", type=int, default=MIN_TRANSFER_WEIGHT)
+    # Defaulted to MIN_TRANSFER_WEIGHT once, which was a copied constant and not
+    # an argument: whether a station is worth changing at says nothing about
+    # whether someone starts a journey there. It hid 43% of the network, and the
+    # excluded half is the easy half.
+    ap.add_argument("--min-origin-weight", type=int, default=0)
     ap.add_argument("--band", default="25,100", help="origin-destination km range")
     ap.add_argument("--save-queries", type=Path)
     args = ap.parse_args()
@@ -560,7 +606,7 @@ def main() -> None:
 
     if args.command == "bench":
         rows = bench(tt, by_eva, queries, Config(), budget=args.budget, verbose=True)
-        report(rows, args.budget)
+        report(rows, by_eva, args.budget)
     else:
         sweep(tt, by_eva, queries, args.budget)
 

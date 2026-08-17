@@ -90,12 +90,24 @@ the app report *fewer* connections than DB does — never wrong ones:
 - **The transfer search is a heuristic**, not an exhaustive one: stations on a
   train's route are ranked by distance to the destination and at most eight are
   evaluated, because each one costs a live board request. Measured with
-  `tools/route_bench.py` against exhaustive ground truth — 2400 journeys over
-  two days of the archive, each with a one-change connection that provably
-  exists inside the windows the app itself searches — it finds **77%** of them
-  at the shipped budget, and 90% given unlimited attempts. Of the misses, three
-  quarters are transfer stations the ranking never reaches and the rest are
-  excluded by the detour or weight filters.
+  `tools/route_bench.py` against exhaustive ground truth — thousands of journeys
+  over five days of the archive, each with a one-change connection that provably
+  exists inside the windows the app itself searches — recall depends strongly on
+  how busy the origin is:
+
+  | origin | typical departures in the 3h window | found at the shipped budget |
+  | --- | --- | --- |
+  | village halt (weight < 40) | 5 | 89% |
+  | small station (40–100) | 9 | 81% |
+  | town (100–250) | 16 | 79% |
+  | hub (250+) | 45 | **55%** |
+
+  The pattern is the budget, not the ranking: eight transfer boards go a long
+  way among five departures and nowhere among forty-five. Quoting one aggregate
+  number hides this, and since most journeys start at the busy end, any average
+  over stations flatters the cases people actually use. Of the misses, three
+  quarters are transfer stations the ranking never reaches; the rest are excluded
+  by the detour or weight filters.
 
   An earlier live measurement over 44 journeys reported 98%. That number was
   too kind: its ground truth was built by walking the same station boards the
