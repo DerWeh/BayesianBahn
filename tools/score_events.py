@@ -164,6 +164,24 @@ def polled_by(times: list[float], when: float) -> bool:
     return bool(times) and times[0] <= when
 
 
+def last_poll_before(times: list[float], when: float) -> float | None:
+    """The freshest reading we actually hold at `when`.
+
+    Our knowledge of DB is only as current as the last successful poll, whether
+    or not it produced an observation — a stop absent from `fchg` tells us "on
+    time as of that poll", not "on time as of now". So the honest lead time runs
+    from the poll, and with a ten-minute cadence a nominal five-minute forecast
+    is really five to fifteen minutes old.
+    """
+    found = None
+    for at in times:
+        if at <= when:
+            found = at
+        else:
+            break
+    return found
+
+
 def build_events(stops: dict, polls: dict, horizons=HORIZONS) -> list[dict]:
     events = []
     for stop in stops.values():
@@ -174,12 +192,17 @@ def build_events(stops: dict, polls: dict, horizons=HORIZONS) -> list[dict]:
             when = wall_to_epoch(stop.planned - tau)
             if not polled_by(station_polls, when):
                 continue  # we were not collecting yet; not DB's silence
+            read_at = last_poll_before(station_polls, when)
+            assert read_at is not None
             db = stop.forecast_at(when)
+            # Bucket on what the lead time really was, not what we asked for.
+            lead = (wall_to_epoch(stop.planned) - read_at) / 60
             # Absent from fchg, but we were polling: DB is saying on time.
             events.append({
                 "eva": stop.eva, "trip": stop.trip, "cat": stop.cat,
                 "num": stop.num, "line": stop.line, "planned": stop.planned,
-                "tau": tau, "db": db if db is not None else 0,
+                "tau": tau, "lead": round(lead, 1),
+                "db": db if db is not None else 0,
                 "db_explicit": db is not None,
                 "cancelled": stop.cancelled_at(when),
                 "settled": settled,
@@ -196,8 +219,8 @@ def score(events: list[dict], truth_key: str) -> None:
     print()
     if not usable:
         return
-    print(f"{'lead':>7}{'n':>7}{'DB MAE':>9}{'DB bias':>9}{'surprise':>10}"
-          f"{'plan MAE':>10}{'explicit':>10}")
+    print(f"{'bucket':>7}{'n':>7}{'real lead':>11}{'DB MAE':>9}{'DB bias':>9}"
+          f"{'surprise':>10}{'plan MAE':>10}{'explicit':>10}")
     for tau in sorted({e["tau"] for e in usable}, reverse=True):
         rows = [e for e in usable if e["tau"] == tau]
         truth = [e[truth_key] for e in rows]
@@ -206,7 +229,9 @@ def score(events: list[dict], truth_key: str) -> None:
                        if t > e["db"] + SURPRISE_MINUTES) / len(rows)
         explicit = sum(1 for e in rows if e["db_explicit"]) / len(rows)
         label = f"{tau // 60}h" if tau >= 60 else f"{tau}m"
-        print(f"{label:>7}{len(rows):>7}{st.mean(abs(x) for x in db_err):>9.1f}"
+        leads = sorted(e["lead"] for e in rows)
+        real = f"{leads[0]:.0f}-{leads[-1]:.0f}m"
+        print(f"{label:>7}{len(rows):>7}{real:>11}{st.mean(abs(x) for x in db_err):>9.1f}"
               f"{st.mean(db_err):>9.1f}{surprise:>10.0%}"
               f"{st.mean(abs(t) for t in truth):>10.1f}{explicit:>10.0%}")
     print("\n'plan MAE' is the always-on-time forecaster: the bar DB must clear.")

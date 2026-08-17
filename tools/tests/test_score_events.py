@@ -186,3 +186,26 @@ def test_an_observation_with_no_plan_record_is_dropped(tmp_path: Path) -> None:
     out = write(tmp_path, [poll_rec(EPOCH_1800), obs_rec(EPOCH_1800, PLANNED + 5)])
     stops, _ = se.read_day(out, DAY)
     assert stops == {}
+
+
+def test_the_recorded_lead_time_is_the_real_one_not_the_nominal(tmp_path: Path) -> None:
+    """With a 10-minute cadence a "5 minute" forecast is 5-15 minutes old, and
+    labelling it 5 would move the crossover point we are trying to find."""
+    out = write(tmp_path, [
+        poll_rec(EPOCH_1800 - 3600), plan_rec(EPOCH_1800 - 3600),
+        poll_rec(EPOCH_1800 - 780),          # 13 minutes before arrival
+        obs_rec(EPOCH_1800 - 780, PLANNED + 4),
+    ])
+    stops, polls = se.read_day(out, DAY)
+    event = se.build_events(stops, polls, horizons=(5,))[0]
+    assert event["tau"] == 5
+    assert event["lead"] == 13.0, "the freshest reading we hold is 13 min old"
+
+
+def test_lead_time_runs_from_the_poll_even_with_no_observation(tmp_path: Path) -> None:
+    """A stop absent from fchg says "on time as of that poll", not as of now."""
+    out = write(tmp_path, [poll_rec(EPOCH_1800 - 3600), plan_rec(EPOCH_1800 - 3600),
+                           poll_rec(EPOCH_1800 - 900)])
+    stops, polls = se.read_day(out, DAY)
+    event = se.build_events(stops, polls, horizons=(5,))[0]
+    assert event["db"] == 0 and event["lead"] == 15.0

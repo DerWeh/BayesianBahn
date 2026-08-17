@@ -73,6 +73,15 @@ HAFAS = "https://v6.db.transport.rest"
 UA = "BayesianBahn/0.1 (F-Droid; FOSS delay prediction; evaluation harness)"
 
 CADENCE_MINUTES = 10
+# Polling exactly on the ten-minute grid would sample DB at a fixed phase of
+# whatever cycle it regenerates `fchg` on, so any staleness in what we read
+# would be constant rather than averaging out — and scheduled arrivals cluster
+# on clock-friendly minutes, which is the same grid. A uniform offset inside
+# the slot de-correlates both, fully for a one- or five-minute cycle. It also
+# spreads the lead times we end up holding, which widens the axis the
+# comparison is plotted against. The slot bookkeeping is unaffected: the offset
+# is smaller than a slot, so a poll still lands in its own bucket.
+JITTER_SECONDS = 300
 # Trains are polled while they are still ahead of us; four hours of plan covers
 # everything that can still be running when the next poll comes round.
 PLAN_HORIZON_HOURS = 4
@@ -352,7 +361,7 @@ class Collector:
         deadline = self._now() + minutes * 60 if minutes else None
         last_hafas = 0.0
         while not self.stopping:
-            target = slot_start(self._now())
+            target = slot_start(self._now()) + rng.uniform(0, JITTER_SECONDS)
             if deadline and target > deadline:
                 break
             while not self.stopping and self._now() < target:

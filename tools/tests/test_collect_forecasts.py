@@ -345,3 +345,28 @@ def test_health_notices_a_station_that_never_answers() -> None:
 def test_health_of_an_empty_journal_is_not_an_error() -> None:
     got = cf.health([], expected_stations=20)
     assert got["rounds"] == 0 and got["missed_slots"] == 0 and got["last_at"] is None
+
+
+def test_polls_are_jittered_inside_their_slot(tmp_path: Path) -> None:
+    """Sampling on the exact grid would fix our phase against DB's update cycle
+    and against the clock-friendly minutes trains are scheduled on."""
+    import random
+    seen = set()
+    for seed in range(6):
+        clock = [dt.datetime(2026, 6, 10, 12, 0).timestamp()]
+        got = collector(tmp_path / f"s{seed}", {"/plan/": PLAN, "/fchg/": FCHG}, clock)
+        # Long enough that the jittered first slot always fits inside it.
+        got.run(minutes=20, sleep=lambda s: clock.__setitem__(0, clock[0] + max(s, 1)),
+                rng=random.Random(seed))
+        records, _ = cf.Journal.read(
+            tmp_path / f"s{seed}" / "forecasts-2026-06-10.jsonl")
+        polls = [r["at"] for r in records if r["t"] == "poll"]
+        assert polls
+        seen.add(min(polls) % (cf.CADENCE_MINUTES * 60))
+    assert len(seen) > 1, "different seeds must land at different offsets"
+    assert all(0 <= s <= cf.JITTER_SECONDS + 60 for s in seen), "but inside the slot"
+
+
+def test_jitter_does_not_move_a_poll_out_of_its_slot() -> None:
+    """Health accounting buckets by slot; the offset must stay smaller than one."""
+    assert cf.JITTER_SECONDS < cf.CADENCE_MINUTES * 60
