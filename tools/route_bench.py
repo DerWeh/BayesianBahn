@@ -199,13 +199,28 @@ def km(a: Station, b: Station) -> float:
 # --- snapshot ----------------------------------------------------------------
 
 
+def candidate_files(data_dirs: list[Path], day: dt.date) -> list[Path]:
+    """The archive files that can contain `day`.
+
+    Reading all of them to extract one day scans ~5 GB and was enough to get
+    the process OOM-killed. The monthly files are named data-YYYY-MM.parquet,
+    so the month is decidable from the name; the daily cache from
+    build_recent.py (data-recent-*.parquet) is small and covers arbitrary
+    recent days, so those are always included.
+    """
+    month = f"data-{day:%Y-%m}.parquet"
+    return sorted(f for d in data_dirs for f in d.glob("data-*.parquet")
+                  if f.name == month or f.name.startswith("data-recent"))
+
+
 def snapshot(data_dirs: list[Path], day: dt.date, out: Path) -> None:
     """Extract one day into a small parquet, so `bench` starts in seconds."""
     import polars as pl
 
-    files = sorted(f for d in data_dirs for f in d.glob("data-*.parquet"))
+    files = candidate_files(data_dirs, day)
     if not files:
-        raise SystemExit(f"no data-*.parquet in {[str(d) for d in data_dirs]}")
+        raise SystemExit(f"no data-*.parquet covering {day} in "
+                         f"{[str(d) for d in data_dirs]}")
     # The monthly archive stores ns and build_recent.py us; normalise as
     # build_boards.py does, or the concat of the two rejects the mix.
     unit = pl.Datetime("us")
@@ -325,12 +340,18 @@ def search(tt: Timetable, origin: Station, dest: Station, depart: int,
 
     `budget` is passed separately from `cfg.max_attempts` so one generous run
     yields the whole budget curve: solved-at-b is first_hit <= b.
+
+    `first_arrival` is when that itinerary reaches the destination. Recall alone
+    cannot separate a good route from an absurd one — a change 130 km the wrong
+    way is still a one-change connection — and the app ranks itineraries by
+    arrival, so a strategy that finds routes nobody would ride scores the same
+    on recall and worse here.
     """
     board = feeders(tt, origin.eva, depart)
     others = [f for f in board if not any(eva == dest.eva for eva, _ in f.path)]
     direct = len(board) - len(others)
 
-    attempts, first_hit, tried = 0, None, set()
+    attempts, first_hit, first_arrival, tried = 0, None, None, set()
     for f in others[:cfg.scan]:
         if attempts >= budget:
             break
@@ -345,14 +366,23 @@ def search(tt: Timetable, origin: Station, dest: Station, depart: int,
             if not here:
                 continue  # the feeder does not reach it inside the 4h window
             ready = here[0].arr + TRANSFER_MINUTES
-            if any(s.dep is not None and s.dep >= ready and covers(s.cat)
-                   and s.ride != f.ride
-                   and any(eva == dest.eva for eva, _ in s.path)
-                   for s in at):
+            # The passenger boards the first connecting train that has not left;
+            # its arrival at the destination is this itinerary's arrival.
+            onward = sorted(
+                (s for s in at
+                 if s.dep is not None and s.dep >= ready and covers(s.cat)
+                 and s.ride != f.ride
+                 and any(eva == dest.eva for eva, _ in s.path)),
+                key=lambda s: s.dep or 0,
+            )
+            if onward:
                 if first_hit is None:
                     first_hit = attempts
+                    first_arrival = next(a for eva, a in onward[0].path
+                                         if eva == dest.eva)
                 break  # transferItinerary returns on its first success
-    return {"direct": direct, "first_hit": first_hit, "attempts": attempts}
+    return {"direct": direct, "first_hit": first_hit, "attempts": attempts,
+            "first_arrival": first_arrival}
 
 
 # --- query sets ---------------------------------------------------------------

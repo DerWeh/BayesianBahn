@@ -258,13 +258,27 @@ def test_search_finds_the_connection_and_reports_its_attempt() -> None:
     )
     got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
     assert got["first_hit"] == 1 and got["direct"] == 0
+    assert got["first_arrival"] == BASE + 70
+
+
+def test_search_reports_the_arrival_of_the_first_catchable_train() -> None:
+    """Two onward trains: the itinerary is the earlier one, not the best one."""
+    by_eva, origin, dest, _ = ranking_setup()
+    tt = tt_of(
+        ("RE", "1", [("O", None, BASE + 5), ("MID", BASE + 30, None)]),
+        ("RB", "2", [("MID", None, BASE + 45), ("D", BASE + 90, None)]),
+        ("RB", "3", [("MID", None, BASE + 50), ("D", BASE + 70, None)]),
+    )
+    got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
+    assert got["first_arrival"] == BASE + 90, "boarding the first train that runs"
 
 
 def test_search_counts_the_direct_trains_separately() -> None:
     by_eva, origin, dest, _ = ranking_setup()
     tt = tt_of(("RE", "9", [("O", None, BASE + 5), ("D", BASE + 50, None)]))
     got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
-    assert got == {"direct": 1, "first_hit": None, "attempts": 0}
+    assert got == {"direct": 1, "first_hit": None, "attempts": 0,
+                   "first_arrival": None}
 
 
 def test_search_stops_at_the_budget() -> None:
@@ -376,3 +390,25 @@ def test_shipped_station_list_parses() -> None:
     assert by_eva["8000170"].name == "Ulm Hbf"
     assert by_eva["8000144"].weight >= rb.MIN_TRANSFER_WEIGHT
     assert 40 < by_eva["8000170"].lat < 55
+
+
+def test_only_the_relevant_archive_files_are_opened(tmp_path: Path) -> None:
+    """Extracting one day used to scan every monthly file — ~5 GB, and enough
+    to get the process killed."""
+    data = tmp_path / "data"
+    data.mkdir()
+    for name in ("data-2025-11.parquet", "data-2026-03.parquet",
+                 "data-2026-06.parquet", "data-recent-2026-06-11.parquet"):
+        (data / name).touch()
+    got = {f.name for f in rb.candidate_files([data], dt.date(2026, 3, 11))}
+    assert got == {"data-2026-03.parquet", "data-recent-2026-06-11.parquet"}, (
+        "the day's own month plus the daily cache, and nothing else"
+    )
+
+
+def test_a_day_no_archive_file_can_cover_is_refused(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "data-2026-06.parquet").touch()
+    with pytest.raises(SystemExit, match="covering"):
+        rb.snapshot([data], dt.date(2011, 1, 1), tmp_path / "out.parquet")
