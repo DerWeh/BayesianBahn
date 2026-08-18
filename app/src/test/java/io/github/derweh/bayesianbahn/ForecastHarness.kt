@@ -121,6 +121,16 @@ class ForecastHarness {
                         """"cdf_below":${d.cdf(truth - 1.0)},""" +
                         """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
                         """"q90":${d.quantile(0.9)},"source":${q(forecast.source.name)},""" +
+                        // Connection events carry the feeder arrival delay at
+                        // which the change stops working. P(catch) is then just
+                        // the model's own CDF there — the distribution answering
+                        // the question DB answers with a yes or a no.
+                        (event.int("threshold")?.let {
+                            """"threshold":$it,"p_catch":${d.cdf(it.toDouble())},""" +
+                                """"db_catch_p":${if (event.bool("db_catch") == true) 1 else 0},""" +
+                                """"caught":${event.bool("caught")},""" +
+                                """"slack":${event.int("slack")},"""
+                        } ?: "") +
                         """"runs":${forecast.runCount}}""",
                 )
                 writer.newLine()

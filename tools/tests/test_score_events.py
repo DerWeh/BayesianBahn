@@ -350,3 +350,98 @@ def test_departure_delay_is_read_from_the_archive(tmp_path: Path) -> None:
     data = archive_file(tmp_path / "arch", [arch_row(7, dep_delay=9)])
     got = se.load_truth([data], DAY, {"8000001"})[("8000001", "RE", "1", PLANNED)]
     assert got["delay"] == 7 and got["dep_delay"] == 9
+
+
+# --- one-change journeys -----------------------------------------------------
+
+
+def conn_plan(at, *, trip, par=None, pdp=None, num="1", cat="RE", eva="8000001"):
+    return {"t": "plan", "at": int(at), "eva": eva, "id": trip, "cat": cat,
+            "num": num, "line": None, "par": par, "pdp": pdp, "ppth": []}
+
+
+def test_trip_start_comes_from_the_trip_id() -> None:
+    stop = se.Stop(eva="1", trip="-297098023597558982-2608171611-32", cat="RE",
+                   num="1", line=None, planned=PLANNED)
+    assert stop.trip_start() == cf.iris_time("2608171611")
+
+
+def test_a_trip_id_without_a_timestamp_has_no_start() -> None:
+    stop = se.Stop(eva="1", trip="odd-id", cat="RE", num="1", line=None,
+                   planned=PLANNED)
+    assert stop.trip_start() is None
+
+
+def connection_day(tmp_path: Path, *, conn_dep_offset: int, feeder_delay: int,
+                   conn_delay: int):
+    """A feeder arriving at 18:00 and a connecting train leaving soon after."""
+    start = "2608171700"            # the feeder set off at 17:00
+    feeder = f"-1-{start}-4"
+    onward = "-2-2608171730-9"
+    boarded = se.wall_to_epoch(cf.iris_time(start))
+    out = write(tmp_path, [
+        poll_rec(boarded - 3600),
+        conn_plan(boarded - 3600, trip=feeder, par=PLANNED, pdp=PLANNED + 1),
+        conn_plan(boarded - 3600, trip=onward, pdp=PLANNED + conn_dep_offset, num="2"),
+        obs_rec(boarded - 3600, PLANNED, trip=feeder),
+    ])
+    stops, polls = se.read_day(out, DAY)
+    truth = {
+        ("8000001", "RE", "1", PLANNED):
+            {"delay": feeder_delay, "dep_delay": feeder_delay, "cancelled": False},
+        ("dep", "8000001", "RE", "2", PLANNED + conn_dep_offset):
+            {"delay": conn_delay, "dep_delay": conn_delay, "cancelled": False},
+    }
+    return se.build_connections(stops, polls, truth)
+
+
+def test_a_connection_is_caught_when_the_feeder_arrives_in_time(tmp_path: Path) -> None:
+    got = connection_day(tmp_path, conn_dep_offset=15, feeder_delay=0, conn_delay=0)
+    assert len(got) == 1
+    assert got[0]["caught"] is True
+    assert got[0]["slack"] == 15 - se.TRANSFER_MINUTES
+
+
+def test_a_late_feeder_misses_it(tmp_path: Path) -> None:
+    got = connection_day(tmp_path, conn_dep_offset=15, feeder_delay=20, conn_delay=0)
+    assert got[0]["caught"] is False
+
+
+def test_a_connection_that_waits_is_still_caught(tmp_path: Path) -> None:
+    """The change works if the onward train is late too — which is exactly the
+    case a yes/no answer computed from the timetable gets wrong."""
+    got = connection_day(tmp_path, conn_dep_offset=15, feeder_delay=20,
+                         conn_delay=25)
+    assert got[0]["caught"] is True
+
+
+def test_too_little_slack_is_not_a_connection_anyone_would_plan(tmp_path: Path) -> None:
+    assert connection_day(tmp_path, conn_dep_offset=6, feeder_delay=0,
+                          conn_delay=0) == []
+
+
+def test_too_much_slack_is_not_worth_scoring(tmp_path: Path) -> None:
+    assert connection_day(tmp_path, conn_dep_offset=120, feeder_delay=0,
+                          conn_delay=0) == []
+
+
+def test_the_reading_is_taken_before_the_feeder_set_off(tmp_path: Path) -> None:
+    """Once aboard the passenger has committed, so a later reading is useless."""
+    got = connection_day(tmp_path, conn_dep_offset=15, feeder_delay=0, conn_delay=0)
+    start = se.wall_to_epoch(cf.iris_time("2608171700"))
+    assert got[0]["read_at"] <= start
+
+
+def test_a_train_is_not_a_connection_to_itself(tmp_path: Path) -> None:
+    boarded = se.wall_to_epoch(cf.iris_time("2608171700"))
+    trip = "-1-2608171700-4"
+    out = write(tmp_path, [
+        poll_rec(boarded - 3600),
+        conn_plan(boarded - 3600, trip=trip, par=PLANNED, pdp=PLANNED + 10),
+    ])
+    stops, polls = se.read_day(out, DAY)
+    truth = {("8000001", "RE", "1", PLANNED):
+             {"delay": 0, "dep_delay": 0, "cancelled": False},
+             ("dep", "8000001", "RE", "1", PLANNED + 10):
+             {"delay": 0, "dep_delay": 0, "cancelled": False}}
+    assert se.build_connections(stops, polls, truth) == []
