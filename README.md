@@ -232,6 +232,34 @@ pixi run -e pipeline python tools/route_bench.py bench --day 2026-06-10 --querie
 pixi run -e pipeline python tools/route_bench.py sweep --day 2026-06-10 --queries 1200
 ```
 
+### Comparing the predictions against DB's own
+
+Does the app actually beat the number already on the platform display? That
+needs DB's forecast *as it changed over time*, which exists nowhere
+retrospectively — the archive records what a train did, never what was predicted
+beforehand. So it is collected live:
+
+```sh
+# runs continuously; append-only journal, resumes after a restart or power cut
+pixi run -e pipeline python tools/collect_forecasts.py run
+pixi run -e pipeline python tools/collect_forecasts.py status   # is it healthy?
+```
+
+Twenty stations (`tools/forecast_stations.csv`, stratified and fixed before any
+data existed) are polled every ten minutes with jitter. The archive publishes
+ground truth the next morning, after which one command scores the day end to end
+and rebuilds the report:
+
+```sh
+tools/run_evaluation.sh 2026-08-17 [2026-08-18 ...]
+```
+
+That runs the shipping Kotlin model — not the Python mirror in `backtest.py` —
+over the recorded forecasts via the opt-in `ForecastHarness` unit test, with the
+history trimmed to runs strictly before the day being predicted. `tools/report.py`
+renders the result as a self-contained HTML page carrying its own definitions,
+caveats and reproduction commands.
+
 `tools/journey_bench.py` does the same thing against live IRIS. It is limited to
 a few dozen journeys by politeness to a keyless public API, so it is no longer
 what the constants are tuned on — but it is the only one of the two that

@@ -21,6 +21,7 @@ __pycache__/
 tools/.timetable/
 tools/.forecasts/
 tools/.shards/
+tools/.scored/
 tools/.iris-cache/
 
 # Release signing — never commit
