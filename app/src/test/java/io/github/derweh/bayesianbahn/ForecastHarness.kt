@@ -109,6 +109,13 @@ class ForecastHarness {
                     """{"eva":${q(event.str("eva"))},"cat":${q(event.str("cat"))},""" +
                         """"num":${q(event.str("num"))},"tau":${event.int("tau")},""" +
                         """"lead":${event.dbl("lead")},"db":${event.int("db")},""" +
+                        // Passed through so the analysis can re-bin the same
+                        // scores against any anchor without rerunning the model.
+                        """"read_at":${event.dbl("read_at")},""" +
+                        """"planned":${event.int("planned")},""" +
+                        """"planned_dep":${event.int("planned_dep")},""" +
+                        """"archive":${event.int("archive")},""" +
+                        """"archive_dep":${event.int("archive_dep")},""" +
                         """"truth":$truth,"crps":${crps(d, truth.toDouble())},""" +
                         """"cdf_at":${d.cdf(truth.toDouble())},""" +
                         """"cdf_below":${d.cdf(truth - 1.0)},""" +

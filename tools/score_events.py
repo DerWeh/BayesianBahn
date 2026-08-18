@@ -81,7 +81,8 @@ class Stop:
     cat: str
     num: str
     line: str | None
-    planned: int                      # wall-clock minutes
+    planned: int                      # wall-clock minutes, planned arrival
+    planned_dep: int | None = None    # planned departure from the same stop
     obs: list[tuple[int, int | None, bool]] = field(default_factory=list)
 
     def forecast_at(self, when: float) -> int | None:
@@ -142,7 +143,7 @@ def read_day(out: Path, day: dt.date) -> tuple[dict[tuple[str, str], Stop], dict
                 continue  # a departure-only stop has no arrival to predict
             stops[(r["eva"], r["id"])] = Stop(
                 eva=r["eva"], trip=r["id"], cat=r["cat"], num=r["num"],
-                line=r.get("line"), planned=r["par"],
+                line=r.get("line"), planned=r["par"], planned_dep=r.get("pdp"),
             )
     for r in records:
         if r["t"] != "obs":
@@ -202,13 +203,51 @@ def build_events(stops: dict, polls: dict, horizons=HORIZONS) -> list[dict]:
             events.append({
                 "eva": stop.eva, "trip": stop.trip, "cat": stop.cat,
                 "num": stop.num, "line": stop.line, "planned": stop.planned,
-                "tau": tau, "lead": round(lead, 1),
+                "tau": tau, "lead": round(lead, 1), "read_at": read_at,
+                "planned_dep": stop.planned_dep,
                 "db": db if db is not None else 0,
                 "db_explicit": db is not None,
                 "cancelled": stop.cancelled_at(when),
                 "settled": settled,
             })
     return events
+
+
+# The four anchors a lead time can be measured to. Planned times are what a
+# passenger reads off a timetable; real ones are when the train actually moved.
+# Binning by a planned time conditions on something correlated with the outcome:
+# inside a "five minutes before arrival" bucket, the late trains had far more
+# real warning than the punctual ones, which flatters every forecaster at once.
+# Departure matters more than arrival for a decision — once aboard, the choice
+# is already made.
+ANCHORS = ("planned_arrival", "actual_arrival", "planned_departure",
+           "actual_departure")
+
+BUCKET_EDGES = (0, 10, 20, 45, 90, 180, 10 ** 9)
+BUCKET_LABELS = ("<10m", "10-20m", "20-45m", "45-90m", "1.5-3h", ">3h")
+
+
+def anchor_minutes(event: dict, anchor: str) -> float | None:
+    """The wall-clock minute the lead time is measured back from."""
+    if anchor == "planned_arrival":
+        return event.get("planned")
+    if anchor == "actual_arrival":
+        truth = event.get("archive")
+        return None if truth is None else event["planned"] + truth
+    if anchor == "planned_departure":
+        return event.get("planned_dep")
+    if anchor == "actual_departure":
+        dep = event.get("planned_dep")
+        delay = event.get("archive_dep")
+        return None if dep is None or delay is None else dep + delay
+    raise ValueError(anchor)
+
+
+def bucket_of(minutes: float) -> str | None:
+    for i in range(len(BUCKET_EDGES) - 1):
+        if BUCKET_EDGES[i] <= minutes < BUCKET_EDGES[i + 1]:
+            return BUCKET_LABELS[i]
+    return None
 
 
 def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
@@ -243,6 +282,9 @@ def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
             # stores journal times in; anything else shifts the join by an hour.
             planned=(planned.cast(pl.Int64) // 60_000_000),
             delay=((changed.cast(pl.Int64) - planned.cast(pl.Int64)) // 60_000_000),
+            dep_delay=((pl.col("departure_change_time").cast(unit).cast(pl.Int64)
+                        - pl.col("departure_planned_time").cast(unit).cast(pl.Int64))
+                       // 60_000_000),
             cancelled=pl.col("is_canceled"),
         )
         for f in files
@@ -251,6 +293,7 @@ def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
     return {
         (r["eva"], r["cat"], r["num"], r["planned"]):
             {"delay": 0 if r["delay"] is None else int(r["delay"]),
+             "dep_delay": 0 if r["dep_delay"] is None else int(r["dep_delay"]),
              "cancelled": bool(r["cancelled"])}
         for r in rows.iter_rows(named=True)
     }
@@ -268,6 +311,7 @@ def attach_truth(events: list[dict], truth: dict) -> dict[str, tuple[int, int]]:
         found = truth.get(key)
         if found is not None:
             e["archive"] = found["delay"]
+            e["archive_dep"] = found["dep_delay"]
             e["cancelled"] = e["cancelled"] or found["cancelled"]
         hit, total = rate.get(e["cat"], (0, 0))
         rate[e["cat"]] = (hit + (found is not None), total + 1)
@@ -314,13 +358,17 @@ def score(events: list[dict], truth_key: str) -> None:
           f"{SURPRISE_MINUTES} min later than predicted) — the missed connection.")
 
 
-def compare(scored: Path) -> None:
+def compare(scored: Path, anchor: str = "planned_arrival") -> None:
     """Our model against DB's number, on the events the JVM harness scored.
 
     Both forecasters see the same information state at each lead time, so every
-    row is paired by construction. CRPS and coverage have no DB counterpart —
-    DB publishes a time, not a distribution — so they are ours alone and belong
-    to the second test, the one that measures distribution quality.
+    row is paired by construction.
+
+    CRPS does have a DB counterpart, which is easy to miss: a point forecast is
+    a degenerate distribution, and its CRPS is exactly its absolute error. So
+    the DB MAE column doubles as DB's CRPS, and ours against it is a proper
+    scoring comparison that credits the whole distribution rather than only the
+    median. Coverage is ours alone — DB publishes no interval to cover with.
     """
     rows = [json.loads(line) for line in scored.read_text(encoding="utf-8").splitlines()
             if line.strip()]
@@ -329,11 +377,23 @@ def compare(scored: Path) -> None:
     sources: dict[str, int] = {}
     for r in rows:
         sources[r["source"]] = sources.get(r["source"], 0) + 1
-    print(f"n = {len(rows)} scored events; forecast source {sources}\n")
-    print(f"{'bucket':>7}{'n':>6}{'DB MAE':>8}{'ours':>7}{'DB bias':>9}{'ours':>7}"
+    print(f"n = {len(rows)} scored events; forecast source {sources}")
+    print(f"lead time measured back from the {anchor.replace('_', ' ')}\n")
+    binned: dict[str, list[dict]] = {}
+    for r in rows:
+        at = anchor_minutes(r, anchor)
+        if at is None:
+            continue
+        # `read_at` is the poll that produced the reading, in epoch seconds.
+        label = bucket_of((wall_to_epoch(at) - r["read_at"]) / 60)
+        if label:
+            binned.setdefault(label, []).append(r)
+    print(f"{'bucket':>8}{'n':>6}{'DB MAE':>8}{'ours':>7}{'DB bias':>9}{'ours':>7}"
           f"{'DB surp':>9}{'ours':>7}{'CRPS':>7}{'cover80':>9}")
-    for tau in sorted({r["tau"] for r in rows}, reverse=True):
-        g = [r for r in rows if r["tau"] == tau]
+    for label in BUCKET_LABELS:
+        g = binned.get(label)
+        if not g:
+            continue
         db = [r["db"] - r["truth"] for r in g]
         us = [r["q50"] - r["truth"] for r in g]
         db_surprise = sum(1 for r in g
@@ -341,14 +401,20 @@ def compare(scored: Path) -> None:
         our_surprise = sum(1 for r in g
                            if r["truth"] > r["q50"] + SURPRISE_MINUTES) / len(g)
         covered = sum(1 for r in g if r["q10"] <= r["truth"] <= r["q90"]) / len(g)
-        label = f"{tau // 60}h" if tau >= 60 else f"{tau}m"
-        print(f"{label:>7}{len(g):>6}{st.mean(abs(x) for x in db):>8.2f}"
+        print(f"{label:>8}{len(g):>6}{st.mean(abs(x) for x in db):>8.2f}"
               f"{st.mean(abs(x) for x in us):>7.2f}{st.mean(db):>9.2f}"
               f"{st.mean(us):>7.2f}{db_surprise:>9.0%}{our_surprise:>7.0%}"
               f"{st.mean(r['crps'] for r in g):>7.2f}{covered:>9.0%}")
     print(f"\nsurp = P(actual more than {SURPRISE_MINUTES} min later than predicted).")
     print("cover80 = share of truths inside q10..q90; nominal is 80%, so a lower")
     print("number means the distribution is too confident.")
+    print()
+    print("CRPS(F, y) = integral over x of (F(x) - 1{x >= y})^2 dx, in minutes.")
+    print("For a point forecast F is a step at m and this reduces to |m - y|, so")
+    print("the DB MAE column *is* DB's CRPS: comparing it against ours is a")
+    print("like-for-like comparison under a proper scoring rule, and the only")
+    print("one here that gives credit for the distribution rather than just the")
+    print("median.")
 
 
 def main() -> None:
@@ -363,6 +429,8 @@ def main() -> None:
     ap.add_argument("--stations", type=Path,
                     default=Path(__file__).parent / "forecast_stations.csv")
     ap.add_argument("--scored", type=Path, help="JVM harness output, for `compare`")
+    ap.add_argument("--anchor", choices=[*ANCHORS, "all"], default="planned_arrival",
+                    help="what the lead time is measured back from")
     ap.add_argument("--events-out", type=Path,
                     help="write every event as JSONL here, for the JVM harness")
     args = ap.parse_args()
@@ -370,7 +438,9 @@ def main() -> None:
     if args.command == "compare":
         if not args.scored:
             raise SystemExit("compare needs --scored, the JVM harness output")
-        compare(args.scored)
+        for anchor in (ANCHORS if args.anchor == "all" else [args.anchor]):
+            compare(args.scored, anchor)
+            print()
         return
 
     day = dt.date.fromisoformat(args.day)
