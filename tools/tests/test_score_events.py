@@ -220,18 +220,27 @@ def archive_file(path: Path, rows: list[dict]) -> Path:
     import polars as pl
     schema = {"eva": pl.String, "train_type": pl.String, "train_number": pl.String,
               "arrival_planned_time": pl.Datetime("ns"),
-              "arrival_change_time": pl.Datetime("ns"), "is_canceled": pl.Boolean}
+              "arrival_change_time": pl.Datetime("ns"),
+              "departure_planned_time": pl.Datetime("ns"),
+              "departure_change_time": pl.Datetime("ns"),
+              "is_canceled": pl.Boolean}
     path.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows, schema=schema).write_parquet(path / "data-2026-08.parquet")
     return path
 
 
-def arch_row(minute_delay, *, eva="08000001", cat="RE", num="1", cancelled=False):
+def arch_row(minute_delay, *, eva="08000001", cat="RE", num="1", cancelled=False,
+             dep_delay=None):
     planned = dt.datetime(2026, 8, 17, 18, 0)
+    departs = planned + dt.timedelta(minutes=2)
+    shift = dep_delay if dep_delay is not None else minute_delay
     return {"eva": eva, "train_type": cat, "train_number": num,
             "arrival_planned_time": planned,
             "arrival_change_time": (planned + dt.timedelta(minutes=minute_delay)
                                     if minute_delay is not None else None),
+            "departure_planned_time": departs,
+            "departure_change_time": (departs + dt.timedelta(minutes=shift)
+                                      if shift is not None else None),
             "is_canceled": cancelled}
 
 
@@ -260,7 +269,8 @@ def test_join_rate_is_reported_per_train_type() -> None:
                "cancelled": False},
               {"eva": "8000310", "cat": "TR", "num": "33622", "planned": PLANNED,
                "cancelled": False}]
-    truth = {("8000001", "RE", "1", PLANNED): {"delay": 4, "cancelled": False}}
+    truth = {("8000001", "RE", "1", PLANNED):
+             {"delay": 4, "dep_delay": 4, "cancelled": False}}
     rate = se.attach_truth(events, truth)
     assert rate == {"RE": (1, 1), "TR": (0, 1)}
     assert events[0]["archive"] == 4 and "archive" not in events[1]
@@ -304,3 +314,39 @@ def test_candidate_keys_try_the_number_then_the_line() -> None:
     # A line not already prefixed by the category gets it prepended.
     assert fs.candidate_keys("S", "42687", "1") == ["S_42687", "S_1"]
     assert fs.candidate_keys("RE", "", "RE9") == ["RE9"]
+
+
+# --- the binning matrix ------------------------------------------------------
+
+
+def test_the_actual_anchor_moves_a_late_train_to_a_longer_lead() -> None:
+    """A train 30 min late has its "5 min before planned arrival" reading taken
+    35 min before it actually arrives; binning by the plan hides that."""
+    event = {"planned": PLANNED, "planned_dep": PLANNED + 2, "archive": 30,
+             "archive_dep": 30}
+    assert se.anchor_minutes(event, "planned_arrival") == PLANNED
+    assert se.anchor_minutes(event, "actual_arrival") == PLANNED + 30
+    assert se.anchor_minutes(event, "planned_departure") == PLANNED + 2
+    assert se.anchor_minutes(event, "actual_departure") == PLANNED + 32
+
+
+def test_an_anchor_without_the_data_it_needs_is_skipped() -> None:
+    """A terminus has no departure, and an unjoined event has no actual time."""
+    assert se.anchor_minutes({"planned": PLANNED, "planned_dep": None},
+                             "planned_departure") is None
+    assert se.anchor_minutes({"planned": PLANNED}, "actual_arrival") is None
+
+
+def test_buckets_cover_the_lead_times_without_gaps() -> None:
+    assert se.bucket_of(0) == "<10m"
+    assert se.bucket_of(9.9) == "<10m"
+    assert se.bucket_of(10) == "10-20m"
+    assert se.bucket_of(44) == "20-45m"
+    assert se.bucket_of(200) == ">3h"
+    assert se.bucket_of(-1) is None, "a reading taken after the event is not a lead"
+
+
+def test_departure_delay_is_read_from_the_archive(tmp_path: Path) -> None:
+    data = archive_file(tmp_path / "arch", [arch_row(7, dep_delay=9)])
+    got = se.load_truth([data], DAY, {"8000001"})[("8000001", "RE", "1", PLANNED)]
+    assert got["delay"] == 7 and got["dep_delay"] == 9
