@@ -27,7 +27,18 @@ pytest = ">=8,<9"
 # The monthly rebuild path runs once a month in production; run it every push.
 test-pipeline = "pytest pipeline/tests tools/tests -q"
 
+[feature.evaluate.tasks]
+# Needs polars *and* the JDK, so it runs in an environment with both. The driver
+# is Python rather than a shell script: pixi's task shell is cross-platform but
+# has no loops or conditionals, and the stages need them.
+evaluate = "python tools/run_evaluation.py"
+collect = "python tools/collect_forecasts.py run"
+collect-status = "python tools/collect_forecasts.py status"
+
 [environments]
 # no-default-feature: without it this environment also pulls in gradle and a
 # JDK from [dependencies] — 1.4 GB that the data job and its tests never touch.
 pipeline = { features = ["pipeline"], no-default-feature = true }
+# The evaluation is the one job that needs both toolchains: polars to build the
+# events, the JDK to run the shipping model over them.
+evaluate = { features = ["pipeline", "evaluate"] }

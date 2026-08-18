@@ -592,14 +592,13 @@ def render(days, arrivals, connections, split, totals, out: Path) -> None:
         SURPRISE_MINUTES, TRANSFER_MINUTES,
         "One day" if len(days) == 1 else f"{len(days)} days",
         html.escape(
-            "# collect (runs continuously, survives restarts)\n"
-            "pixi run -e pipeline python tools/collect_forecasts.py run\n\n"
-            "# once the archive has published the day, score it end to end\n"
-            "tools/run_evaluation.sh " + " ".join(days) + "\n\n"
-            "# rebuild this page from the scored output\n"
-            "pixi run -e pipeline python tools/report.py \\\n"
-            "    --scored-dir tools/.scored --days " + " ".join(days) +
-            " \\\n    --out tools/.scored/report.html"),
+            "# collect (runs continuously, survives restarts and power cuts)\n"
+            "pixi run -e evaluate collect\n"
+            "pixi run -e evaluate collect-status      # is it still healthy?\n\n"
+            "# once the archive has published the day, score it and rebuild\n"
+            "# this page — stages already done are skipped, so adding a day\n"
+            "# costs only that day\n"
+            "pixi run -e evaluate evaluate " + " ".join(days)),
         dt.date.today().isoformat(),
         html.escape(", ".join(days)),
     ))

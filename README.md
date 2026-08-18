@@ -241,8 +241,8 @@ beforehand. So it is collected live:
 
 ```sh
 # runs continuously; append-only journal, resumes after a restart or power cut
-pixi run -e pipeline python tools/collect_forecasts.py run
-pixi run -e pipeline python tools/collect_forecasts.py status   # is it healthy?
+pixi run -e evaluate collect
+pixi run -e evaluate collect-status   # rounds, missed slots, stations answering
 ```
 
 Twenty stations (`tools/forecast_stations.csv`, stratified and fixed before any
@@ -251,8 +251,12 @@ ground truth the next morning, after which one command scores the day end to end
 and rebuilds the report:
 
 ```sh
-tools/run_evaluation.sh 2026-08-17 [2026-08-18 ...]
+pixi run -e evaluate evaluate 2026-08-17 [2026-08-18 ...]
 ```
+
+The `evaluate` environment is the only one carrying both toolchains — polars to
+build the events, the JDK to run the model over them. Stages skip work already
+done, so adding a day costs only that day.
 
 That runs the shipping Kotlin model — not the Python mirror in `backtest.py` —
 over the recorded forecasts via the opt-in `ForecastHarness` unit test, with the
