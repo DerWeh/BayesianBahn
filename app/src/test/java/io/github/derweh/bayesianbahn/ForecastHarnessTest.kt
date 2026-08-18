@@ -1,6 +1,10 @@
 package io.github.derweh.bayesianbahn
 
+import io.github.derweh.bayesianbahn.data.StationHistory
+import io.github.derweh.bayesianbahn.data.TrainHistory
 import io.github.derweh.bayesianbahn.model.DelayDistribution
+import io.github.derweh.bayesianbahn.model.HistoricalRun
+import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -94,6 +98,39 @@ class ForecastHarnessTest {
         }
         // y = 5: (0-0)^2 below 2, (0.5)^2 over [2,5) = 3 * 0.25, 0 above.
         assertEquals(0.75, ForecastHarness.crps(steps, 5.0), 1e-9)
+    }
+
+    @Test
+    fun `history is trimmed to what was known the day before`() {
+        // The published recent overlay is rebuilt daily and now covers the day
+        // under evaluation, so a shard downloaded today carries the answer.
+        val day = LocalDate.of(2026, 8, 17)
+        val runs = listOf(
+            HistoricalRun(day.minusDays(2), "18:40", 3, null, null, false),
+            HistoricalRun(day.minusDays(1), "18:40", 5, null, null, false),
+            HistoricalRun(day, "18:40", 41, null, null, false),
+            HistoricalRun(day.plusDays(1), "18:40", 2, null, null, false),
+        )
+        val history = TrainHistory("RE 1", "RE", mapOf("A" to StationHistory("1", runs)))
+        val trimmed = ForecastHarness.asOf(history, day)
+        assertEquals(2, trimmed.stations.getValue("A").runs.size)
+        assertTrue(trimmed.stations.getValue("A").runs.all { it.date.isBefore(day) })
+    }
+
+    @Test
+    fun `a history that still leaks is refused`() {
+        val day = LocalDate.of(2026, 8, 17)
+        val history = TrainHistory(
+            "RE 1", "RE",
+            mapOf("A" to StationHistory("1",
+                listOf(HistoricalRun(day, "18:40", 41, null, null, false)))),
+        )
+        try {
+            ForecastHarness.requireNoRunsOnOrAfter(history, day)
+            throw AssertionError("expected the leak check to fire")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message!!.contains("on or after"))
+        }
     }
 
     @Test

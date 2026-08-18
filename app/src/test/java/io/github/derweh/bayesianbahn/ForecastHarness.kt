@@ -3,6 +3,7 @@ package io.github.derweh.bayesianbahn
 import io.github.derweh.bayesianbahn.data.HistoryRepository
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.TrainHistory
+import io.github.derweh.bayesianbahn.data.StationHistory
 import io.github.derweh.bayesianbahn.model.DelayDistribution
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -59,6 +60,7 @@ class ForecastHarness {
         }
         val out = File(requireNotNull(System.getenv("HARNESS_OUT")))
         val day = LocalDate.parse(requireNotNull(System.getenv("HARNESS_DAY")))
+        val blind = System.getenv("HARNESS_BLIND") != null
 
         val histories = ShardStore(shards)
         val predictor = Predictor()
@@ -77,10 +79,9 @@ class ForecastHarness {
                 }
                 val history = histories.load(
                     event.str("cat")!!, event.str("num")!!, event.str("line"),
-                )
-                // The model must not see the day it is predicting. The published
-                // shards end the day before, but asserting beats trusting.
+                )?.let { asOf(it, day) }
                 history?.let {
+                    // Belt and braces: asOf should have made this impossible.
                     requireNoRunsOnOrAfter(it, day)
                     withHistory++
                 }
@@ -92,7 +93,12 @@ class ForecastHarness {
                     stationName = "",
                     trainCategory = event.str("cat")!!,
                     plannedTimeMillis = plannedMillis,
-                    liveDelayMinutes = event.dbl("db"),
+                    // HARNESS_BLIND drops the live signal, isolating what the
+                    // history alone predicts. The app's live path feeds DB's
+                    // forecast for *this* station into a model trained on the
+                    // actual delay at the *previous* stop — a documented
+                    // approximation whose cost is worth measuring.
+                    liveDelayMinutes = if (blind) null else event.dbl("db"),
                     // Pinned: recency weighting depends on it, so leaving it as
                     // "now" would make the same input score differently on a
                     // rerun and destroy the regression yardstick.
@@ -171,6 +177,22 @@ class ForecastHarness {
         fun wallMinutesToMillis(minutes: Int): Long =
             Instant.ofEpochSecond(minutes * 60L).atZone(ZoneId.of("UTC")).toLocalDateTime()
                 .atZone(BERLIN).toInstant().toEpochMilli()
+
+        /**
+         * History as the app would have held it the evening before.
+         *
+         * The published `shards-recent` overlay is rebuilt daily and now covers
+         * the evaluated day itself, so a shard fetched today carries the answer.
+         * Trimming here rather than relying on when the shards were downloaded
+         * makes the score a function of its inputs alone — which is the whole
+         * point of a yardstick meant to compare one commit against another.
+         */
+        fun asOf(history: TrainHistory, day: LocalDate): TrainHistory =
+            history.copy(
+                stations = history.stations.mapValues { (_, station) ->
+                    station.copy(runs = station.runs.filter { it.date.isBefore(day) })
+                },
+            )
 
         fun requireNoRunsOnOrAfter(history: TrainHistory, day: LocalDate) {
             val leak = history.stations.values
