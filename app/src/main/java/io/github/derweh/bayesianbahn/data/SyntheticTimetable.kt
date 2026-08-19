@@ -5,6 +5,11 @@ import io.github.derweh.bayesianbahn.api.TimetableStop
 import io.github.derweh.bayesianbahn.api.TrainLabel
 import io.github.derweh.bayesianbahn.model.GermanCalendar
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -24,9 +29,11 @@ import java.time.ZoneId
  * ahead, so predictions run blind — and the UI says so.
  */
 class SyntheticTimetable(
-    private val fetcher: CachedFetcher,
-    private val historyRepository: HistoryRepository,
+    private val fetcher: ByteSource,
+    private val historyRepository: HistorySource,
     private val boardUrl: String = BOARD_URL,
+    /** Shard loads in flight per board; see [MAX_CONCURRENT_SHARDS]. */
+    private val concurrency: Int = MAX_CONCURRENT_SHARDS,
 ) {
 
     /** One train from a station's history board. */
@@ -38,23 +45,54 @@ class SyntheticTimetable(
         val lastSeenEpochDay: Long,
     )
 
-    suspend fun board(eva: String, startMillis: Long, hours: Int): List<TimetableStop> =
+    /**
+     * A station board for [hours] from [startMillis], reconstructed from history.
+     *
+     * [keep] is the caller's own filter — a Deutschland-Ticket search discards
+     * long-distance trains anyway. Applying it here rather than afterwards is
+     * worth doing twice over: the shards of the discarded trains are never
+     * fetched, and the [MAX_STOPS] budget is spent on trains the caller can
+     * actually use.
+     */
+    suspend fun board(
+        eva: String,
+        startMillis: Long,
+        hours: Int,
+        keep: (TrainLabel) -> Boolean = { true },
+    ): List<TimetableStop> =
         withContext(Dispatchers.IO) {
             val bytes = fetcher.bytes("boards", eva, "$boardUrl$eva.jgz", BOARD_TTL_MILLIS)
                 ?: return@withContext emptyList()
             val entries = parseBoard(bytes.decodeToString())
             val stops = plan(entries, startMillis, hours)
+                .filter { keep(it.first.label) }
+                .take(MAX_STOPS)
             // Attach onward routes from the trains' shards so destination
             // matching and transfer picking work as with a live board.
-            stops.take(MAX_STOPS).mapNotNull { (stop, depTod) ->
-                val history = historyRepository.load(
-                    stop.label.category, stop.label.number, stop.label.line,
-                )
-                val path = pathAfter(history, eva, depTod ?: return@mapNotNull stop to null)
-                stop to path
-            }.map { (stop, path) ->
-                if (path == null || stop.departure == null) stop
-                else stop.copy(departure = stop.departure!!.copy(plannedPath = path))
+            //
+            // One shard per stop, and doing them in sequence *was* the cost of a
+            // future-date search: forty stops, each up to four round trips on a
+            // miss, repeated for every board the planner opens. They do not
+            // depend on each other, so they run together — under a small permit
+            // count, which is enough to hide the latency while staying a polite
+            // client of a public file host.
+            val gate = Semaphore(concurrency)
+            coroutineScope {
+                stops.map { (stop, depTod) ->
+                    async {
+                        if (depTod == null || stop.departure == null) return@async stop
+                        val path = gate.withPermit {
+                            pathAfter(
+                                historyRepository.load(
+                                    stop.label.category, stop.label.number, stop.label.line,
+                                ),
+                                eva,
+                                depTod,
+                            )
+                        }
+                        stop.copy(departure = stop.departure!!.copy(plannedPath = path))
+                    }
+                }.awaitAll()
             }
         }
 
@@ -68,6 +106,13 @@ class SyntheticTimetable(
 
         /** Bound on shard fetches per synthetic board. */
         const val MAX_STOPS = 40
+
+        /**
+         * Shard loads in flight at once per board. Enough to hide the latency
+         * that dominated a future-date search, small enough that the app stays
+         * a well-behaved client of a public file host.
+         */
+        const val MAX_CONCURRENT_SHARDS = 6
 
         /** A stop this many minutes after the reference is "later on the route". */
         const val ROUTE_WINDOW_MIN = 600

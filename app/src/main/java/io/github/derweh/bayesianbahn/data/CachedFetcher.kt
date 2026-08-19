@@ -8,6 +8,14 @@ import java.io.IOException
 import java.util.zip.GZIPInputStream
 
 /**
+ * The one thing callers need from [CachedFetcher]. Narrowing it to this lets
+ * [SyntheticTimetable] be tested without an Android `Context`.
+ */
+fun interface ByteSource {
+    fun bytes(dirName: String, key: String, url: String, ttlMillis: Long): ByteArray?
+}
+
+/**
  * Small disk-backed fetch cache for the per-file data hosted on the repo's
  * data branches: returns gunzipped bytes, remembers misses (404) so unknown
  * keys are not re-asked constantly, and falls back to a stale cached copy
@@ -16,9 +24,9 @@ import java.util.zip.GZIPInputStream
 class CachedFetcher(
     private val context: Context,
     private val client: OkHttpClient,
-) {
+) : ByteSource {
 
-    fun bytes(dirName: String, key: String, url: String, ttlMillis: Long): ByteArray? {
+    override fun bytes(dirName: String, key: String, url: String, ttlMillis: Long): ByteArray? {
         val dir = File(context.filesDir, dirName).apply { mkdirs() }
         val cached = File(dir, "$key.jgz")
         val miss = File(dir, "$key.miss")

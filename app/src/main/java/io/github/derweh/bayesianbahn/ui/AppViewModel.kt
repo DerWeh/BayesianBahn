@@ -200,7 +200,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         dataUpdateError = null
         viewModelScope.launch {
             container.dataUpdater.update()
-                .onSuccess { dataMeta = it }
+                .onSuccess {
+                    dataMeta = it
+                    // The shards on disk have changed; anything already
+                    // remembered in memory is now the previous release.
+                    container.historyRepository.invalidate()
+                }
                 .onFailure { dataUpdateError = it.message ?: "update failed" }
             dataUpdating = false
         }

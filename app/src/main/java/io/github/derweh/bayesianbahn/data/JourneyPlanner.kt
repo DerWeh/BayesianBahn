@@ -100,8 +100,13 @@ class JourneyPlanner(
         var synthetic = false
         if (board.isEmpty() && syntheticTimetable != null) {
             // Beyond IRIS's ~1 day plan horizon: reconstruct the board from
-            // the historical timetable (weekday-aware, no live data).
-            board = syntheticTimetable.board(from.eva, departMillis, hours = ORIGIN_HOURS)
+            // the historical timetable (weekday-aware, no live data). The
+            // ticket filter goes in rather than being applied to the result:
+            // fetching a shard for a train this search cannot use is the
+            // slowest way to discard it.
+            board = syntheticTimetable.board(from.eva, departMillis, hours = ORIGIN_HOURS) {
+                !deutschlandTicketOnly || DeutschlandTicket.covers(it.category)
+            }
             synthetic = true
         }
         if (board.isEmpty() && offline) {

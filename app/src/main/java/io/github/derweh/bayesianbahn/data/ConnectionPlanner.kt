@@ -73,7 +73,13 @@ class ConnectionPlanner(
             emptyList()
         }
         if (board.isEmpty() && syntheticTimetable != null && boardStartMillis != null) {
-            board = syntheticTimetable.board(transfer.eva, boardStartMillis, hours = 4)
+            // The feeder itself has to survive the filter: it is looked up on
+            // this board by name below, and a Deutschland-Ticket search still
+            // needs to find the train it is already sitting on.
+            board = syntheticTimetable.board(transfer.eva, boardStartMillis, hours = 4) {
+                !deutschlandTicketOnly || DeutschlandTicket.covers(it.category) ||
+                    (it.category == feeder.label.category && it.number == feeder.label.number)
+            }
         }
         if (board.isEmpty() && offline) {
             return Outcome.Error(UserMessages.TIMETABLE_UNREACHABLE)
