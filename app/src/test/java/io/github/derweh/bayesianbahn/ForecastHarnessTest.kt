@@ -4,10 +4,15 @@ import io.github.derweh.bayesianbahn.data.StationHistory
 import io.github.derweh.bayesianbahn.data.TrainHistory
 import io.github.derweh.bayesianbahn.model.DelayDistribution
 import io.github.derweh.bayesianbahn.model.HistoricalRun
+import java.io.File
 import java.time.LocalDate
+import java.util.zip.GZIPOutputStream
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import java.time.Instant
 import java.time.ZoneId
 import kotlin.math.abs
@@ -157,5 +162,83 @@ class ForecastHarnessTest {
             .atZone(ZoneId.of("Europe/Berlin"))
         assertEquals(18, berlin.hour)
         assertTrue(abs(berlin.minute) == 0)
+    }
+
+    // --- the shard cache -----------------------------------------------------
+    //
+    // An unbounded cache scored one evening fine and then died of
+    // OutOfMemoryError on the first full day, because nothing here scaled with
+    // the number of trains until the data did. These tests pin the bound.
+
+    @get:Rule
+    val temp = TemporaryFolder()
+
+    /** A minimal v2 columnar shard, gzipped the way the branches publish it. */
+    private fun writeShard(root: File, tier: String, key: String) {
+        val dir = File(root, tier).apply { mkdirs() }
+        val json = """
+            {"train":"$key","type":"RE","stations":{"Somewhere":
+            {"eva":"8000001","days":[20000],"tod":[480],"t":[0],"a":[3],"p":[2]}}}
+        """.trimIndent()
+        GZIPOutputStream(File(dir, "$key.jgz").outputStream()).use {
+            it.write(json.toByteArray())
+        }
+    }
+
+    private fun store(keys: List<String>, capacity: Int): ForecastHarness.ShardStore {
+        val root = temp.newFolder()
+        keys.forEach { writeShard(root, "base", it) }
+        // The harness refuses a shard root with no base/, so create it even when
+        // the test writes no shards at all.
+        File(root, "base").mkdirs()
+        return ForecastHarness.ShardStore(root, capacity)
+    }
+
+    @Test
+    fun `a shard is parsed once when a train's events arrive together`() {
+        val s = store(listOf("RE_1", "RE_2"), capacity = 8)
+        repeat(5) { s.load("RE", "1", null) }
+        repeat(5) { s.load("RE", "2", null) }
+        assertEquals("grouped access should parse each shard exactly once", 2, s.parses)
+    }
+
+    @Test
+    fun `the cache does not grow past its capacity`() {
+        val keys = (1..5).map { "RE_$it" }
+        val s = store(keys, capacity = 2)
+        // Walk all five, then come back to the first. With a capacity of two it
+        // must have been evicted — which is the whole point: an unbounded cache
+        // would still be holding it, and would hold all four thousand.
+        (1..5).forEach { s.load("RE", "$it", null) }
+        assertEquals(5, s.parses)
+        s.load("RE", "1", null)
+        assertEquals("the evicted history should be re-read, not still resident", 6, s.parses)
+    }
+
+    @Test
+    fun `an evicted history is still returned correctly`() {
+        val s = store((1..5).map { "RE_$it" }, capacity = 2)
+        (1..5).forEach { s.load("RE", "$it", null) }
+        val again = s.load("RE", "1", null)
+        assertEquals("RE_1", again?.trainName)
+        assertEquals(1, again?.stations?.size)
+    }
+
+    @Test
+    fun `a train with no shard is not re-read on every event`() {
+        val s = store(emptyList(), capacity = 8)
+        repeat(5) { assertNull(s.load("RE", "999", null)) }
+        // The bug this pins: `getOrPut` treats a cached null as a miss, so every
+        // event of every history-less train went back to the filesystem.
+        assertEquals("a missing shard should be remembered as missing", 1, s.parses)
+    }
+
+    @Test
+    fun `the line key is tried when the number has no shard`() {
+        val s = store(listOf("RE_9"), capacity = 8)
+        // Number first, then line — so this costs two parses and finds the line.
+        val found = s.load("RE", "12345", "RE 9")
+        assertEquals("RE_9", found?.trainName)
+        assertEquals(2, s.parses)
     }
 }

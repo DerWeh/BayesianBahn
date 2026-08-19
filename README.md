@@ -264,6 +264,20 @@ history trimmed to runs strictly before the day being predicted. `tools/report.p
 renders the result as a self-contained HTML page carrying its own definitions,
 caveats and reproduction commands.
 
+Every comparison is reported with a 95% interval from a bootstrap over *trains*,
+not over predictions — one late train produces a dozen correlated predictions, and
+treating them as independent manufactures confidence that is not there. Each day
+is also shown unpooled, because the first pass at this read a single evening's 189
+missed connections as a result that the next day did not reproduce.
+
+As of two days (2026-08-17/18, 24,835 arrival predictions, 37,072 connections) the
+app's point forecast beats DB's by 0.22 min of CRPS [0.20, 0.24] and is better on
+the connections that actually failed. The **stated 80% range is not honest** — it
+contains the truth 57–69% of the time — so the distribution is the open problem,
+not the median. Withholding DB's live number improves the point forecast further
+(0.34 min [0.27, 0.40]), which is the measured cost of the previous-stop
+approximation documented in `Predictor`.
+
 `tools/journey_bench.py` does the same thing against live IRIS. It is limited to
 a few dozen journeys by politeness to a keyless public API, so it is no longer
 what the constants are tuned on — but it is the only one of the two that

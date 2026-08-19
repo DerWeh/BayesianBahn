@@ -146,16 +146,48 @@ class ForecastHarness {
                 "shard keys match HistoryRepository.shardKey"
         }
         println("harness: $withHistory of $scored events had history")
+        // A shard parsed far more often than there are trains means the bounded
+        // cache has started thrashing — the run still gets the right answer, but
+        // slowly, and that is worth seeing in the log before it gets worse.
+        println("harness: parsed ${histories.parses} shards for $scored events")
     }
 
-    /** Shards on disk, read the way HistoryRepository reads them. */
-    private class ShardStore(private val root: File) {
-        private val cache = mutableMapOf<String, TrainHistory?>()
+    /**
+     * Shards on disk, read the way HistoryRepository reads them.
+     *
+     * The cache is deliberately bounded. An unbounded one held every parsed
+     * history at once, which fit a single evening's ~1100 trains and then blew
+     * the 512 MB Gradle gives a test worker on the first full day's ~4000. The
+     * bound is safe because the events arrive grouped by train — a full day of
+     * arrivals switches train about as many times as it has distinct trains —
+     * so a small window keeps the hit rate while the footprint stays flat
+     * however many days are added.
+     */
+    internal class ShardStore(private val root: File, capacity: Int = CAPACITY) {
+        /**
+         * `LinkedHashMap` in access order is the JDK's LRU. `null` is a real
+         * cached value here — a train with no shard at all — so lookups test
+         * membership rather than nullness; `getOrPut` would treat a cached
+         * `null` as a miss and re-read the disk on every event of every train
+         * that has no history.
+         */
+        private val cache = object : LinkedHashMap<String, TrainHistory?>(16, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, TrainHistory?>) =
+                size > capacity
+        }
+
+        /** Shards parsed from disk, so a test can prove the cache is working. */
+        var parses = 0
+            private set
 
         fun load(category: String, number: String, line: String?): TrainHistory? {
             for (key in candidateKeys(category, number, line)) {
-                val found = cache.getOrPut(key) {
+                val found = if (cache.containsKey(key)) {
+                    cache[key]
+                } else {
+                    parses++
                     HistoryRepository.mergeHistories(read("base", key), read("recent", key))
+                        .also { cache[key] = it }
                 }
                 if (found != null) return found
             }
@@ -180,6 +212,15 @@ class ForecastHarness {
                     )
                 }
             }.distinct()
+
+        companion object {
+            /**
+             * Wide enough that the grouped-by-train access pattern never
+             * evicts a history it is about to want again, small enough that the
+             * footprint is a rounding error against the worker's heap.
+             */
+            const val CAPACITY = 64
+        }
     }
 
     companion object {

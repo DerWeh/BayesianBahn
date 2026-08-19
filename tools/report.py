@@ -23,6 +23,7 @@ import argparse
 import datetime as dt
 import html
 import json
+import random
 import statistics as st
 import sys
 from pathlib import Path
@@ -113,6 +114,104 @@ def connections_table(live: list[dict], blind: list[dict]) -> list[dict]:
             "db": brier(g_blind, "db_catch_p"),
             "blind": brier(g_blind, "p_catch"),
             "live": brier(g_live, "p_catch") if g_live else float("nan"),
+        })
+    return out
+
+
+def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
+               seed: int = 20260819) -> tuple[float, float, float]:
+    """Mean of `value`, with a 95% interval from a bootstrap over *trains*.
+
+    Resampling events would be wrong and flattering: one late ICE contributes a
+    dozen correlated predictions, so events are nowhere near independent and an
+    event-level interval comes out far too narrow. Resampling whole trains keeps
+    each cluster intact. Seeded, so the published interval is reproducible.
+    """
+    groups: dict[tuple, list[float]] = {}
+    for r in rows:
+        groups.setdefault((r["cat"], r["num"]), []).append(value(r))
+    keys = list(groups)
+    point = st.mean(v for g in groups.values() for v in g)
+    rng = random.Random(seed)
+    means = []
+    for _ in range(draws):
+        pick = [groups[keys[rng.randrange(len(keys))]] for _ in range(len(keys))]
+        means.append(st.mean(v for g in pick for v in g))
+    means.sort()
+    return point, means[int(0.025 * draws)], means[int(0.975 * draws)]
+
+
+def crps_gap(rows: list[dict]) -> tuple[float, float, float]:
+    """Our CRPS minus DB's, per prediction. Negative means we are better."""
+    return cluster_ci(rows, lambda r: r["crps"] - abs(r["db"] - r["truth"]))
+
+
+def brier_gap(rows: list[dict]) -> tuple[float, float, float]:
+    def gap(r):
+        outcome = 1.0 if r["caught"] else 0.0
+        return (r["p_catch"] - outcome) ** 2 - (r["db_catch_p"] - outcome) ** 2
+    return cluster_ci(rows, gap)
+
+
+def headline(live, blind, conn_live, conn_blind) -> list[dict]:
+    """The comparisons against DB, each with the uncertainty that decides it.
+
+    Without an interval a difference in the third decimal reads as a finding. It
+    was exactly this that made a single evening's 189 missed connections look
+    like a result.
+    """
+    missed_live = [r for r in conn_live if r["caught"] is False]
+    missed_blind = [r for r in conn_blind if r["caught"] is False]
+    rows = [
+        ("Arrival time, as shipped", "CRPS, minutes", len(live), crps_gap(live)),
+        ("Arrival time, history only", "CRPS, minutes", len(blind), crps_gap(blind)),
+        ("Every connection, as shipped", "Brier", len(conn_live), brier_gap(conn_live)),
+        ("Every connection, history only", "Brier", len(conn_blind), brier_gap(conn_blind)),
+        ("Missed connections, as shipped", "Brier", len(missed_live), brier_gap(missed_live)),
+        ("Missed connections, history only", "Brier", len(missed_blind),
+         brier_gap(missed_blind)),
+    ]
+    out = []
+    for what, unit, n, (point, lo, hi) in rows:
+        out.append({
+            "what": what, "unit": unit, "n": n,
+            "gap": point, "lo": lo, "hi": hi,
+            # The interval, not the point, decides what may be claimed.
+            "verdict": "we are better" if hi < 0 else
+                       ("DB is better" if lo > 0 else "not separated"),
+        })
+    return out
+
+
+def per_day(days: list[str], scored_dir: Path) -> list[dict]:
+    """One row per collected day: the same headline numbers, unpooled.
+
+    Pooling hides whether a result is a property of the model or of one day's
+    weather. A claim that moves when a day is added was never a claim.
+    """
+    out = []
+    for day in days:
+        base = scored_dir / day
+        live, blind = load(base / "arrivals-live.jsonl"), load(base / "arrivals-blind.jsonl")
+        conn_blind = load(base / "connections-blind.jsonl")
+        conn_live = load(base / "connections-live.jsonl")
+        if not blind:
+            continue
+        missed_l = [r for r in conn_live if r["caught"] is False]
+        missed_b = [r for r in conn_blind if r["caught"] is False]
+        out.append({
+            "day": day,
+            "n": len(blind),
+            "db": st.mean(abs(r["db"] - r["truth"]) for r in blind),
+            "blind": st.mean(r["crps"] for r in blind),
+            "live": st.mean(r["crps"] for r in live),
+            "live_cover": sum(1 for r in live if r["q10"] <= r["truth"] <= r["q90"]) / len(live),
+            "blind_cover": sum(1 for r in blind
+                               if r["q10"] <= r["truth"] <= r["q90"]) / len(blind),
+            "missed": len(missed_b),
+            "db_missed": brier(missed_b, "db_catch_p") if missed_b else float("nan"),
+            "blind_missed": brier(missed_b, "p_catch") if missed_b else float("nan"),
+            "live_missed": brier(missed_l, "p_catch") if missed_l else float("nan"),
         })
     return out
 
@@ -388,7 +487,8 @@ def num(x, digits=2):
     return "—" if x != x else f"{x:.{digits}f}"
 
 
-def render(days, arrivals, connections, split, totals, out: Path) -> None:
+def render(days, arrivals, connections, split, totals, out: Path, *,
+           gaps=(), daily=()) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -429,9 +529,30 @@ def render(days, arrivals, connections, split, totals, out: Path) -> None:
     for cls, k, v in tiles:
         doc.append(f'<div class="{cls}"><span class="k">{html.escape(k)}</span>'
                    f'<span class="v">{html.escape(v)}</span></div>')
-    doc.append("""</div>
-</section>
+    doc.append("</div>\n</section>")
 
+    if gaps:
+        doc.append("""
+<section>
+  <h2>The answer, with its uncertainty</h2>
+  <p>Each row is our score minus DB’s for the same predictions, so a
+  <strong>negative number means we are better</strong>. The interval is what
+  decides it: delays arrive in clusters — one late train produces a dozen
+  correlated predictions — so the range comes from resampling whole trains, not
+  individual predictions. Where the interval crosses zero, two days of data are
+  not enough to claim anything, however suggestive the middle number looks.</p>""")
+        doc.append(table(gaps, [
+            ("what", "Comparison", lambda r: html.escape(r["what"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("unit", "Score", lambda r: html.escape(r["unit"])),
+            ("gap", "Ours − DB", lambda r: num(r["gap"], 3)),
+            ("lo", "95% interval",
+             lambda r: f"{num(r['lo'], 3)} to {num(r['hi'], 3)}"),
+            ("verdict", "Reading", lambda r: html.escape(r["verdict"])),
+        ]))
+        doc.append("</section>")
+
+    doc.append("""
 <section>
   <h2>How far ahead, and how wrong</h2>
   <p>Lead time is counted back from the train’s <em>scheduled departure</em>,
@@ -512,8 +633,43 @@ def render(days, arrivals, connections, split, totals, out: Path) -> None:
         ("blind_p", "…mean P(catch)", lambda r: num(r["blind_p"])),
         ("live", "As shipped", lambda r: num(r["live"], 3)),
     ]))
-    doc.append("""</section>
+    doc.append("</section>")
 
+    if len(daily) > 1:
+        doc.append("""
+<section>
+  <h2>Does it hold from one day to the next?</h2>
+  <p>Everything above pools the collected days, which is the right way to get a
+  number and the wrong way to find out whether that number is real. Here each day
+  stands alone. A result worth acting on is one that points the same way in every
+  row; a column that changes its mind between days is telling you about the
+  weather, not about the model.</p>
+  <p>Read the row lengths too. The first day was collected from the evening
+  onwards, so it is both smaller and drawn only from the busiest hours — a day
+  with fewer missed connections here is not necessarily a calmer day.</p>""")
+        doc.append(table(daily, [
+            ("day", "Day", lambda r: html.escape(r["day"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("db", "DB", lambda r: num(r["db"])),
+            ("blind", "History only", lambda r: num(r["blind"])),
+            ("live", "As shipped", lambda r: num(r["live"])),
+            ("blind_cover", "80% range, history", lambda r: pct(r["blind_cover"])),
+            ("live_cover", "80% range, shipped", lambda r: pct(r["live_cover"])),
+        ]))
+        doc.append("""
+  <h3>The missed connections, day by day</h3>
+  <p>This is the smallest sample on the page and the one most easily
+  over-read.</p>""")
+        doc.append(table(daily, [
+            ("day", "Day", lambda r: html.escape(r["day"])),
+            ("missed", "Missed", lambda r: f"{r['missed']:,}"),
+            ("db_missed", "DB Brier", lambda r: num(r["db_missed"], 3)),
+            ("blind_missed", "History only", lambda r: num(r["blind_missed"], 3)),
+            ("live_missed", "As shipped", lambda r: num(r["live_missed"], 3)),
+        ]))
+        doc.append("</section>")
+
+    doc.append("""
 <section>
   <h2>Definitions</h2>
   <dl>
@@ -564,7 +720,13 @@ def render(days, arrivals, connections, split, totals, out: Path) -> None:
   <ul class="caveats">
     <li><strong>%s of data.</strong> Delays cluster by line, by weather and by
     incident, so the effective sample is far smaller than the counts suggest. A
-    single quiet day is one draw, not a result.</li>
+    single quiet day is one draw, not a result — which is why every comparison
+    above carries an interval and every day is also shown on its own.</li>
+    <li><strong>The days do not cover the same hours.</strong> Collection began
+    in the evening on the first day and ran round the clock afterwards, so a
+    difference between days mixes the date with the time of day. Both matter: DB’s
+    yes/no on connections is far more often right during the day than in the
+    evening, so the pooled figure for missed connections depends on the mix.</li>
     <li><strong>Every feasible pair counts as a connection</strong>, including
     changes nobody would make. That inflates how often connections are caught and
     flatters both forecasters against real journeys.</li>
@@ -629,7 +791,9 @@ def main() -> None:
     render(args.days, arrivals_table(live, blind),
            connections_table(conn_live, conn_blind),
            outcome_split(conn_live, conn_blind),
-           {"events": len(blind), "connections": len(conn_blind)}, args.out)
+           {"events": len(blind), "connections": len(conn_blind)}, args.out,
+           gaps=headline(live, blind, conn_live, conn_blind),
+           daily=per_day(args.days, args.scored_dir))
 
 
 if __name__ == "__main__":
