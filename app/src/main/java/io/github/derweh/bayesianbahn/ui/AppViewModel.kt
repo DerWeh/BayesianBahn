@@ -21,15 +21,51 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 sealed interface Route {
+    /**
+     * Identity of this screen's retained UI state.
+     *
+     * Only the current route is composed, so a screen navigated away from is
+     * removed from the composition and everything it held in `rememberSaveable`
+     * — typed stations, the chosen date, scroll positions — goes with it. The
+     * state holder in `MainActivity` keys off this to hand that state back when
+     * the screen returns.
+     *
+     * Two visits to the same station are the same screen and share their state;
+     * two different stations must not.
+     */
+    val key: String
+
     /** Home: from/to journey search. */
-    data object Journey : Route
+    data object Journey : Route {
+        override val key get() = "journey"
+    }
 
     /** Station search list for browsing live boards. */
-    data object Search : Route
-    data class Board(val station: Station) : Route
-    data class Prediction(val station: Station, val stop: TimetableStop) : Route
-    data class Connection(val station: Station, val stop: TimetableStop) : Route
+    data object Search : Route {
+        override val key get() = "search"
+    }
+
+    data class Board(val station: Station) : Route {
+        override val key get() = "board/${station.eva}"
+    }
+
+    data class Prediction(val station: Station, val stop: TimetableStop) : Route {
+        override val key get() = "prediction/${station.eva}/${stop.id}"
+    }
+
+    data class Connection(val station: Station, val stop: TimetableStop) : Route {
+        override val key get() = "connection/${station.eva}/${stop.id}"
+    }
 }
+
+/**
+ * Keys whose screen has left the stack, so the state held for them can go.
+ *
+ * Without this the holder would keep the state of every screen the session ever
+ * opened — every station board, every prediction — for as long as the app runs.
+ */
+fun staleKeys(known: Set<String>, stack: List<Route>): Set<String> =
+    known - stack.mapTo(mutableSetOf()) { it.key }
 
 sealed interface BoardState {
     data object Loading : BoardState

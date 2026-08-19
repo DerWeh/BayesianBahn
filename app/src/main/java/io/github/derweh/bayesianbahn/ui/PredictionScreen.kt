@@ -114,7 +114,7 @@ private fun PredictionContent(
     val q90 = dist.quantile(0.9)
 
     fun delayToClock(delayMin: Double): String =
-        planned?.let { formatTime(it + (delayMin * 60_000).toLong()) } ?: "+${delayMin.roundToInt()}"
+        planned?.let { formatTime(it + (delayMin * 60_000).toLong()) } ?: signedMinutes(delayMin)
 
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),

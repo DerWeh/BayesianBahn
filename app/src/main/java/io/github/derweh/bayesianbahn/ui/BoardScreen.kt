@@ -157,15 +157,16 @@ private fun BoardRow(
                 textDecoration = if (event.cancelled) TextDecoration.LineThrough else null,
             )
             val delay = event.liveDelayMinutes
+            val chip = delayChip(delay)
             if (event.cancelled) {
                 Text(
                     stringResource(R.string.cancelled),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
-            } else if (delay != null && delay != 0.0) {
+            } else if (delay != null && chip != null) {
                 Text(
-                    "+${delay.toInt()}",
+                    chip,
                     style = MaterialTheme.typography.labelMedium,
                     color = if (delay >= 5) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
                     fontWeight = FontWeight.Bold,
