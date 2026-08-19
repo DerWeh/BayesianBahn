@@ -36,7 +36,14 @@ GERMAN_HOLIDAYS = holidays_lib.country_holidays("DE") | holidays_lib.country_hol
     "DE", subdiv="BY"
 )
 
-LONG_DISTANCE = {"ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "D", "IR"}
+# Mirrors TrainClass.LONG_DISTANCE_CATEGORIES in DelayModel.kt. This is the one
+# boundary the backtest shares with the app: results are reported per class, so
+# a category on the wrong side is compared against the wrong prior and tunes the
+# app's parameters against a classification the app does not use. It drifted
+# once already — "WB" was added in the app and not here — so a test now pins it.
+LONG_DISTANCE = {
+    "ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "D", "IR", "WB",
+}
 
 MIN_DELAY, MAX_DELAY = -30, 360
 

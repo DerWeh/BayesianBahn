@@ -180,8 +180,5 @@ class DelayModel(private val stats: MutableMap<String, BucketStats> = mutableMap
 
         /** Minutes; live reports are never treated as more precise than this. */
         const val MIN_LIVE_SCALE = 1.2
-
-        fun fromSnapshot(snapshot: Map<String, BucketStats>) =
-            DelayModel(snapshot.toMutableMap())
     }
 }

@@ -86,11 +86,54 @@ def test_transfer_board_window_mirrors_the_connection_planner() -> None:
     assert hours == {rb.TRANSFER_HOURS}
 
 
-def test_deutschland_ticket_mirrors_the_app() -> None:
-    source = kotlin("model/DelayModel.kt")
-    block = re.search(r"LONG_DISTANCE_CATEGORIES = setOf\((.*?)\)", source, re.S)
-    assert block
-    expected = set(re.findall(r'"([^"]+)"', block.group(1)))
+def app_long_distance() -> set[str]:
+    """The app's own long-distance boundary, read from the source of truth."""
+    block = re.search(r"LONG_DISTANCE_CATEGORIES = setOf\((.*?)\)",
+                      kotlin("model/DelayModel.kt"), re.S)
+    assert block, "LONG_DISTANCE_CATEGORIES moved; the mirrors cannot be checked"
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
+def python_long_distance() -> dict[str, set[str]]:
+    """Every Python copy of that set, found rather than listed.
+
+    Listing them by hand is how the drift below survived: `backtest.py` grew a
+    copy, the test knew about two others, and nobody noticed the third was a
+    category short. Discovery means a fourth copy cannot be added without being
+    checked.
+    """
+    found = {}
+    for path in sorted(ROOT.glob("tools/*.py")) + sorted(ROOT.glob("pipeline/*.py")):
+        block = re.search(r"^LONG_DISTANCE = \{(.*?)\}", path.read_text(encoding="utf-8"),
+                          re.S | re.M)
+        if block:
+            found[str(path.relative_to(ROOT))] = set(re.findall(r'"([^"]+)"', block.group(1)))
+    return found
+
+
+def test_every_python_copy_of_the_long_distance_set_matches_the_app() -> None:
+    """`backtest.py` was missing "WB" — every Westbahn service was scored
+    against the regional prior, and the parameters it selected were chosen
+    under a classification the app does not use."""
+    copies = python_long_distance()
+    assert copies, "the discovery pattern found no copies at all; it has stopped working"
+    expected = app_long_distance()
+    for where, value in copies.items():
+        assert value == expected, (
+            f"{where} drifted from DelayModel.kt: "
+            f"missing {sorted(expected - value)}, extra {sorted(value - expected)}"
+        )
+
+
+def test_the_known_mirrors_are_among_the_discovered_ones() -> None:
+    """A rename that hides a copy from discovery would make the test above pass
+    for the wrong reason."""
+    assert {"tools/route_bench.py", "tools/journey_bench.py",
+            "pipeline/backtest.py"} <= set(python_long_distance())
+
+
+def test_the_imported_modules_agree_with_their_source() -> None:
+    expected = app_long_distance()
     assert rb.LONG_DISTANCE == expected
     assert journey_bench.LONG_DISTANCE == expected
 

@@ -5,7 +5,7 @@ their caveats and the commands that produced them, so the report carries all
 three. It is generated, never hand-edited: rerun it after another day of
 collection and the figures move on their own.
 
-Input layout, which tools/run_evaluation.sh produces:
+Input layout, which tools/run_evaluation.py produces:
 
     <scored-dir>/<day>/arrivals-live.jsonl
     <scored-dir>/<day>/arrivals-blind.jsonl

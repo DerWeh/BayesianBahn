@@ -5,6 +5,26 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [Unreleased]
+
+### Fixed
+- Opening a station board and going back no longer empties the From and To
+  fields. The results stayed on screen while the fields behind them were
+  cleared and the search button was disabled, so the search could not be rerun
+  without retyping both stations. The chosen date and time, the
+  Deutschland-Ticket setting and scroll positions were being lost the same way.
+- A train running early is labelled `-1` instead of `+-1`. Delays under a
+  minute now read as on time rather than `+0`, and a train 1.6 minutes late
+  reads as `+2` rather than `+1`.
+
+### Changed
+- Searching a date beyond the live timetable is much faster. The historical
+  timetable needs one delay-history file per departure, and those were fetched
+  one after another for every station the search looked at; they now load
+  together and are reused across the search instead of being fetched again for
+  each place they appear. Trains the search cannot use — long-distance ones in
+  a Deutschland-Ticket search — are no longer fetched at all.
+
 ## [0.1.2] - 2026-08-10
 
 ### Changed
