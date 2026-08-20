@@ -10,7 +10,6 @@ prevent.
 
 from __future__ import annotations
 
-import json
 import math
 import re
 import sys
@@ -159,44 +158,61 @@ def test_the_headline_covers_both_variants_and_the_missed_subset():
 # --- per-day replication ----------------------------------------------------
 
 
-def write_day(root: Path, day: str, arrivals, connections):
-    base = root / day
-    base.mkdir(parents=True)
-    for name, rows in (("arrivals-live", arrivals), ("arrivals-blind", arrivals),
-                       ("connections-live", connections),
-                       ("connections-blind", connections)):
-        (base / f"{name}.jsonl").write_text(
-            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+def tagged(day, rows):
+    """The rows as `main` hands them over: each carrying the day it came from."""
+    return [{**r, "day": day} for r in rows]
 
 
-def test_each_collected_day_gets_its_own_row(tmp_path):
-    write_day(tmp_path, "2026-08-17", [arrival(crps=1.0)], [connection(caught=False)])
-    write_day(tmp_path, "2026-08-18", [arrival(crps=2.0)], [connection(caught=False)])
-    rows = R.per_day(["2026-08-17", "2026-08-18"], tmp_path)
+def a_day(day, arrivals, connections):
+    """The four lists for one day, in per_day's argument order."""
+    return (tagged(day, arrivals), tagged(day, arrivals),
+            tagged(day, connections), tagged(day, connections))
+
+
+def days(*collected):
+    """Concatenate several days' worth of a_day() output, column by column."""
+    return [sum(lists, []) for lists in zip(*collected)]
+
+
+def test_each_collected_day_gets_its_own_row():
+    rows = R.per_day(["2026-08-17", "2026-08-18"],
+                     *days(a_day("2026-08-17", [arrival(crps=1.0)],
+                                 [connection(caught=False)]),
+                           a_day("2026-08-18", [arrival(crps=2.0)],
+                                 [connection(caught=False)])))
     assert [r["day"] for r in rows] == ["2026-08-17", "2026-08-18"]
     assert [r["live"] for r in rows] == [1.0, 2.0]
 
 
-def test_a_day_with_no_scored_events_is_skipped_not_zeroed(tmp_path):
+def test_a_later_day_is_not_filtered_away_by_an_earlier_one():
+    """per_day narrows the pooled rows once per day. Assigning the result back
+    to the same names would leave every day after the first empty."""
+    rows = R.per_day(["2026-08-17", "2026-08-18", "2026-08-19"],
+                     *days(a_day("2026-08-17", [arrival()], [connection()]),
+                           a_day("2026-08-18", [arrival()], [connection()]),
+                           a_day("2026-08-19", [arrival()], [connection()])))
+    assert len(rows) == 3
+
+
+def test_a_day_with_no_scored_events_is_skipped_not_zeroed():
     """A missing day must not appear as a day where everything scored zero."""
-    write_day(tmp_path, "2026-08-17", [arrival()], [connection()])
-    write_day(tmp_path, "2026-08-18", [], [])
-    rows = R.per_day(["2026-08-17", "2026-08-18"], tmp_path)
+    rows = R.per_day(["2026-08-17", "2026-08-18"],
+                     *days(a_day("2026-08-17", [arrival()], [connection()]),
+                           a_day("2026-08-18", [], [])))
     assert [r["day"] for r in rows] == ["2026-08-17"]
 
 
-def test_coverage_counts_the_truth_inside_the_stated_range(tmp_path):
-    write_day(tmp_path, "2026-08-17", [
+def test_coverage_counts_the_truth_inside_the_stated_range():
+    row = R.per_day(["2026-08-17"], *a_day("2026-08-17", [
         arrival(num="1", truth=0, q10=-1.0, q90=1.0),    # inside
         arrival(num="2", truth=9, q10=-1.0, q90=1.0),    # outside
-    ], [connection()])
-    row = R.per_day(["2026-08-17"], tmp_path)[0]
+    ], [connection()]))[0]
     assert row["live_cover"] == pytest.approx(0.5)
 
 
-def test_a_day_with_no_missed_connections_reports_no_brier(tmp_path):
-    write_day(tmp_path, "2026-08-17", [arrival()], [connection(caught=True)])
-    row = R.per_day(["2026-08-17"], tmp_path)[0]
+def test_a_day_with_no_missed_connections_reports_no_brier():
+    row = R.per_day(["2026-08-17"],
+                    *a_day("2026-08-17", [arrival()], [connection(caught=True)]))[0]
     assert row["missed"] == 0
     assert math.isnan(row["db_missed"])
 

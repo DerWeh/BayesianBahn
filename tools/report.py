@@ -23,10 +23,11 @@ import argparse
 import datetime as dt
 import html
 import json
-import random
 import statistics as st
 import sys
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -121,6 +122,12 @@ def connections_table(live: list[dict], blind: list[dict]) -> list[dict]:
     return out
 
 
+# Draws per vectorised chunk. The bootstrap allocates a (chunk x clusters)
+# count matrix, so this bounds peak memory independently of how many days have
+# been collected.
+BOOTSTRAP_CHUNK = 500
+
+
 def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
                seed: int = 20260819) -> tuple[float, float, float]:
     """Mean of `value`, with a 95% interval from a bootstrap over *trains*.
@@ -129,19 +136,35 @@ def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
     dozen correlated predictions, so events are nowhere near independent and an
     event-level interval comes out far too narrow. Resampling whole trains keeps
     each cluster intact. Seeded, so the published interval is reproducible.
+
+    A resampled mean depends only on how many times each train was drawn, not
+    on the order they came out, so a draw is a multinomial count vector over the
+    trains and the whole bootstrap is two matrix products against the per-train
+    sums and sizes. Written as a Python loop over `statistics.mean` this was
+    346 of the report's 352 seconds — `statistics.mean` sums in exact rational
+    arithmetic, which is the right default for a statistics library and about a
+    hundred times the cost of what is needed here.
     """
-    groups: dict[tuple, list[float]] = {}
+    sums: dict[tuple, float] = {}
+    sizes: dict[tuple, int] = {}
     for r in rows:
-        groups.setdefault((r["cat"], r["num"]), []).append(value(r))
-    keys = list(groups)
-    point = st.mean(v for g in groups.values() for v in g)
-    rng = random.Random(seed)
-    means = []
-    for _ in range(draws):
-        pick = [groups[keys[rng.randrange(len(keys))]] for _ in range(len(keys))]
-        means.append(st.mean(v for g in pick for v in g))
+        key = (r["cat"], r["num"])
+        sums[key] = sums.get(key, 0.0) + value(r)
+        sizes[key] = sizes.get(key, 0) + 1
+    group_sum = np.fromiter(sums.values(), dtype=float, count=len(sums))
+    group_size = np.fromiter(sizes.values(), dtype=float, count=len(sizes))
+    clusters = len(group_sum)
+    point = float(group_sum.sum() / group_size.sum())
+
+    rng = np.random.default_rng(seed)
+    share = np.full(clusters, 1.0 / clusters)
+    means = np.empty(draws)
+    for start in range(0, draws, BOOTSTRAP_CHUNK):
+        take = min(BOOTSTRAP_CHUNK, draws - start)
+        counts = rng.multinomial(clusters, share, size=take)
+        means[start:start + take] = counts @ group_sum / (counts @ group_size)
     means.sort()
-    return point, means[int(0.025 * draws)], means[int(0.975 * draws)]
+    return point, float(means[int(0.025 * draws)]), float(means[int(0.975 * draws)])
 
 
 def crps_gap(rows: list[dict]) -> tuple[float, float, float]:
@@ -186,31 +209,38 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
     return out
 
 
-def per_day(days: list[str], scored_dir: Path) -> list[dict]:
+def of_day(rows: list[dict], day: str) -> list[dict]:
+    return [r for r in rows if r["day"] == day]
+
+
+def per_day(days: list[str], live, blind, conn_live, conn_blind) -> list[dict]:
     """One row per collected day: the same headline numbers, unpooled.
 
     Pooling hides whether a result is a property of the model or of one day's
     weather. A claim that moves when a day is added was never a claim.
+
+    Takes the rows the caller already loaded rather than the directory they came
+    from; reading the same twelve files a second time was a third of what the
+    report spent once the bootstrap stopped dominating it.
     """
     out = []
     for day in days:
-        base = scored_dir / day
-        live, blind = load(base / "arrivals-live.jsonl"), load(base / "arrivals-blind.jsonl")
-        conn_blind = load(base / "connections-blind.jsonl")
-        conn_live = load(base / "connections-live.jsonl")
-        if not blind:
+        day_live, day_blind = of_day(live, day), of_day(blind, day)
+        day_cl, day_cb = of_day(conn_live, day), of_day(conn_blind, day)
+        if not day_blind:
             continue
-        missed_l = [r for r in conn_live if r["caught"] is False]
-        missed_b = [r for r in conn_blind if r["caught"] is False]
+        missed_l = [r for r in day_cl if r["caught"] is False]
+        missed_b = [r for r in day_cb if r["caught"] is False]
         out.append({
             "day": day,
-            "n": len(blind),
-            "db": st.mean(abs(r["db"] - r["truth"]) for r in blind),
-            "blind": st.mean(r["crps"] for r in blind),
-            "live": st.mean(r["crps"] for r in live),
-            "live_cover": sum(1 for r in live if r["q10"] <= r["truth"] <= r["q90"]) / len(live),
-            "blind_cover": sum(1 for r in blind
-                               if r["q10"] <= r["truth"] <= r["q90"]) / len(blind),
+            "n": len(day_blind),
+            "db": st.mean(abs(r["db"] - r["truth"]) for r in day_blind),
+            "blind": st.mean(r["crps"] for r in day_blind),
+            "live": st.mean(r["crps"] for r in day_live),
+            "live_cover": sum(1 for r in day_live
+                              if r["q10"] <= r["truth"] <= r["q90"]) / len(day_live),
+            "blind_cover": sum(1 for r in day_blind
+                               if r["q10"] <= r["truth"] <= r["q90"]) / len(day_blind),
             "missed": len(missed_b),
             "db_missed": brier(missed_b, "db_catch_p") if missed_b else float("nan"),
             "blind_missed": brier(missed_b, "p_catch") if missed_b else float("nan"),
@@ -934,15 +964,17 @@ def main() -> None:
     args = ap.parse_args()
 
     live, blind, conn_live, conn_blind = [], [], [], []
+    # Every row carries the day it came from: the per-day table splits on it,
+    # and the hour-of-day curve uses it to drop days that do not cover the
+    # clock. Tagging on load is what lets the files be read exactly once.
     for day in args.days:
         base = args.scored_dir / day
-        # The hour-of-day curve needs to know which day a row came from, to drop
-        # the days that do not cover the whole clock.
-        for row in load(base / "arrivals-live.jsonl"):
-            live.append({**row, "day": day})
-        blind += load(base / "arrivals-blind.jsonl")
-        conn_live += load(base / "connections-live.jsonl")
-        conn_blind += load(base / "connections-blind.jsonl")
+        for target, name in ((live, "arrivals-live"), (blind, "arrivals-blind"),
+                             (conn_live, "connections-live"),
+                             (conn_blind, "connections-blind")):
+            for row in load(base / f"{name}.jsonl"):
+                row["day"] = day
+                target.append(row)
     if not blind:
         raise SystemExit(f"no scored arrivals under {args.scored_dir} for {args.days}")
 
@@ -951,7 +983,7 @@ def main() -> None:
            outcome_split(conn_live, conn_blind),
            {"events": len(blind), "connections": len(conn_blind)}, args.out,
            gaps=headline(live, blind, conn_live, conn_blind),
-           daily=per_day(args.days, args.scored_dir),
+           daily=per_day(args.days, live, blind, conn_live, conn_blind),
            clock=hourly(live))
 
 
