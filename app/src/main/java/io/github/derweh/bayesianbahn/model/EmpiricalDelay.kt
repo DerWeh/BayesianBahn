@@ -50,6 +50,13 @@ data class HistoricalRun(
  * one. Backtesting on 8 months of IRIS history (12-week walk-forward eval)
  * showed this cuts CRPS ~3.2x versus ignoring live data, while kernel-only
  * reweighting (the previous approach) recovered barely half the gain.
+ *
+ * That result holds where a live report carries information. Forward
+ * evaluation against DB (2026-08-17..19, see README) finds the opposite sign
+ * beyond ~45 minutes before departure: DB reports "on time" for 91-99% of
+ * trains that far out because it has nothing to report yet, and conditioning
+ * on that default costs 0.74-1.04 min of CRPS against ignoring it. The lead
+ * time is not part of the conditioning today.
  */
 class EmpiricalDelay private constructor(
     /** (delay, weight) pairs sorted by delay. */

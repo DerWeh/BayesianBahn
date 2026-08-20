@@ -18,6 +18,11 @@ fixes; expect breaking changes between minors until 1.0).
   reads as `+2` rather than `+1`.
 
 ### Changed
+- The evaluation report shows the delay curve over the day and checks the
+  model's time bands against it, and states where the live-number crossover
+  falls. Three collected days confirm that delay accumulates from morning to
+  mid-afternoon; the shipped time bands were cut from the commuter timetable
+  and do not line up with it.
 - Searching a date beyond the live timetable is much faster. The historical
   timetable needs one delay-history file per departure, and those were fetched
   one after another for every station the search looked at; they now load

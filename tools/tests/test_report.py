@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 
@@ -282,3 +283,135 @@ def test_a_single_day_hides_the_replication_section(tmp_path):
                      "missed": 1, "db_missed": 1.0, "blind_missed": 0.5,
                      "live_missed": 0.5}])
     assert "Does it hold from one day to the next?" not in out.read_text(encoding="utf-8")
+
+
+# --- the hour-of-day curve ------------------------------------------------
+#
+# The chart these feed makes a causal claim (delay accumulates over the day),
+# and the first draft of it read a two-train 02:00 as the worst hour on the
+# network. Every guard below exists because of a way this section can lie.
+
+def clock_row(*, day="2026-08-18", hour=12, truth=0, eva="1", num="1"):
+    """One scored arrival whose planned arrival lands in `hour`, Berlin time."""
+    return {**arrival(num=num, truth=truth), "day": day, "eva": eva,
+            "planned": hour * 60 + 30}
+
+
+def a_full_day(day, hour_means, *, per_hour=R.MIN_HOUR_EVENTS):
+    """Enough rows to clear the sample floor, at the given mean per hour."""
+    rows = []
+    for hour, mean in hour_means.items():
+        for i in range(per_hour):
+            rows.append(clock_row(day=day, hour=hour, truth=mean,
+                                  eva=str(hour), num=f"{hour}-{i}"))
+    return rows
+
+
+def test_repeated_polls_of_one_train_count_once():
+    """A train sits in the collector's window for as long as its lead time, so
+    counting polls would weight the curve by lead time, not by lateness."""
+    hours = {h: 0 for h in range(24)}
+    rows = a_full_day("2026-08-18", hours)
+    # One train polled thirty more times, very late, in a single hour.
+    rows += [{**clock_row(day="2026-08-18", hour=12, truth=60, eva="9", num="X")}
+             for _ in range(30)]
+    twelve = next(r for r in R.hourly(rows) if r["hour"] == 12)
+    assert twelve["n"] == R.MIN_HOUR_EVENTS + 1
+    assert twelve["mean"] == pytest.approx(60 / (R.MIN_HOUR_EVENTS + 1))
+
+
+def test_an_hour_with_too_few_trains_is_dropped():
+    """Two trains at 02:00 produced the largest mean on the first chart."""
+    rows = a_full_day("2026-08-18", {h: 1 for h in range(24)})
+    rows = [r for r in rows if R.hour_of(r) != 2][:]
+    rows += [clock_row(day="2026-08-18", hour=2, truth=90, num=f"n{i}", eva="2")
+             for i in range(2)]
+    assert 2 not in {r["hour"] for r in R.hourly(rows)}
+
+
+def test_an_hour_exactly_at_the_floor_is_kept():
+    rows = a_full_day("2026-08-18", {h: 1 for h in range(24)})
+    assert len(R.hourly(rows)) == 24
+
+
+def test_a_partial_day_is_excluded_from_the_curve():
+    """The first collected day starts in the evening; averaging it in would put
+    a busy evening against a full day's whole clock."""
+    full = a_full_day("2026-08-18", {h: 2 for h in range(24)})
+    evening = a_full_day("2026-08-17", {h: 20 for h in range(19, 24)})
+    rows = R.hourly(full + evening)
+    assert all(r["mean"] == pytest.approx(2) for r in rows)
+
+
+def test_no_full_day_means_no_curve_at_all():
+    """Better an absent section than one drawn from a single evening."""
+    assert R.hourly(a_full_day("2026-08-17", {h: 2 for h in range(19, 24)})) == []
+
+
+def test_the_late_share_counts_arrivals_past_the_surprise_threshold():
+    rows = a_full_day("2026-08-18", {h: 0 for h in range(24)})
+    rows += [clock_row(day="2026-08-18", hour=9, truth=R.SURPRISE_MINUTES + 1,
+                       num=f"late{i}", eva="9") for i in range(R.MIN_HOUR_EVENTS)]
+    nine = next(r for r in R.hourly(rows) if r["hour"] == 9)
+    assert nine["late"] == pytest.approx(0.5)
+
+
+def test_band_spread_is_the_distance_between_the_hourly_extremes():
+    rows = [{"hour": 9, "mean": 2.0}, {"hour": 10, "mean": 5.0},
+            {"hour": 11, "mean": 3.0}]
+    band = R.band_spread(rows, {"B": ("09-11", range(9, 12))})[0]
+    assert (band["lo"], band["hi"], band["spread"]) == (2.0, 5.0, 3.0)
+
+
+def test_a_band_whose_hours_were_all_dropped_is_skipped():
+    """The night band can lose every one of its hours to the sample floor."""
+    assert R.band_spread([{"hour": 9, "mean": 2.0}],
+                         {"NIGHT": ("02-03", range(2, 4))}) == []
+
+
+def test_a_band_uses_only_the_hours_that_survived():
+    rows = [{"hour": 20, "mean": 4.0}]
+    band = R.band_spread(rows, {"NIGHT": ("19-05", tuple(range(19, 24)))})[0]
+    assert band["spread"] == 0.0 and band["hours"] == "19-05"
+
+
+def test_the_reported_bands_match_the_ones_the_app_uses():
+    """SHIPPED_BANDS is a third mirror of the model, and the other two have both
+    drifted before. The report must not describe a cut the app does not use."""
+    source = (Path(__file__).resolve().parents[2] / "app/src/main/java/io/github"
+              / "derweh/bayesianbahn/model/DelayModel.kt").read_text(encoding="utf-8")
+    body = source.split("fun fromEpochMillis")[1].split("}")[0]
+    from_kotlin = {}
+    for lo, hi, name in re.findall(r"in (\d+)\.\.(\d+) -> (\w+)", body):
+        from_kotlin[name] = set(range(int(lo), int(hi) + 1))
+    else_band = re.search(r"else -> (\w+)", body).group(1)
+    from_kotlin[else_band] = set(range(24)) - set().union(*from_kotlin.values())
+
+    ours = {name: set(hours) for name, (_, hours) in R.SHIPPED_BANDS.items()}
+    assert ours == from_kotlin
+
+
+def test_the_page_carries_the_hour_of_day_section(tmp_path):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    clock = R.hourly(a_full_day("2026-08-18", {h: h / 4 for h in range(24)}))
+    R.render(["2026-08-18"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn), clock=clock)
+    page = out.read_text(encoding="utf-8")
+    assert "Does the day pile up?" in page
+    assert "MORNING_PEAK" in page
+    assert "%d" not in page and "%s" not in page
+
+
+def test_the_page_omits_the_hour_section_when_no_day_is_full(tmp_path):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn), clock=[])
+    assert "Does the day pile up?" not in out.read_text(encoding="utf-8")

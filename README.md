@@ -75,7 +75,11 @@ forecasts remain available behind the list icon.
   91k predictions) the delta model cut live-scenario CRPS 3.2× versus
   ignoring live data (1.53 vs 4.83); a 30-day half-life beat 7/14/60 days;
   explicit holiday handling showed no benefit even across the April–June
-  holidays. Parameters above are the backtest winners.
+  holidays. Parameters above are the backtest winners. That 3.2× is measured
+  on events that *have* a live report worth conditioning on; the forward
+  evaluation below shows it does not carry to long lead times, where DB has
+  not reported anything yet and "on time" is a default rather than an
+  observation.
 
 ## What the journey search does not do
 
@@ -270,13 +274,20 @@ treating them as independent manufactures confidence that is not there. Each day
 is also shown unpooled, because the first pass at this read a single evening's 189
 missed connections as a result that the next day did not reproduce.
 
-As of two days (2026-08-17/18, 24,835 arrival predictions, 37,072 connections) the
-app's point forecast beats DB's by 0.22 min of CRPS [0.20, 0.24] and is better on
-the connections that actually failed. The **stated 80% range is not honest** — it
-contains the truth 57–69% of the time — so the distribution is the open problem,
-not the median. Withholding DB's live number improves the point forecast further
-(0.34 min [0.27, 0.40]), which is the measured cost of the previous-stop
-approximation documented in `Predictor`.
+As of three days (2026-08-17/18/19, 45,408 arrival predictions, 67,796
+connections) the app's point forecast beats DB's by 0.24 min of CRPS
+[0.22, 0.27] and is better on the connections that actually failed
+(Brier −0.055 [−0.045, −0.067]). Two problems are open, both replicated on every
+collected day:
+
+- The **stated 80% range is not honest** on the shipped path — it contains the
+  truth 53–61% of the time, against 84–88% for the history-only variant. The
+  distribution is the open problem, not the median.
+- **The live number helps only close to departure.** Beyond 45 minutes out,
+  withholding it is 0.74–1.04 min of CRPS *better*, because DB reports "on time"
+  for 91–99% of trains at that range and the model reads that silence as
+  information. Pooled over all lead times the history-only variant wins by
+  0.37 min [0.31, 0.43]; the crossover sits in the 20–45 min bucket.
 
 `tools/journey_bench.py` does the same thing against live IRIS. It is limited to
 a few dozen journeys by politeness to a keyless public API, so it is no longer

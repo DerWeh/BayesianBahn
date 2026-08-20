@@ -31,8 +31,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from score_events import (  # noqa: E402
-    BUCKET_LABELS, SURPRISE_MINUTES, TRANSFER_MINUTES, anchor_minutes, bucket_of,
-    wall_to_epoch,
+    BERLIN, BUCKET_LABELS, SURPRISE_MINUTES, TRANSFER_MINUTES, anchor_minutes,
+    bucket_of, wall_to_epoch,
 )
 
 # Categorical slots 1-3 of the reference palette, which validate on all pairs in
@@ -42,6 +42,9 @@ SERIES = {
     "db": ("DB", "var(--series-1)"),
     "blind": ("BayesianBahn, history only", "var(--series-2)"),
     "live": ("BayesianBahn, as shipped", "var(--series-3)"),
+    # Not a fourth comparison series: the hour-of-day chart plots one measured
+    # quantity with no comparison, so it reuses the first slot and no legend.
+    "mean": ("Mean arrival delay", "var(--series-1)"),
 }
 
 ANCHOR = "planned_departure"
@@ -214,6 +217,99 @@ def per_day(days: list[str], scored_dir: Path) -> list[dict]:
             "live_missed": brier(missed_l, "p_catch") if missed_l else float("nan"),
         })
     return out
+
+
+FULL_DAY_HOURS = 20
+
+# The collected stations run almost no service in the small hours: 02:00 held
+# two trains across the whole collection, and their mean was the largest number
+# on the chart. An hour has to carry enough trains to mean anything before it
+# earns a bar, let alone a sentence.
+MIN_HOUR_EVENTS = 100
+
+
+def full_days(rows: list[dict]) -> set[str]:
+    """Days whose events span the clock.
+
+    The first collected day started in the evening. Averaging it into an
+    hour-of-day curve would put its (busy, late) evening on the same footing as
+    a full day's evening while contributing nothing before 18:00, which tilts
+    the whole shape. A day earns its place here by covering the clock.
+    """
+    seen: dict[str, set[int]] = {}
+    for r in rows:
+        seen.setdefault(r["day"], set()).add(hour_of(r))
+    return {day for day, hours in seen.items() if len(hours) >= FULL_DAY_HOURS}
+
+
+def hour_of(row: dict) -> int:
+    """Local hour of the train's planned arrival."""
+    return dt.datetime.fromtimestamp(wall_to_epoch(row["planned"]), BERLIN).hour
+
+
+def hourly(rows: list[dict]) -> list[dict]:
+    """Mean arrival delay by hour of day, one row per train event.
+
+    Deduplicated on the event: a train polled thirty times is one arrival, not
+    thirty, and counting the polls would weight the curve by how long each
+    train sat in the collector's window rather than by how late it was.
+    """
+    days = full_days(rows)
+    if not days:
+        return []
+    events: dict[tuple, dict] = {}
+    for r in rows:
+        if r["day"] in days:
+            events[(r["day"], r["eva"], r["cat"], r["num"], r["planned"])] = r
+    by_hour: dict[int, list[dict]] = {}
+    for r in events.values():
+        by_hour.setdefault(hour_of(r), []).append(r)
+    out = []
+    for hour in sorted(by_hour):
+        group = by_hour[hour]
+        if len(group) < MIN_HOUR_EVENTS:
+            continue
+        out.append({
+            "bucket": f"{hour:02d}",
+            "hour": hour,
+            "n": len(group),
+            "mean": st.mean(r["truth"] for r in group),
+            "late": sum(1 for r in group if r["truth"] > SURPRISE_MINUTES) / len(group),
+        })
+    return out
+
+
+def band_spread(rows: list[dict], bands: dict[str, tuple]) -> list[dict]:
+    """Within-band spread of the hourly means — how much a band averages away.
+
+    The model buckets its history by time band, which is only sound if the
+    hours inside a band behave alike. The spread is the evidence for or against
+    the cut that ships.
+    """
+    means = {r["hour"]: r["mean"] for r in rows}
+    out = []
+    for name, (label, hours) in bands.items():
+        inside = [means[h] for h in hours if h in means]
+        if not inside:
+            continue
+        out.append({
+            "band": name,
+            "hours": label,
+            "lo": min(inside),
+            "hi": max(inside),
+            "spread": max(inside) - min(inside),
+        })
+    return out
+
+
+# Mirrors TimeBand.fromEpochMillis in DelayModel.kt. A drift here would make the
+# report describe a cut the app does not use.
+SHIPPED_BANDS = {
+    "MORNING_PEAK": ("06-08", range(6, 9)),
+    "MIDDAY": ("09-15", range(9, 16)),
+    "EVENING_PEAK": ("16-18", range(16, 19)),
+    "NIGHT": ("19-05", tuple(range(19, 24)) + tuple(range(0, 6))),
+}
 
 
 def outcome_split(live: list[dict], blind: list[dict]) -> list[dict]:
@@ -488,7 +584,7 @@ def num(x, digits=2):
 
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
-           gaps=(), daily=()) -> None:
+           gaps=(), daily=(), clock=()) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -539,8 +635,9 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   <strong>negative number means we are better</strong>. The interval is what
   decides it: delays arrive in clusters — one late train produces a dozen
   correlated predictions — so the range comes from resampling whole trains, not
-  individual predictions. Where the interval crosses zero, two days of data are
-  not enough to claim anything, however suggestive the middle number looks.</p>""")
+  individual predictions. Where the interval crosses zero, the collected days
+  are not enough to claim anything, however suggestive the middle number
+  looks.</p>""")
         doc.append(table(gaps, [
             ("what", "Comparison", lambda r: html.escape(r["what"])),
             ("n", "Predictions", lambda r: f"{r['n']:,}"),
@@ -574,6 +671,19 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ("db_bias", "DB bias", lambda r: num(r["db_bias"])),
         ("db_surprise", "DB surprises", lambda r: pct(r["db_surprise"])),
     ]))
+    worst = max(arrivals, key=lambda r: r["live"] - r["blind"])
+    if worst["live"] > worst["blind"]:
+        doc.append(f"""
+  <p><strong>The two variants cross over.</strong> Close to departure the live
+  number is worth having and history alone is the weaker forecast. Far out it
+  reverses: in the <em>{html.escape(worst["bucket"])}</em> bucket the shipped
+  model scores {worst["live"]:.2f} against history alone at
+  {worst["blind"]:.2f} — using DB’s number makes the answer
+  {worst["live"] - worst["blind"]:.2f} minutes worse. The reason is in the DB
+  bias column: hours ahead, DB has nothing to report yet and says the train is
+  on time, and the shipped model treats that silence as information. A train
+  with a history of running late is predicted punctual because nobody has
+  noticed yet.</p>""")
     doc.append("""</section>
 
 <section>
@@ -668,6 +778,51 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
             ("live_missed", "As shipped", lambda r: num(r["live_missed"], 3)),
         ]))
         doc.append("</section>")
+
+    if clock:
+        spread = band_spread(clock, SHIPPED_BANDS)
+        peak = max(clock, key=lambda r: r["mean"])
+        trough = min(clock, key=lambda r: r["mean"])
+        doc.append(f"""
+<section>
+  <h2>Does the day pile up?</h2>
+  <p>Delay is not a property of a train alone. A late train holds a platform,
+  and the next one inherits it — so the morning’s small delays should still be
+  on the network in the afternoon. If that is what happens, an hour-of-day term
+  is not a modelling convenience but the shape of the thing being modelled.</p>
+  <p>It is what happens. The mean arrival delay climbs from
+  <strong>{trough["mean"]:.2f} min at {trough["bucket"]}:00</strong> to
+  <strong>{peak["mean"]:.2f} min at {peak["bucket"]}:00</strong>, a factor of
+  {peak["mean"] / max(0.01, trough["mean"]):.1f}, and then drains overnight. Each
+  train counts once, at its scheduled arrival hour, however many times it was
+  polled. Only days that cover the whole clock are included, and only hours
+  carrying at least {MIN_HOUR_EVENTS} trains.</p>""")
+        doc.append(bar_chart(clock, ["mean"], y_label="Mean arrival delay, minutes",
+                             label_key="bucket", height=260))
+        doc.append("""
+  <p>The peak is mid-afternoon, not at the evening rush. Delay accumulates all
+  day and is worked off after the last peak departures, so the worst hour to
+  arrive is the one the accumulated delay has reached — not the one with the
+  most passengers.</p>
+  <h3>What that means for the time bands</h3>
+  <p>The model keeps separate delay statistics per time band, which only makes
+  sense if the hours inside a band resemble each other. <em>Spread</em> is the
+  distance between the latest and earliest hourly mean inside the band: a large
+  spread means the band is averaging together hours that behave differently.</p>""")
+        doc.append(table(spread, [
+            ("band", "Band", lambda r: html.escape(r["band"])),
+            ("hours", "Hours", lambda r: html.escape(r["hours"])),
+            ("lo", "Quietest hour", lambda r: num(r["lo"])),
+            ("hi", "Latest hour", lambda r: num(r["hi"])),
+            ("spread", "Spread", lambda r: num(r["spread"])),
+        ]))
+        doc.append("""
+  <p>The bands that ship were chosen from the commuter timetable rather than
+  from this curve, and it shows: the peak band ends before the peak, and the
+  night band reaches from the calmest hour of the night to the tail of the
+  evening. Like the crossover above, this is a finding about the model rather
+  than about the trains, and it points at a specific line of code.</p>
+</section>""")
 
     doc.append("""
 <section>
@@ -781,7 +936,10 @@ def main() -> None:
     live, blind, conn_live, conn_blind = [], [], [], []
     for day in args.days:
         base = args.scored_dir / day
-        live += load(base / "arrivals-live.jsonl")
+        # The hour-of-day curve needs to know which day a row came from, to drop
+        # the days that do not cover the whole clock.
+        for row in load(base / "arrivals-live.jsonl"):
+            live.append({**row, "day": day})
         blind += load(base / "arrivals-blind.jsonl")
         conn_live += load(base / "connections-live.jsonl")
         conn_blind += load(base / "connections-blind.jsonl")
@@ -793,7 +951,8 @@ def main() -> None:
            outcome_split(conn_live, conn_blind),
            {"events": len(blind), "connections": len(conn_blind)}, args.out,
            gaps=headline(live, blind, conn_live, conn_blind),
-           daily=per_day(args.days, args.scored_dir))
+           daily=per_day(args.days, args.scored_dir),
+           clock=hourly(live))
 
 
 if __name__ == "__main__":
