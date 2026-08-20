@@ -5,7 +5,7 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
-## [Unreleased]
+## [0.1.3] - 2026-08-20
 
 ### Fixed
 - Opening a station board and going back no longer empties the From and To
@@ -119,5 +119,7 @@ times and connections with DB's official apps.
   Augsburg/München region; optional bulk download for offline use,
   refreshed daily to within ~a day of reality.
 
+[0.1.3]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.3
+[0.1.2]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.2
 [0.1.1]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.1
 [0.1.0]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.0

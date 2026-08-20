@@ -1,0 +1,9 @@
+Opening a station board and going back no longer empties the From and
+To fields, so a search can be rerun without retyping both stations; the
+chosen date and time, the Deutschland-Ticket setting and scroll
+positions survive the trip too. A train running a minute early now reads
+-1 instead of +-1, and a delay under a minute reads as on time.
+Searching a date beyond the live timetable is much faster: the delay
+history each departure needs is now fetched alongside the others and
+reused across the search instead of being fetched again for every place
+it appears.
