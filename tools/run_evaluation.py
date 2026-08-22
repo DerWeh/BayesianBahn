@@ -108,6 +108,12 @@ def main() -> None:
     ap.add_argument("days", nargs="+", help="YYYY-MM-DD, one per collected day")
     ap.add_argument("--scored-dir", type=Path, default=TOOLS / ".scored")
     ap.add_argument("--skip-report", action="store_true")
+    # The collector runs on a laptop, so nothing in CI can rebuild this page:
+    # publishing is a local render into the tree, then a commit.
+    ap.add_argument("--publish", action="store_true",
+                    help="render into docs/ for GitHub Pages instead of tools/.scored/")
+    ap.add_argument("--publish-to", type=Path,
+                    default=ROOT / "docs/evaluation/index.html")
     args = ap.parse_args()
 
     station_list = stations(TOOLS / "forecast_stations.csv")
@@ -116,9 +122,13 @@ def main() -> None:
 
     if not args.skip_report:
         print("== rendering the report")
+        out = args.publish_to if args.publish else args.scored_dir / "report.html"
         run(python("tools/report.py", "--scored-dir", str(args.scored_dir),
-                   "--days", *args.days,
-                   "--out", str(args.scored_dir / "report.html")))
+                   "--days", *args.days, "--out", str(out)))
+        if args.publish:
+            print(f"== wrote {out.relative_to(ROOT)}")
+            print("   commit and push it; GitHub Pages serves /docs from the "
+                  "default branch.")
 
 
 if __name__ == "__main__":

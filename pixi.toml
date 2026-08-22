@@ -31,6 +31,9 @@ test-pipeline = "pytest pipeline/tests tools/tests -q"
 # is Python rather than a shell script: pixi's task shell is cross-platform but
 # has no loops or conditionals, and the stages need them.
 evaluate = "python tools/run_evaluation.py"
+# Same run, but the page lands in docs/ for GitHub Pages. Not a CI job: the
+# collector runs locally, so only this machine has the data to render.
+publish-evaluation = "python tools/run_evaluation.py --publish"
 collect = "python tools/collect_forecasts.py run"
 collect-status = "python tools/collect_forecasts.py status"
 

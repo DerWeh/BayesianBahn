@@ -161,6 +161,17 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
+- **Score complete journeys, not only their parts.** The evaluation scores an
+  arrival time for a journey without a change and a catch probability for one
+  with a change, and cannot compare the two: it never follows a passenger
+  through a transfer to their destination. Answering "is the app better where
+  you have to change?" needs the connecting train's *destination* arrival in
+  the collected forecasts, which `collect_forecasts.py` does not record today.
+  With it, a one-change itinerary could be scored end to end — predicted final
+  arrival against the arrival that happened — in the same units as a direct
+  journey. Tagging arrivals by whether a connection leaves from them is not a
+  substitute: 96% of them qualify, and the remainder is last trains and
+  terminus arrivals rather than direct journeys.
 - On-device [TabICL v2](https://github.com/soda-inria/tabicl) (BSD-3) via ONNX
   Runtime as the conditional model: context = this connection's historical
   runs, query = today's features, output = full predictive distribution.
@@ -295,7 +306,20 @@ That runs the shipping Kotlin model — not the Python mirror in `backtest.py` �
 over the recorded forecasts via the opt-in `ForecastHarness` unit test, with the
 history trimmed to runs strictly before the day being predicted. `tools/report.py`
 renders the result as a self-contained HTML page carrying its own definitions,
-caveats and reproduction commands.
+caveats and reproduction commands — including the commit it was generated from
+and whether that commit is a released version, since the page is rendered from a
+working tree and the model it scores is not always one that has shipped.
+
+To publish it:
+
+```sh
+pixi run -e evaluate publish-evaluation 2026-08-17 2026-08-18   # -> docs/evaluation/
+git add docs/evaluation && git commit && git push
+```
+
+GitHub Pages serves `/docs` from the default branch. This is deliberately not a
+CI job: the collector runs on a laptop and the archive is fetched locally, so no
+runner has the data to rebuild the page.
 
 Every comparison is reported with a 95% interval from a bootstrap over *trains*,
 not over predictions — one late train produces a dozen correlated predictions, and
