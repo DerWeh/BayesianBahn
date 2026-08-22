@@ -17,12 +17,22 @@ Needs cairosvg:
     python3 -m venv /tmp/iconvenv && /tmp/iconvenv/bin/pip install cairosvg
     /tmp/iconvenv/bin/python tools/render_social.py
 
+GitHub silently lost the first upload of this card: it recorded that a custom
+preview existed — the page's og:image pointed at a repository-images UUID rather
+than the generated default — but fetching that URL returned 404
+WebContentNotFound, so the record was there and the blob was not. cairosvg emits
+a `bKGD` chunk, which is valid, rare, and precisely the sort of thing an image
+pipeline mishandles, so the PNG is now re-encoded through Pillow with only the
+chunks it needs. `--format jpg` is the escape hatch if a PNG is refused again.
+
 Usage:
-    python tools/render_social.py
+    python tools/render_social.py [--format png|jpg]
 """
 
 from __future__ import annotations
 
+import argparse
+import io
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import render_icon as icon  # noqa: E402
 
-OUT = icon.ROOT / "docs/social-preview.png"
+OUT = icon.ROOT / "docs/social-preview"   # suffix added per --format
 
 WIDTH, HEIGHT = 1280, 640
 
@@ -94,7 +104,7 @@ def build_svg() -> str:
 </svg>"""
 
 
-def check_margins(png: bytes) -> None:
+def check_margins(image) -> None:
     """Refuse to write a card whose content runs into the crop zone.
 
     Text width depends on the font that was actually used, so the layout cannot
@@ -102,11 +112,6 @@ def check_margins(png: bytes) -> None:
     first version of this card put the footer 35px from the right edge, which no
     reading of the source would have revealed.
     """
-    import io
-
-    from PIL import Image
-
-    image = Image.open(io.BytesIO(png)).convert("RGB")
     width, height = image.size
     background = image.getpixel((5, 5))
     pixels = image.load()
@@ -127,16 +132,36 @@ def check_margins(png: bytes) -> None:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--format", choices=("png", "jpg"), default="png",
+                    help="png by default; jpg if GitHub refuses the PNG again")
+    args = ap.parse_args()
+
     try:
         import cairosvg
     except ImportError:
         raise SystemExit("needs cairosvg — see the module docstring for the venv recipe")
-    png = cairosvg.svg2png(bytestring=build_svg().encode("utf-8"),
+    from PIL import Image
+
+    raw = cairosvg.svg2png(bytestring=build_svg().encode("utf-8"),
                            output_width=WIDTH, output_height=HEIGHT)
-    check_margins(png)
+    # Re-encode rather than shipping cairosvg's own file: flattened onto the
+    # card's background so there is no alpha channel to interpret, and written
+    # by Pillow so the result carries IHDR, IDAT and IEND and nothing else.
+    rendered = Image.open(io.BytesIO(raw))
+    flat = Image.new("RGB", rendered.size, icon.resolve_colour("@color/ic_launcher_background"))
+    flat.paste(rendered, mask=rendered.split()[-1] if rendered.mode == "RGBA" else None)
+    check_margins(flat)
+
+    out = OUT.with_suffix("." + args.format)
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_bytes(png)
-    print(f"wrote {OUT.relative_to(icon.ROOT)} ({len(png):,} bytes, {WIDTH}x{HEIGHT})")
+    if args.format == "png":
+        flat.save(out, format="PNG", optimize=True)
+    else:
+        flat.save(out, format="JPEG", quality=92, subsampling=0, optimize=True)
+    print(f"wrote {out.relative_to(icon.ROOT)} "
+          f"({out.stat().st_size:,} bytes, {WIDTH}x{HEIGHT})")
 
 
 if __name__ == "__main__":
