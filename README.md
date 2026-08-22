@@ -102,10 +102,13 @@ Android 8.0 (API 26) or newer.
   ignoring live data (1.53 vs 4.83); a 30-day half-life beat 7/14/60 days;
   explicit holiday handling showed no benefit even across the April–June
   holidays. Parameters above are the backtest winners. That 3.2× is measured
-  on events that *have* a live report worth conditioning on; the forward
-  evaluation below shows it does not carry to long lead times, where DB has
-  not reported anything yet and "on time" is a default rather than an
-  observation.
+  where the live signal is a *measured* previous-stop delay, which is not the
+  same as where DB has said something. The `gated` scenario applies the
+  shipped rule to that measured signal and is deliberately a control: over
+  160,299 events it scores 0.580 CRPS against 0.462 for believing the signal
+  and 1.906 for ignoring it entirely. Gating a real measurement should cost
+  something, and it does — which is the evidence that the rule compensates
+  for how DB reports rather than for a property of delays.
 
 ## What the journey search does not do
 

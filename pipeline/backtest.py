@@ -173,7 +173,17 @@ def scenarios_for(live_prev: float | None) -> list[tuple[str, float | None]]:
     """
     if live_prev is None:
         return [("blind", None)]
-    return [("blind", None), ("live", live_prev), ("gated", gated_live(live_prev))]
+    return [
+        # "blind" stays over every event: that is the honest figure for a model
+        # with no live data, and it is what the variant comparison uses.
+        ("blind", None),
+        # ...but comparing it with the two below would compare event sets, so
+        # the same prediction is also scored over just the events that have a
+        # live signal. Those three rows are the ones to read against each other.
+        ("blind_where_live", None),
+        ("live", live_prev),
+        ("gated", gated_live(live_prev)),
+    ]
 
 
 def gated_live(live_prev: float | None) -> float | None:

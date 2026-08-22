@@ -501,7 +501,9 @@ def test_the_backtest_still_runs_the_gated_scenario():
     sys.path.insert(0, str(ROOT / "pipeline"))
     import backtest
 
-    assert [n for n, _ in backtest.scenarios_for(4.0)] == ["blind", "live", "gated"]
+    assert [n for n, _ in backtest.scenarios_for(4.0)] == [
+        "blind", "blind_where_live", "live", "gated",
+    ]
 
 
 def test_the_three_scenarios_are_scored_on_the_same_events():
@@ -515,6 +517,10 @@ def test_the_three_scenarios_are_scored_on_the_same_events():
     named = dict(backtest.scenarios_for(0.0))
     assert named["live"] == 0.0, "a measured zero is still a measurement"
     assert named["gated"] is None, "but the shipped rule declines to use it"
+    # The three comparable rows are emitted for exactly the same events, so
+    # their counts must come out equal in the results.
+    assert set(named) == {"blind", "blind_where_live", "live", "gated"}
+    assert named["blind_where_live"] is None
 
 
 def test_the_backtest_reports_the_tail_and_not_only_the_mean():
