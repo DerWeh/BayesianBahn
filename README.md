@@ -3,6 +3,8 @@
 Empirical arrival-time predictions for Deutsche Bahn trains — as a
 **distribution**, not a point estimate.
 
+[![Get it on F-Droid](https://fdroid.gitlab.io/artwork/badge/get-it-on.png)](https://f-droid.org/packages/io.github.derweh.bayesianbahn/)
+
 > **Early release.** Predictions are experimental — always cross-check
 > times and connections with DB's official apps before relying on them.
 
@@ -13,6 +15,20 @@ distribution, and per-train catch probabilities — all computed from real
 historical runs, not from DB's own forecast. A Deutschland-Ticket filter
 restricts the search to regional trains; live station boards and per-train
 forecasts remain available behind the list icon.
+
+## Install
+
+From [F-Droid](https://f-droid.org/packages/io.github.derweh.bayesianbahn/) —
+the recommended route, because updates arrive automatically and because F-Droid
+rebuilds the app from this repository and checks that the result matches the
+APK published here, byte for byte, before it distributes anything.
+
+The [GitHub releases](https://github.com/DerWeh/BayesianBahn/releases) carry the
+same APKs for anyone who prefers to sideload. They are signed with the key
+F-Droid pins for this package, so a sideloaded build and an F-Droid build
+upgrade over each other without an uninstall.
+
+Android 8.0 (API 26) or newer.
 
 ## How predictions work
 
