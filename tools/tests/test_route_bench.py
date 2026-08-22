@@ -473,3 +473,52 @@ def test_recall_is_reported_per_origin_size() -> None:
     assert small[2] == 0.5, "one of the two is found within the budget"
     assert small[3] == 1.0, "but both are found eventually"
     assert big[2] == 0.0 and big[4] == 40, "the hub's haystack is reported"
+
+
+# --- the live-report gate, mirrored into the backtest ------------------------
+#
+# The threshold below which DB's number is not treated as evidence exists twice:
+# once in the app, where it decides what ships, and once in backtest.py, where
+# the "gated" scenario reproduces the shipped rule over months of archive. Two
+# copies of a number is exactly the shape the LONG_DISTANCE drift had.
+
+def backtest_source() -> str:
+    return (ROOT / "pipeline/backtest.py").read_text(encoding="utf-8")
+
+
+def test_the_backtests_gate_threshold_matches_the_app():
+    app = const(kotlin("model/LiveReport.kt"), "MIN_INFORMATIVE_DELAY_MINUTES")
+    found = re.search(r"^MIN_INFORMATIVE_DELAY = ([0-9.]+)$", backtest_source(), re.M)
+    assert found, "MIN_INFORMATIVE_DELAY moved in backtest.py; the mirror is unchecked"
+    assert float(found.group(1)) == app, (
+        f"pipeline/backtest.py gates at {found.group(1)} but the app gates at {app}"
+    )
+
+
+def test_the_backtest_still_runs_the_gated_scenario():
+    """The scenario is what keeps the shipped rule under backtest at all; losing
+    it would leave the rule justified only by the three collected days."""
+    sys.path.insert(0, str(ROOT / "pipeline"))
+    import backtest
+
+    assert [n for n, _ in backtest.scenarios_for(4.0)] == ["blind", "live", "gated"]
+
+
+def test_the_three_scenarios_are_scored_on_the_same_events():
+    """An event with no previous-stop delay has no live signal to gate. Letting
+    it into "gated" but not "live" compares two different event sets, and the
+    first run of this did exactly that: 193,417 events against 160,299."""
+    sys.path.insert(0, str(ROOT / "pipeline"))
+    import backtest
+
+    assert backtest.scenarios_for(None) == [("blind", None)]
+    named = dict(backtest.scenarios_for(0.0))
+    assert named["live"] == 0.0, "a measured zero is still a measurement"
+    assert named["gated"] is None, "but the shipped rule declines to use it"
+
+
+def test_the_backtest_reports_the_tail_and_not_only_the_mean():
+    """A mean CRPS hides the forecasts that actually cost a passenger a train."""
+    summary = backtest_source().split("def summary(")[1].split("def ")[0]
+    for field in ("crps_p50", "crps_p90", "crps_p99", "crps_max"):
+        assert field in summary, f"{field} is no longer reported"

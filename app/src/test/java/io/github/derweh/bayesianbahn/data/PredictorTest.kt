@@ -144,16 +144,4 @@ class PredictorTest {
         assertNull(f.ignoredLiveDelay)
         assertEquals(15.0, f.distribution.quantile(0.5), 2.0)
     }
-
-    // --- the helper, directly ----------------------------------------------
-
-    @Test
-    fun `informativeLiveDelay keeps only reports at or above the threshold`() {
-        assertNull(Predictor.informativeLiveDelay(null))
-        assertNull(Predictor.informativeLiveDelay(-5.0))
-        assertNull(Predictor.informativeLiveDelay(0.0))
-        assertNull(Predictor.informativeLiveDelay(0.9))
-        assertEquals(1.0, Predictor.informativeLiveDelay(1.0)!!, 1e-9)
-        assertEquals(30.0, Predictor.informativeLiveDelay(30.0)!!, 1e-9)
-    }
 }

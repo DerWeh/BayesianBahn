@@ -58,20 +58,22 @@ def load(path: Path) -> list[dict]:
             if line.strip()]
 
 
+def by_lead(rows: list[dict]) -> dict[str, list[dict]]:
+    """Group scored events by how long before departure they were made."""
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        at = anchor_minutes(r, ANCHOR)
+        if at is None:
+            continue
+        label = bucket_of((wall_to_epoch(at) - r["read_at"]) / 60)
+        if label:
+            out.setdefault(label, []).append(r)
+    return out
+
+
 def arrivals_table(live: list[dict], blind: list[dict]) -> list[dict]:
     """Per lead bucket: DB's error, and both variants of ours."""
-    def binned(rows):
-        out: dict[str, list[dict]] = {}
-        for r in rows:
-            at = anchor_minutes(r, ANCHOR)
-            if at is None:
-                continue
-            label = bucket_of((wall_to_epoch(at) - r["read_at"]) / 60)
-            if label:
-                out.setdefault(label, []).append(r)
-        return out
-
-    by_live, by_blind = binned(live), binned(blind)
+    by_live, by_blind = by_lead(live), by_lead(blind)
     rows = []
     for label in BUCKET_LABELS:
         g_live, g_blind = by_live.get(label), by_blind.get(label)
@@ -98,6 +100,47 @@ def arrivals_table(live: list[dict], blind: list[dict]) -> list[dict]:
 
 BANDS = ((2, 6, "2-5 min"), (6, 11, "6-10 min"), (11, 21, "11-20 min"),
          (21, 31, "21-30 min"))
+
+
+
+# Where a forecast stops being a rounding error and starts costing a train.
+BAD_MINUTES = 5
+AWFUL_MINUTES = 15
+
+
+def score_spread(rows: list[dict], value) -> dict:
+    """Quantiles of a per-event score, plus how often it goes badly wrong."""
+    a = np.sort(np.fromiter((value(r) for r in rows), dtype=float, count=len(rows)))
+    q = lambda p: float(np.quantile(a, p))  # noqa: E731
+    return {
+        "n": len(a),
+        "mean": float(a.mean()),
+        "p25": q(0.25), "p50": q(0.50), "p75": q(0.75),
+        "p10": q(0.10), "p90": q(0.90), "p99": q(0.99),
+        "max": float(a[-1]),
+        "bad": float(np.mean(a > BAD_MINUTES)),
+        "awful": float(np.mean(a > AWFUL_MINUTES)),
+    }
+
+
+def error_spread(live: list[dict]) -> list[dict]:
+    """Per lead bucket, the whole distribution of the score, not its mean.
+
+    The mean is the number the table above reports, and on its own it is
+    misleading in both directions: half of both forecasts are inside a minute,
+    so the median is a tie, and everything that separates them sits in the
+    upper tail. A passenger does not notice the minute; they notice the
+    twenty-minute miss nobody flagged.
+    """
+    rows = []
+    for label, group in by_lead(live).items():
+        rows.append({
+            "bucket": label,
+            "n": len(group),
+            "db": score_spread(group, lambda r: abs(r["db"] - r["truth"])),
+            "live": score_spread(group, lambda r: r["crps"]),
+        })
+    return [r for r in sorted(rows, key=lambda r: BUCKET_LABELS.index(r["bucket"]))]
 
 
 def brier(rows: list[dict], key: str) -> float:
@@ -463,6 +506,68 @@ def bar_chart(rows, keys, *, y_label, label_key, height=240, y_max=None,
     return "".join(parts)
 
 
+
+def box_chart(rows, keys, *, y_label, height=300) -> str:
+    """Box-and-whisker per category: box p25-p75, median rule, whiskers p10-p90.
+
+    The whiskers stop at p90 on purpose. p99 is three to four times p90 here, so
+    including it would flatten every box into a line and hide the comparison the
+    chart exists to make; the tail past the whisker is given as numbers in the
+    table underneath, where it can be read exactly rather than squinted at.
+    """
+    width, pad_l, pad_r, pad_t, pad_b = 720, 54, 16, 16, 44
+    plot_w, plot_h = width - pad_l - pad_r, height - pad_t - pad_b
+    top = max(r[k]["p90"] for r in rows for k in keys) * 1.15
+    group_w = plot_w / len(rows)
+    box_w = min(30.0, (group_w - 18) / len(keys))
+
+    def y(v):
+        return pad_t + plot_h - (min(v, top) / top) * plot_h
+
+    parts = [f'<svg viewBox="0 0 {width} {height}" role="img" '
+             f'aria-label="{html.escape(y_label)}">']
+    for g in range(5):
+        v = top * g / 4
+        parts.append(f'<line class="grid" x1="{pad_l}" x2="{width - pad_r}" '
+                     f'y1="{y(v):.1f}" y2="{y(v):.1f}"/>')
+        parts.append(f'<text class="tick" x="{pad_l - 8}" y="{y(v) + 4:.1f}" '
+                     f'text-anchor="end">{v:.1f}</text>')
+
+    for i, row in enumerate(rows):
+        centre = pad_l + group_w * (i + 0.5)
+        span = box_w * len(keys) + 2 * (len(keys) - 1)
+        for j, key in enumerate(keys):
+            label, colour = SERIES[key]
+            d = row[key]
+            bx = centre - span / 2 + j * (box_w + 2)
+            mid = bx + box_w / 2
+            title = (f'{label} — {row["bucket"]}: median {d["p50"]:.2f}, '
+                     f'p25-p75 {d["p25"]:.2f}-{d["p75"]:.2f}, '
+                     f'p90 {d["p90"]:.2f}, p99 {d["p99"]:.2f} min')
+            # Whisker behind the box, with caps at each end.
+            parts.append(f'<line x1="{mid:.1f}" x2="{mid:.1f}" y1="{y(d["p10"]):.1f}" '
+                         f'y2="{y(d["p90"]):.1f}" stroke="{colour}" stroke-width="2"/>')
+            for end in ("p10", "p90"):
+                parts.append(f'<line x1="{mid - box_w / 4:.1f}" x2="{mid + box_w / 4:.1f}" '
+                             f'y1="{y(d[end]):.1f}" y2="{y(d[end]):.1f}" '
+                             f'stroke="{colour}" stroke-width="2"/>')
+            parts.append(
+                f'<rect x="{bx:.1f}" y="{y(d["p75"]):.1f}" width="{box_w:.1f}" '
+                f'height="{max(2.0, y(d["p25"]) - y(d["p75"])):.1f}" rx="3" '
+                f'fill="{colour}" class="marker">'
+                f'<title>{html.escape(title)}</title></rect>')
+            # Median in the surface colour so it reads against the fill.
+            parts.append(f'<line x1="{bx:.1f}" x2="{bx + box_w:.1f}" '
+                         f'y1="{y(d["p50"]):.1f}" y2="{y(d["p50"]):.1f}" '
+                         f'stroke="var(--panel)" stroke-width="2"/>')
+        parts.append(f'<text class="tick" x="{centre:.1f}" y="{height - pad_b + 20}" '
+                     f'text-anchor="middle">{html.escape(row["bucket"])}</text>')
+    parts.append(f'<text class="axis-label" x="{pad_l}" y="{height - 6}">'
+                 f'{html.escape(y_label)}</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def legend(keys) -> str:
     items = "".join(
         f'<li><span class="swatch" style="background:{SERIES[k][1]}"></span>'
@@ -605,8 +710,8 @@ a { color: var(--series-1); }
 """
 
 
-def pct(x):
-    return "—" if x != x else f"{x * 100:.0f}%"
+def pct(x, digits=0):
+    return "—" if x != x else f"{x * 100:.{digits}f}%"
 
 
 def num(x, digits=2):
@@ -614,7 +719,7 @@ def num(x, digits=2):
 
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
-           gaps=(), daily=(), clock=()) -> None:
+           gaps=(), daily=(), clock=(), spread=()) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -712,6 +817,45 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   worse there. That is the shape this model was changed to remove, so a
   crossover appearing here means a reported delay is being believed in a range
   where it should not be.</p>""")
+    if spread:
+        scored_here = sum(r["n"] for r in spread)
+        doc.append(f"""
+  <h3>The average is the least interesting number here</h3>
+  <p>Half of both forecasts land within about a minute — on the median the two
+  are a tie, and no passenger is inconvenienced either way. Everything that
+  separates them is in the upper tail, which is also the only part anybody
+  feels: a forecast two minutes out costs nothing, and one twenty minutes out
+  with no warning costs a connection. The box spans the middle half of the
+  predictions, the line across it is the median, and the whiskers reach the
+  10th and 90th percentiles, so the worst tenth of each forecast reaches past
+  the whisker and is given exactly in the table below.</p>""")
+        doc.append('<div class="figure">')
+        doc.append(legend(["db", "live"]))
+        doc.append(box_chart(spread, ["db", "live"],
+                             y_label="Error, minutes (lower is better)"))
+        doc.append("</div>")
+        doc.append(table(spread, [
+            ("bucket", "Before departure", lambda r: html.escape(r["bucket"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("dbm", "DB median", lambda r: num(r["db"]["p50"])),
+            ("livem", "Our median", lambda r: num(r["live"]["p50"])),
+            ("db90", "DB p90", lambda r: num(r["db"]["p90"])),
+            ("live90", "Our p90", lambda r: num(r["live"]["p90"])),
+            ("db99", "DB p99", lambda r: num(r["db"]["p99"])),
+            ("live99", "Our p99", lambda r: num(r["live"]["p99"])),
+            # One decimal: the two differ by fractions of a percent in the
+            # near buckets, and rounding to whole percent shows them as equal.
+            ("dbbad", f"DB over {AWFUL_MINUTES} min",
+             lambda r: pct(r["db"]["awful"], 1)),
+            ("livebad", f"Ours over {AWFUL_MINUTES} min",
+             lambda r: pct(r["live"]["awful"], 1)),
+        ]))
+        doc.append(f"""
+  <p>Reading across the last two columns is the honest summary of this page:
+  the share of forecasts that are out by more than {AWFUL_MINUTES} minutes.
+  That is the number a passenger experiences, and it is the one an average over
+  {scored_here:,} mostly-uneventful predictions is least able to show.</p>""")
+
     doc.append("""</section>
 
 <section>
@@ -985,7 +1129,7 @@ def main() -> None:
            {"events": len(blind), "connections": len(conn_blind)}, args.out,
            gaps=headline(live, blind, conn_live, conn_blind),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
-           clock=hourly(live))
+           clock=hourly(live), spread=error_spread(live))
 
 
 if __name__ == "__main__":

@@ -154,4 +154,102 @@ class ConnectionModelTest {
         assertEquals(0.8, result.candidates[0].boardProbability, 1e-9)
         assertEquals(0.2, result.candidates[1].boardProbability, 1e-9)
     }
+
+    // --- a live departure report is only believed when it reports a delay ---
+    //
+    // The live branch below treats a report as fact: reported later than the
+    // passenger can get there means missed, otherwise caught, with nothing in
+    // between. Applied to DB's "on time" — which it says for almost every train
+    // until shortly before departure — that turned a train with a history of
+    // leaving late into a certainty.
+
+    @Test
+    fun `a train reported on time is still judged by its history`() {
+        // Leaves 25 late half the time. The passenger is ready at +25, so on
+        // history the connection works about half the time; believing a report
+        // of "on time" would make it a certain miss.
+        val runs = List(10) { ConnectionModel.JointRun(25.0, 25.0, 1.0) } +
+            List(10) { ConnectionModel.JointRun(0.0, 0.0, 1.0) }
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(20.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runs, liveDep = 0.0)),
+        )!!
+        assertEquals(0.5, result.candidates[0].boardProbability, 1e-9)
+    }
+
+    @Test
+    fun `an on-time report gives the same answer as no report at all`() {
+        val runs = List(10) { ConnectionModel.JointRun(25.0, 25.0, 1.0) } +
+            List(10) { ConnectionModel.JointRun(0.0, 0.0, 1.0) }
+        fun board(live: Double?) = ConnectionModel.propagate(
+            feederArrival = feeder(20.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runs, liveDep = live)),
+        )!!.candidates[0].boardProbability
+        assertEquals(board(null), board(0.0), 1e-12)
+        assertEquals(board(null), board(-4.0), 1e-12)
+        assertEquals(board(null), board(0.9), 1e-12)
+    }
+
+    @Test
+    fun `a reported delay is still taken as fact`() {
+        // Ready at +25; A is reported 30 late, so it is certainly still there
+        // even though it usually leaves on time.
+        val runs = List(20) { ConnectionModel.JointRun(0.0, 0.0, 1.0) }
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(20.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runs, liveDep = 30.0)),
+        )!!
+        assertEquals(1.0, result.candidates[0].boardProbability, 1e-9)
+    }
+
+    @Test
+    fun `a candidate with no history and only an on-time report is dropped`() {
+        // Nothing is known about it any more, and a candidate that reaches the
+        // weighting with an empty run list divides by a zero total.
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(0.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(
+                candidate("A", depAfterFeeder = 10, runs = emptyList(), liveDep = 0.0),
+                candidate("B", depAfterFeeder = 40),
+            ),
+        )!!
+        assertEquals(listOf("B"), result.candidates.map { it.candidate.id })
+        assertTrue(result.candidates.all { it.boardProbability.isFinite() })
+    }
+
+    @Test
+    fun `a candidate with no history but a reported delay is kept`() {
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(0.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, runs = emptyList(), liveDep = 8.0)),
+        )!!
+        assertEquals(listOf("A"), result.candidates.map { it.candidate.id })
+        assertEquals(1.0, result.candidates[0].boardProbability, 1e-9)
+    }
+
+    @Test
+    fun `a live cancellation is still believed`() {
+        // Cancellation is a statement about the train, not a restated plan.
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(0.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(
+                candidate("A", depAfterFeeder = 10, liveDep = 0.0, cancelledLive = true),
+                candidate("B", depAfterFeeder = 40),
+            ),
+        )!!
+        assertEquals(0.0, result.candidates.first { it.candidate.id == "A" }.boardProbability, 1e-9)
+        assertEquals(1.0, result.candidates.first { it.candidate.id == "B" }.boardProbability, 1e-9)
+    }
 }

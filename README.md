@@ -49,7 +49,7 @@ Android 8.0 (API 26) or newer.
   sharpened towards runs that were similarly late. **A report only counts
   when it reports a delay**: DB states a stop in four shapes and three of
   them mean "on time", which is the plan restated rather than an
-  observation — see `Predictor.MIN_INFORMATIVE_DELAY_MINUTES` for what
+  observation — see `LiveReport` for what
   believing it cost. Trains without history
   fall back to a Bayesian Normal-inverse-gamma prior per train class and
   time of day (closed-form Student-t predictive).
@@ -91,7 +91,13 @@ Android 8.0 (API 26) or newer.
   decoder dependency).
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
-  pinball loss, interval coverage). On a 12-week eval (Easter–June 2026,
+  pinball loss, interval coverage), reported with their upper tail rather
+  than as means alone. The two evaluations answer different halves and
+  neither replaces the other: the archive says how history should be
+  weighted and whether a *genuine* live signal is worth conditioning on,
+  and only the collected forecasts can say whether DB's number is a genuine
+  signal — the archive records what the trains did, not what DB said they
+  would do. On a 12-week eval (Easter–June 2026,
   91k predictions) the delta model cut live-scenario CRPS 3.2× versus
   ignoring live data (1.53 vs 4.83); a 30-day half-life beat 7/14/60 days;
   explicit holiday handling showed no benefit even across the April–June

@@ -431,3 +431,89 @@ def test_the_page_omits_the_hour_section_when_no_day_is_full(tmp_path):
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn), clock=[])
     assert "Does the day pile up?" not in out.read_text(encoding="utf-8")
+
+
+# --- the spread section -----------------------------------------------------
+#
+# The mean CRPS is the number every other section reports, and on its own it
+# tells the reader the wrong thing twice: the medians are a tie, so it overstates
+# the everyday difference, and the tail is where the whole advantage sits, so it
+# understates the difference that costs a passenger a connection.
+
+def graded(*values, **kwargs):
+    """Scored arrivals whose CRPS is exactly the given values."""
+    return [arrival(num=str(i), crps=float(v), **kwargs) for i, v in enumerate(values)]
+
+
+def test_the_spread_reports_quantiles_not_just_the_mean():
+    s = R.score_spread(graded(*range(1, 101)), lambda r: r["crps"])
+    assert s["n"] == 100
+    assert s["mean"] == pytest.approx(50.5)
+    assert s["p50"] == pytest.approx(50.5)
+    assert s["p90"] == pytest.approx(90.1)
+    assert s["p99"] == pytest.approx(99.01)
+    assert s["max"] == pytest.approx(100.0)
+
+
+def test_the_quantiles_come_out_in_order():
+    s = R.score_spread(graded(*range(1, 101)), lambda r: r["crps"])
+    ordered = [s[k] for k in ("p10", "p25", "p50", "p75", "p90", "p99", "max")]
+    assert ordered == sorted(ordered)
+
+
+def test_a_mean_can_hide_a_tail():
+    """The case the section exists for: same mean, very different tails."""
+    flat = R.score_spread(graded(*([5.0] * 100)), lambda r: r["crps"])
+    spiky = R.score_spread(graded(*([0.0] * 90 + [50.0] * 10)), lambda r: r["crps"])
+    assert flat["mean"] == pytest.approx(spiky["mean"])
+    assert flat["awful"] == 0.0
+    assert spiky["awful"] == pytest.approx(0.10)
+
+
+def test_the_bad_shares_count_strictly_over_the_threshold():
+    s = R.score_spread(
+        graded(R.BAD_MINUTES, R.BAD_MINUTES + 0.1, R.AWFUL_MINUTES, R.AWFUL_MINUTES + 0.1),
+        lambda r: r["crps"])
+    assert s["bad"] == pytest.approx(0.75)      # three are over BAD_MINUTES
+    assert s["awful"] == pytest.approx(0.25)    # one is over AWFUL_MINUTES
+
+
+def test_the_spread_is_ordered_by_lead_time_not_by_dict_order():
+    rows = (graded(1.0, lead_minutes=200.0) + graded(2.0, lead_minutes=5.0)
+            + graded(3.0, lead_minutes=30.0))
+    assert [r["bucket"] for r in R.error_spread(rows)] == ["<10m", "20-45m", ">3h"]
+
+
+def test_the_spread_scores_db_by_its_absolute_error():
+    rows = [arrival(db=10, truth=4, crps=1.0)]
+    assert R.error_spread(rows)[0]["db"]["p50"] == pytest.approx(6.0)
+
+
+def test_the_box_chart_draws_a_box_per_series_per_bucket():
+    rows = R.error_spread(graded(1.0, 2.0, 3.0, 4.0))
+    svg = R.box_chart(rows, ["db", "live"], y_label="minutes")
+    assert svg.count("<rect") == 2 * len(rows)
+    assert "</svg>" in svg
+
+
+def test_the_box_chart_clamps_a_tail_that_would_flatten_it():
+    """p99 is several times p90 here; letting it set the scale would squash
+    every box into a line."""
+    rows = R.error_spread(graded(*([1.0] * 99 + [400.0])))
+    svg = R.box_chart(rows, ["db", "live"], y_label="minutes")
+    heights = [float(h) for h in re.findall(r'<rect[^>]*height="([0-9.]+)"', svg)]
+    assert all(h > 0 for h in heights)
+
+
+def test_the_page_carries_the_spread_section(tmp_path):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i), crps=float(i)) for i in range(8)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-18"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 8, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn), spread=R.error_spread(rows))
+    page = out.read_text(encoding="utf-8")
+    assert "The average is the least interesting number here" in page
+    assert f"over {R.AWFUL_MINUTES} min" in page
+    assert "%d" not in page and "%s" not in page

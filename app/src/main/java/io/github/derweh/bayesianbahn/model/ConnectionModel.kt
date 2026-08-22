@@ -94,7 +94,18 @@ object ConnectionModel {
         transferMinutes: Int,
         candidates: List<Candidate>,
     ): Result? {
+        // A live departure report is taken as fact below — if the train is
+        // reported later than the passenger can arrive it is missed, otherwise
+        // it is caught, with no distribution in between. That is only defensible
+        // for a report that is an observation, and DB reports "on time" for
+        // almost every train until shortly before departure (see [LiveReport]).
+        // Believing those turned a train with a history of leaving late into a
+        // certainty. The gate is applied here rather than in the callers so no
+        // caller can omit it, and before the filter below so that a candidate
+        // left with neither history nor a report is dropped rather than reaching
+        // the weighting with an empty run list.
         val usable = candidates
+            .map { it.copy(liveDepartureDelay = LiveReport.informative(it.liveDepartureDelay)) }
             .filter { it.cancelledLive || it.runs.isNotEmpty() || it.liveDepartureDelay != null }
             .sortedBy { it.plannedDepartureMillis }
         val reference = usable.firstOrNull { !it.cancelledLive } ?: return null

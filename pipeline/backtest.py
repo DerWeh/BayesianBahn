@@ -9,9 +9,29 @@ connection, and scores the *distributions* with proper scoring rules:
   - empirical coverage of the nominal 80% interval,
   - MAE of the median.
 
-Two scenarios per model: "blind" (no live information, e.g. planning the day
-before) and "live" (the delay the train had at its previous stop is known —
-the situation shortly before arrival).
+Three scenarios per model:
+
+  - "blind"  no live information at all — planning the day before,
+  - "live"   the delay the train had at its previous stop is known,
+  - "gated"  the app's shipped rule: believe that delay only when it is a
+             delay, and fall back to the history when it is not.
+
+The distinction between "live" and "gated" is the point of the third scenario.
+What the app receives is not a measurement but *DB's forecast for this station*,
+and DB states a stop in four shapes of which three mean "on time" — the plan
+restated rather than an observation. The archive cannot show that, because it
+records what the trains did and not what DB said they would do; only the
+collector under `tools/collect_forecasts.py` sees DB's forecasts, which is the
+one thing it is for. So the two datasets answer different halves:
+
+  - this backtest, on months of archive, decides how history should be
+    weighted and whether a *genuine* live signal is worth conditioning on;
+  - the collected forecasts decide whether DB's number is a genuine signal.
+
+Running the gate here against a real previous-stop delay is therefore the
+control: it should come out *worse* than "live", because a measured zero is
+information and DB's zero is not. If it ever comes out better, the gate is
+doing something other than what it was justified by.
 
 Usage:
     pixi run -e pipeline python pipeline/backtest.py \
@@ -136,6 +156,37 @@ def predictive_points(
 # --------------------------------------------------------------------------- scoring
 
 
+# Mirrors Predictor.MIN_INFORMATIVE_DELAY_MINUTES in the app. Guarded by
+# tools/tests/test_route_bench.py, which reads both and compares them: this file
+# has drifted from the app before.
+MIN_INFORMATIVE_DELAY = 1.0
+
+
+def scenarios_for(live_prev: float | None) -> list[tuple[str, float | None]]:
+    """The (scenario, live input) pairs to score for one event.
+
+    "live" and "gated" are only defined where a previous-stop delay exists at
+    all. Scoring "gated" on the events "live" never saw would compare two
+    different event sets: those events carry no live signal to gate, so they
+    would enter "gated" as pure blind predictions and drag it towards blind
+    while "live" was measured without them.
+    """
+    if live_prev is None:
+        return [("blind", None)]
+    return [("blind", None), ("live", live_prev), ("gated", gated_live(live_prev))]
+
+
+def gated_live(live_prev: float | None) -> float | None:
+    """The app's rule: a report counts only when it reports a delay.
+
+    Applied here to a *measured* previous-stop delay, which is why this is the
+    control rather than the treatment — see the module docstring.
+    """
+    if live_prev is None or live_prev < MIN_INFORMATIVE_DELAY:
+        return None
+    return live_prev
+
+
 def crps_empirical(x: np.ndarray, w: np.ndarray, y: float) -> float:
     """Exact CRPS of a weighted empirical distribution vs observation y."""
     w = w / w.sum()
@@ -163,6 +214,13 @@ def pinball(q_pred: float, y: float, q: float) -> float:
 
 @dataclass
 class Scores:
+    """Per-event scores, kept whole rather than accumulated into means.
+
+    A mean CRPS hides exactly the events that matter: nobody minds a forecast
+    that is a minute out, and everybody minds the one that is twenty out and
+    unflagged. The summary therefore carries the upper tail as well.
+    """
+
     crps: list[float] = field(default_factory=list)
     pinball10: list[float] = field(default_factory=list)
     pinball50: list[float] = field(default_factory=list)
@@ -178,9 +236,14 @@ class Scores:
         self.covered80.append(q10 <= y <= q90)
 
     def summary(self) -> dict:
+        crps = np.asarray(self.crps)
         return {
             "n": len(self.crps),
-            "crps": round(float(np.mean(self.crps)), 3),
+            "crps": round(float(np.mean(crps)), 3),
+            "crps_p50": round(float(np.quantile(crps, 0.50)), 3),
+            "crps_p90": round(float(np.quantile(crps, 0.90)), 3),
+            "crps_p99": round(float(np.quantile(crps, 0.99)), 3),
+            "crps_max": round(float(crps.max()), 3),
             "pinball10": round(float(np.mean(self.pinball10)), 3),
             "pinball50_mae": round(2 * float(np.mean(self.pinball50)), 3),
             "pinball90": round(float(np.mean(self.pinball90)), 3),
@@ -357,9 +420,7 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | No
                 hdc = dayclass_cache[variant][hist]
                 qdc = dayclass_cache[variant][i]
                 w0 = base_weights(variant, hage, hdc, qdc)
-                for scenario, lp in (("blind", None), ("live", live)):
-                    if scenario == "live" and lp is None:
-                        continue
+                for scenario, lp in scenarios_for(live):
                     x, w = predictive_points(variant, hx, hprev, w0, lp)
                     if w.sum() <= 0:
                         continue
