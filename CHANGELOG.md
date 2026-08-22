@@ -5,6 +5,16 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [0.1.4] - 2026-08-22
+
+### Fixed
+- The F-Droid listing shows the app icon. The app ships an adaptive icon and
+  nothing else, which is everything a device running Android 8 or newer needs,
+  but F-Droid builds its listing icon from a plain raster inside the APK and
+  there was none — so the app was listed with no icon at all. A PNG rendered
+  from the same launcher vector now ships alongside the store description. No
+  code changed; this release exists to get that metadata rebuilt.
+
 ## [0.1.3] - 2026-08-20
 
 ### Fixed
@@ -119,6 +129,7 @@ times and connections with DB's official apps.
   Augsburg/München region; optional bulk download for offline use,
   refreshed daily to within ~a day of reality.
 
+[0.1.4]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.4
 [0.1.3]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.3
 [0.1.2]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.2
 [0.1.1]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.1

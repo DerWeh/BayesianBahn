@@ -1,0 +1,4 @@
+Nothing has changed in the app itself. This release exists so that
+the F-Droid listing picks up the app icon, which was missing: the app
+carries an adaptive icon, which is all a phone needs, but the listing
+is built from a plain image and there was none to find.
