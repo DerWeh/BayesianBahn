@@ -19,12 +19,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import collect_forecasts as cf
@@ -33,6 +37,12 @@ BRANCHES = {
     "base": "https://raw.githubusercontent.com/DerWeh/BayesianBahn/refs/heads/shards/",
     "recent": "https://raw.githubusercontent.com/DerWeh/BayesianBahn/refs/heads/shards-recent/",
 }
+# One request at a time against a 275 ms round trip is 43 minutes for a day's
+# ~4,000 trains, which was most of the time an evaluation took. The requests are
+# independent, so they overlap; the cap keeps the burst polite against a public
+# host and matches SyntheticTimetable.MAX_CONCURRENT_SHARDS, which asks the same
+# host for the same files from the app.
+WORKERS = 8
 PAUSE = 0.05
 
 
@@ -69,43 +79,86 @@ def fetch(url: str) -> bytes | None:
         return None
 
 
+def is_fresh(target: Path, tier: str, day: dt.date) -> bool:
+    """Whether a cached shard can stand in for the one published on `day`.
+
+    The base branch is rebuilt monthly and covers months before any evaluated
+    day, so once fetched it is always good. The *recent* overlay is rebuilt
+    every morning and carries the last few days of runs — the freshest history a
+    user would have had. A copy downloaded before the evaluated day cannot
+    contain the runs from the days in between, so it silently starves the model
+    of exactly the history that matters most.
+
+    Nothing caught this: the harness asserts there is no *leak* (no run dated on
+    or after the evaluated day) and a stale overlay passes that happily, being
+    short of data rather than ahead of it. A copy fetched later than the
+    evaluated day is fine — the harness trims the surplus away.
+    """
+    if not target.exists():
+        return False
+    if tier != "recent":
+        return True
+    fetched = dt.date.fromtimestamp(target.stat().st_mtime)
+    return fetched >= day
+
+
+def fetch_key(key: str, out: Path, day: dt.date) -> tuple[str, ...]:
+    """Fetch one shard key from every tier. Returns the tiers that produced one.
+
+    All the work for one key stays on one thread, so the temp-then-rename below
+    is the only concurrency the filesystem sees: two threads never write the
+    same path, because keys are unique.
+    """
+    got = []
+    for tier, base_url in BRANCHES.items():
+        target = out / tier / f"{key}.jgz"
+        if is_fresh(target, tier, day):
+            got.append(tier)
+            continue
+        body = fetch(f"{base_url}{key}.jgz")
+        if PAUSE:
+            time.sleep(PAUSE)
+        if body is None:
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Temp then rename: an interrupted run must not leave a truncated
+        # shard that later looks like a complete one.
+        tmp = target.with_suffix(f".{os.getpid()}-{threading.get_ident()}.part")
+        tmp.write_bytes(body)
+        tmp.replace(target)
+        got.append(tier)
+    return tuple(got)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--day", required=True)
     ap.add_argument("--journal", type=Path, default=cf.OUT)
     ap.add_argument("--out", type=Path, default=Path(__file__).parent / ".shards")
+    ap.add_argument("--workers", type=int, default=WORKERS,
+                    help=f"concurrent requests (default {WORKERS}; 1 is the old behaviour)")
     args = ap.parse_args()
 
+    day = dt.date.fromisoformat(args.day)
     trains = trains_of(args.day, args.journal)
     keys = sorted({k for cat, num, line in trains for k in candidate_keys(cat, num, line)})
-    print(f"{len(trains)} trains -> {len(keys)} shard keys", file=sys.stderr)
+    print(f"{len(trains)} trains -> {len(keys)} shard keys "
+          f"({args.workers} at a time)", file=sys.stderr)
 
     counts = {"base": 0, "recent": 0, "missing": 0}
-    for i, key in enumerate(keys, 1):
-        got_any = False
-        for tier, base_url in BRANCHES.items():
-            target = args.out / tier / f"{key}.jgz"
-            if target.exists():
+    done = 0
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = [pool.submit(fetch_key, key, args.out, day) for key in keys]
+        for future in as_completed(futures):
+            tiers = future.result()
+            for tier in tiers:
                 counts[tier] += 1
-                got_any = True
-                continue
-            body = fetch(f"{base_url}{key}.jgz")
-            time.sleep(PAUSE)
-            if body is None:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            # Temp then rename: an interrupted run must not leave a truncated
-            # shard that later looks like a complete one.
-            tmp = target.with_suffix(".part")
-            tmp.write_bytes(body)
-            tmp.replace(target)
-            counts[tier] += 1
-            got_any = True
-        if not got_any:
-            counts["missing"] += 1
-        if i % 100 == 0:
-            print(f"  {i}/{len(keys)}", file=sys.stderr, flush=True)
+            if not tiers:
+                counts["missing"] += 1
+            done += 1
+            if done % 100 == 0:
+                print(f"  {done}/{len(keys)}", file=sys.stderr, flush=True)
     print(json.dumps(counts), file=sys.stderr)
 
 

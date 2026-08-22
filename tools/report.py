@@ -23,11 +23,14 @@ import argparse
 import datetime as dt
 import html
 import json
-import statistics as st
+import re
+import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -58,6 +61,20 @@ def load(path: Path) -> list[dict]:
             if line.strip()]
 
 
+
+def mean(values) -> float:
+    """Arithmetic mean over a numeric iterable.
+
+    Not statistics.mean: that sums in exact rational arithmetic, which is the
+    right default for a statistics library and about a hundred times the cost of
+    what is needed for floats that came out of a JSON file. It was 312 of the
+    report's 352 seconds before the bootstrap was vectorised, and 1.9 of the
+    remaining 10 afterwards.
+    """
+    a = np.fromiter(values, dtype=float)
+    return float(a.mean()) if a.size else float("nan")
+
+
 def by_lead(rows: list[dict]) -> dict[str, list[dict]]:
     """Group scored events by how long before departure they were made."""
     out: dict[str, list[dict]] = {}
@@ -84,14 +101,14 @@ def arrivals_table(live: list[dict], blind: list[dict]) -> list[dict]:
             "n": len(g_blind),
             # A point forecast's CRPS is its absolute error, so DB's MAE is
             # directly comparable with our CRPS.
-            "db": st.mean(abs(r["db"] - r["truth"]) for r in g_blind),
-            "db_bias": st.mean(r["db"] - r["truth"] for r in g_blind),
+            "db": mean(abs(r["db"] - r["truth"]) for r in g_blind),
+            "db_bias": mean(r["db"] - r["truth"] for r in g_blind),
             "db_surprise": sum(1 for r in g_blind
                                if r["truth"] > r["db"] + SURPRISE_MINUTES) / len(g_blind),
-            "blind": st.mean(r["crps"] for r in g_blind),
+            "blind": mean(r["crps"] for r in g_blind),
             "blind_cover": sum(1 for r in g_blind
                                if r["q10"] <= r["truth"] <= r["q90"]) / len(g_blind),
-            "live": st.mean(r["crps"] for r in g_live),
+            "live": mean(r["crps"] for r in g_live),
             "live_cover": sum(1 for r in g_live
                               if r["q10"] <= r["truth"] <= r["q90"]) / len(g_live),
         })
@@ -144,7 +161,7 @@ def error_spread(live: list[dict]) -> list[dict]:
 
 
 def brier(rows: list[dict], key: str) -> float:
-    return st.mean((r[key] - (1.0 if r["caught"] else 0.0)) ** 2 for r in rows)
+    return mean((r[key] - (1.0 if r["caught"] else 0.0)) ** 2 for r in rows)
 
 
 def connections_table(live: list[dict], blind: list[dict]) -> list[dict]:
@@ -279,9 +296,9 @@ def per_day(days: list[str], live, blind, conn_live, conn_blind) -> list[dict]:
         out.append({
             "day": day,
             "n": len(day_blind),
-            "db": st.mean(abs(r["db"] - r["truth"]) for r in day_blind),
-            "blind": st.mean(r["crps"] for r in day_blind),
-            "live": st.mean(r["crps"] for r in day_live),
+            "db": mean(abs(r["db"] - r["truth"]) for r in day_blind),
+            "blind": mean(r["crps"] for r in day_blind),
+            "live": mean(r["crps"] for r in day_live),
             "live_cover": sum(1 for r in day_live
                               if r["q10"] <= r["truth"] <= r["q90"]) / len(day_live),
             "blind_cover": sum(1 for r in day_blind
@@ -348,7 +365,7 @@ def hourly(rows: list[dict]) -> list[dict]:
             "bucket": f"{hour:02d}",
             "hour": hour,
             "n": len(group),
-            "mean": st.mean(r["truth"] for r in group),
+            "mean": mean(r["truth"] for r in group),
             "late": sum(1 for r in group if r["truth"] > SURPRISE_MINUTES) / len(group),
         })
     return out
@@ -401,9 +418,9 @@ def outcome_split(live: list[dict], blind: list[dict]) -> list[dict]:
                             if (r["db_catch_p"] == 1) == r["caught"]) / len(g_blind),
             "db": brier(g_blind, "db_catch_p"),
             "blind": brier(g_blind, "p_catch"),
-            "blind_p": st.mean(r["p_catch"] for r in g_blind),
+            "blind_p": mean(r["p_catch"] for r in g_blind),
             "live": brier(g_live, "p_catch") if g_live else float("nan"),
-            "live_p": st.mean(r["p_catch"] for r in g_live) if g_live else float("nan"),
+            "live_p": mean(r["p_catch"] for r in g_live) if g_live else float("nan"),
         })
     return out
 
@@ -721,6 +738,43 @@ def num(x, digits=2):
 
 
 
+
+def provenance() -> dict:
+    """Which code produced these numbers.
+
+    A scored page and the model that produced it drift apart the moment either
+    changes, and this page is generated from the working tree rather than from a
+    release — the first five-day run scored a model that was not in any released
+    version and the page called it "the one that ships". Reporting the commit,
+    the tree's cleanliness and the app version it declares is what makes a
+    figure on this page traceable to the code that produced it.
+    """
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
+                                  text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError):
+            return ""
+
+    gradle = (ROOT / "app/build.gradle.kts").read_text(encoding="utf-8")
+    name = re.search(r'versionName = "([^"]+)"', gradle)
+    code = re.search(r"versionCode = (\d+)", gradle)
+    commit = git("rev-parse", "HEAD")
+    # Only files that affect the model or the scoring count as dirty here; an
+    # edited README does not change a number on this page.
+    dirty = [line[3:] for line in git("status", "--porcelain").splitlines()
+             if line[3:].startswith(("app/src/main/", "tools/", "pipeline/"))]
+    described = git("describe", "--tags", "--exact-match") or ""
+    return {
+        "commit": commit,
+        "short": commit[:12],
+        "version": name.group(1) if name else "unknown",
+        "code": code.group(1) if code else "?",
+        "tag": described,
+        "dirty": sorted(dirty),
+    }
+
+
 def weekday_caveat(days: list[str]) -> str:
     """Which parts of the week the collected days actually cover."""
     kinds = {dt.date.fromisoformat(d).weekday() >= 5 for d in days}
@@ -736,6 +790,21 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
+
+    prov = provenance()
+    if prov["dirty"]:
+        release_note = (
+            "<strong>That commit does not identify the code that ran:</strong> "
+            f"{len(prov['dirty'])} uncommitted file(s) under app/src/main, tools/ "
+            "or pipeline/ were present, so these figures cannot be reproduced "
+            "from the commit alone.")
+    elif prov["tag"]:
+        release_note = (f"That commit is the released tag <code>{html.escape(prov['tag'])}</code>, "
+                        "so this is the model in that version of the app.")
+    else:
+        release_note = ("That commit is <strong>not a released version</strong>: the app "
+                        "published in the stores does not contain this model unless a "
+                        "later release says so.")
 
     tiles = [
         ("tile", f"{totals['events']:,}", "arrival predictions scored"),
@@ -765,12 +834,14 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   in advance across the whole network — six major hubs down to three village
   halts. The next day the archive says when each train really arrived, and both
   forecasts are scored against that.</p>
-  <p>The model is the one that ships, run through the app’s own prediction code,
-  and it is only ever shown history from before the day it predicts. It appears
-  twice: <strong>as shipped</strong>, which adjusts DB’s live number using past
-  runs <em>when DB actually reports a delay</em> and leans on the history alone
-  when it does not, and <strong>history only</strong>, which never looks at the
-  live number at all.</p>
+  <p>The model is the app’s own prediction code at commit
+  <code>{prov["short"]}</code>, which declares version {prov["version"]}
+  (versionCode {prov["code"]}). {release_note} It is only ever shown history
+  from before the day it predicts. It appears twice:
+  <strong>as shipped</strong>, which adjusts DB’s live number using past runs
+  <em>when DB actually reports a delay</em> and leans on the history alone when
+  it does not, and <strong>history only</strong>, which never looks at the live
+  number at all.</p>
   <p>Two kinds of answer are scored, and they correspond to the two kinds of
   journey the app plans. For a journey without a change the answer is an arrival
   time, scored as a distribution against the arrival that happened. For a journey
@@ -1107,8 +1178,9 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 </section>
 
 <footer>
-  Generated %s from %s. BayesianBahn is MIT-licensed; delay data is CC BY 4.0 by
-  Deutsche Bahn via the piebro/deutsche-bahn-data archive.
+  Generated %s from %s, by BayesianBahn at commit %s. BayesianBahn is
+  MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
+  piebro/deutsche-bahn-data archive.
 </footer>
 </div>""" % (
         SURPRISE_MINUTES, TRANSFER_MINUTES,
@@ -1124,6 +1196,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
             "pixi run -e evaluate evaluate " + " ".join(days)),
         dt.date.today().isoformat(),
         html.escape(", ".join(days)),
+        html.escape(prov["commit"] or "unknown"),
     ))
 
     out.parent.mkdir(parents=True, exist_ok=True)

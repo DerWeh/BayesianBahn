@@ -536,3 +536,92 @@ def test_the_weekday_caveat_reaches_the_page(tmp_path):
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn))
     assert "Weekdays only." in out.read_text(encoding="utf-8")
+
+
+# --- provenance -------------------------------------------------------------
+#
+# The five-day page was generated from a working tree whose model was in no
+# released version, and it described that model as "the one that ships".
+
+def test_provenance_reads_the_app_version_and_commit():
+    prov = R.provenance()
+    assert re.fullmatch(r"[0-9a-f]{40}", prov["commit"]), prov["commit"]
+    assert prov["short"] == prov["commit"][:12]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", prov["version"]), prov["version"]
+    assert prov["code"].isdigit()
+
+
+def test_only_model_and_scoring_files_count_as_dirty():
+    """An edited README does not change a number on the page; an edited
+    Predictor.kt does."""
+    source = (R.ROOT / "tools/report.py").read_text(encoding="utf-8")
+    body = source.split("def provenance(")[1].split("\ndef ")[0]
+    assert 'startswith(("app/src/main/", "tools/", "pipeline/"))' in body
+
+
+def test_an_unreleased_commit_is_labelled_as_such(tmp_path, monkeypatch):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    monkeypatch.setattr(R, "provenance", lambda: {
+        "commit": "a" * 40, "short": "a" * 12, "version": "0.1.4",
+        "code": "5", "tag": "", "dirty": [],
+    })
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    page = out.read_text(encoding="utf-8")
+    assert "not a released version" in page
+    assert "a" * 12 in page and "0.1.4" in page
+    assert "the one that ships" not in page
+
+
+def test_a_released_commit_names_its_tag(tmp_path, monkeypatch):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    monkeypatch.setattr(R, "provenance", lambda: {
+        "commit": "b" * 40, "short": "b" * 12, "version": "0.2.0",
+        "code": "6", "tag": "v0.2.0", "dirty": [],
+    })
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    page = out.read_text(encoding="utf-8")
+    assert "released tag" in page and "v0.2.0" in page
+    assert "not a released version" not in page
+
+
+def test_a_dirty_tree_says_the_figures_are_not_reproducible(tmp_path, monkeypatch):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    monkeypatch.setattr(R, "provenance", lambda: {
+        "commit": "c" * 40, "short": "c" * 12, "version": "0.2.0",
+        "code": "6", "tag": "v0.2.0", "dirty": ["app/src/main/java/X.kt"],
+    })
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    page = out.read_text(encoding="utf-8")
+    assert "does not identify the code that ran" in page
+    assert "released tag" not in page
+
+
+def test_the_full_commit_is_in_the_footer(tmp_path, monkeypatch):
+    """The short form is for reading; the full hash is what a reader checks out."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    monkeypatch.setattr(R, "provenance", lambda: {
+        "commit": "d" * 40, "short": "d" * 12, "version": "0.2.0",
+        "code": "6", "tag": "", "dirty": [],
+    })
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    assert "d" * 40 in out.read_text(encoding="utf-8")
