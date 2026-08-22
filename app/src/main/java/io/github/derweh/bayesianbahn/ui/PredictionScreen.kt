@@ -196,7 +196,7 @@ private fun PredictionContent(
                 ForecastSource.PRIOR ->
                     "No delay history available for this train — showing a prior " +
                         "estimate for its category and time of day."
-            },
+            } + ignoredLiveNote(forecast.ignoredLiveDelay),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -314,4 +314,20 @@ fun DelayDistributionChart(
             tick += tickStep
         }
     }
+}
+
+/**
+ * Why the forecast can disagree with a board that says the train is on time.
+ *
+ * DB reports no delay for most trains until shortly before departure — it is
+ * the plan restated, not an observation, and the forecast is measurably better
+ * for ignoring it. Without a word here the app looks like it is failing to read
+ * the live data it plainly has.
+ */
+private fun ignoredLiveNote(ignoredLiveDelay: Double?): String {
+    if (ignoredLiveDelay == null) return ""
+    val what = if (ignoredLiveDelay < 0) "ahead of schedule" else "on time"
+    return " DB currently reports this train $what, which it does for almost " +
+        "every train until shortly before departure, so the forecast does not " +
+        "lean on it."
 }

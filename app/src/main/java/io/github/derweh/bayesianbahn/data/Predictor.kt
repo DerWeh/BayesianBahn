@@ -29,6 +29,12 @@ data class Forecast(
     val effectiveRuns: Double,
     /** Fraction of past runs that were cancelled, null when unknown. */
     val cancelProbability: Double?,
+    /**
+     * A live report that arrived but was not treated as evidence, in minutes.
+     * Null when DB reported a delay we did use, or reported nothing at all.
+     * The screens use it to say why the forecast disagrees with the board.
+     */
+    val ignoredLiveDelay: Double? = null,
 )
 
 /**
@@ -47,6 +53,9 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         liveDelayMinutes: Double?,
         today: LocalDate = LocalDate.now(ZONE),
     ): Forecast {
+        val reported = informativeLiveDelay(liveDelayMinutes)
+        val ignored = liveDelayMinutes.takeIf { reported == null }
+
         val stationHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
             sh.eva == stationEva || StationNames.matches(name, stationName)
         }?.value
@@ -61,7 +70,7 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
                 runs = stationHistory.runs,
                 queryTimeOfDay = timeOfDay,
                 queryDate = today,
-                liveDelayAtPreviousStop = liveDelayMinutes,
+                liveDelayAtPreviousStop = reported,
             )
             if (empirical != null && empirical.effectiveSampleSize >= EmpiricalDelay.MIN_EFFECTIVE_N) {
                 return Forecast(
@@ -74,6 +83,7 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
                     runCount = empirical.sampleSize,
                     effectiveRuns = empirical.effectiveSampleSize,
                     cancelProbability = empirical.cancelProbability,
+                    ignoredLiveDelay = ignored,
                 )
             }
         }
@@ -82,17 +92,47 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         val band = TimeBand.fromEpochMillis(plannedTimeMillis)
         return Forecast(
             distribution = StudentTDelay(
-                fallbackModel.predictiveFor(trainClass, band, liveDelayMinutes),
+                fallbackModel.predictiveFor(trainClass, band, reported),
             ),
             source = ForecastSource.PRIOR,
             runCount = 0,
             effectiveRuns = 0.0,
             cancelProbability = null,
+            ignoredLiveDelay = ignored,
         )
     }
 
-    private companion object {
-        val ZONE: ZoneId = ZoneId.of("Europe/Berlin")
-        val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+    companion object {
+        private val ZONE: ZoneId = ZoneId.of("Europe/Berlin")
+        private val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+        /**
+         * Minutes. Below this a live report is not treated as evidence.
+         *
+         * DB reports a stop in four shapes and three of them mean "on time":
+         * the predicted time moved, it was confirmed unchanged, the stop is
+         * listed without a time, or it is absent. Only the first is an
+         * observation; the rest are the plan, restated. Scored against the
+         * archive over 2026-08-17..19, DB called a train on time for 61% of
+         * stops ten minutes out and 99% of stops three hours out — and 31% of
+         * that last group arrived more than two minutes late. Anchoring the
+         * forecast on a number that carries no information cost 0.53 min of
+         * CRPS on trains that have history, and left the stated 80% interval
+         * covering 55% of arrivals instead of 80%.
+         *
+         * A report of "early" is no better: those trains averaged 1.4 minutes
+         * *late*. So the threshold sits above zero rather than at it.
+         */
+        const val MIN_INFORMATIVE_DELAY_MINUTES = 1.0
+
+        /**
+         * The live report if it is evidence, null if it is the plan restated.
+         *
+         * Returning null is what makes the rest of the model ignore it: every
+         * live path is already written to handle "no live data", because that
+         * is the normal case for a journey planned more than a day ahead.
+         */
+        fun informativeLiveDelay(liveDelayMinutes: Double?): Double? =
+            liveDelayMinutes?.takeIf { it >= MIN_INFORMATIVE_DELAY_MINUTES }
     }
 }

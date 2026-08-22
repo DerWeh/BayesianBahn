@@ -51,12 +51,14 @@ data class HistoricalRun(
  * showed this cuts CRPS ~3.2x versus ignoring live data, while kernel-only
  * reweighting (the previous approach) recovered barely half the gain.
  *
- * That result holds where a live report carries information. Forward
- * evaluation against DB (2026-08-17..19, see README) finds the opposite sign
- * beyond ~45 minutes before departure: DB reports "on time" for 91-99% of
- * trains that far out because it has nothing to report yet, and conditioning
- * on that default costs 0.74-1.04 min of CRPS against ignoring it. The lead
- * time is not part of the conditioning today.
+ * That result holds where a live report carries information, which is not the
+ * same as where one exists. Forward evaluation against DB (2026-08-17..19, see
+ * README) found the opposite sign wherever DB had not actually reported a
+ * delay: it calls a train on time for 99% of stops three hours out because it
+ * has nothing to say yet, and 31% of those arrive more than two minutes late.
+ * Deciding which reports to believe is therefore [Predictor]'s job, not this
+ * one's — a report that is not evidence arrives here as null, the same as no
+ * report at all.
  */
 class EmpiricalDelay private constructor(
     /** (delay, weight) pairs sorted by delay. */

@@ -23,8 +23,11 @@ cancellation rates) are also available.
 
 Predictions are empirical: they come from months of real historical runs
 of that exact train at that station (collected from Deutsche Bahn's
-public IRIS API, CC BY 4.0), reweighted for recency and weekday and
-anchored on the train's current live delay. Delay history updates
+public IRIS API, CC BY 4.0), reweighted for recency and weekday. When
+DB reports an actual delay the forecast is anchored on it; when it
+reports nothing — which it does for most trains until shortly before
+departure — the history is left to speak for itself, which measurably
+beats treating the timetable as a forecast. Delay history updates
 in-app — a small daily data release keeps predictions fresh to within a
 day. Trains without history get an honest Bayesian prior estimate.
 

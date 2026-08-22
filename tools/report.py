@@ -649,8 +649,9 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   <p>The model is the one that ships, run through the app’s own prediction code,
   and it is only ever shown history from before the day it predicts. It appears
   twice: <strong>as shipped</strong>, which adjusts DB’s live number using past
-  runs, and <strong>history only</strong>, which ignores the live number
-  entirely.</p>
+  runs <em>when DB actually reports a delay</em> and leans on the history alone
+  when it does not, and <strong>history only</strong>, which never looks at the
+  live number at all.</p>
   <div class="tiles">"""]
     for cls, k, v in tiles:
         doc.append(f'<div class="{cls}"><span class="k">{html.escape(k)}</span>'
@@ -704,16 +705,13 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     worst = max(arrivals, key=lambda r: r["live"] - r["blind"])
     if worst["live"] > worst["blind"]:
         doc.append(f"""
-  <p><strong>The two variants cross over.</strong> Close to departure the live
-  number is worth having and history alone is the weaker forecast. Far out it
-  reverses: in the <em>{html.escape(worst["bucket"])}</em> bucket the shipped
-  model scores {worst["live"]:.2f} against history alone at
-  {worst["blind"]:.2f} — using DB’s number makes the answer
-  {worst["live"] - worst["blind"]:.2f} minutes worse. The reason is in the DB
-  bias column: hours ahead, DB has nothing to report yet and says the train is
-  on time, and the shipped model treats that silence as information. A train
-  with a history of running late is predicted punctual because nobody has
-  noticed yet.</p>""")
+  <p><strong>The two variants still cross over.</strong> In the
+  <em>{html.escape(worst["bucket"])}</em> bucket the shipped model scores
+  {worst["live"]:.2f} against history alone at {worst["blind"]:.2f} — leaning on
+  DB’s number makes the answer {worst["live"] - worst["blind"]:.2f} minutes
+  worse there. That is the shape this model was changed to remove, so a
+  crossover appearing here means a reported delay is being believed in a range
+  where it should not be.</p>""")
     doc.append("""</section>
 
 <section>
@@ -883,11 +881,14 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 
     <dt>As shipped vs history only</dt>
     <dd>Both are the same model. <em>As shipped</em> feeds it DB’s live number
-    for the station; <em>history only</em> withholds that and uses past runs
-    alone. The model was built to take the measured delay at the train’s
+    for the station, but only when that number is a reported delay: DB states a
+    stop in four shapes and three of them mean “on time”, which is the plan
+    restated rather than an observation, so those are passed through as no
+    report at all. <em>History only</em> withholds the live number in every
+    case. The model was built to take the measured delay at the train’s
     <em>previous</em> stop, and the live path substitutes this station’s forecast
-    instead — an approximation documented in the source, and the difference
-    between these two columns is what it costs.</dd>
+    instead — an approximation documented in the source, and where DB does
+    report a delay the gap between these two columns is what it costs.</dd>
 
     <dt>Ground truth</dt>
     <dd>The archive’s recorded arrival minus the scheduled arrival, the same

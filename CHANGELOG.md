@@ -5,6 +5,20 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [Unreleased]
+
+### Changed
+- **DB's live number is only used when it reports a delay.** DB states a stop
+  in four shapes and three of them mean "on time"; only one is an observation.
+  Scored against the archive over three collected days, DB called a train on
+  time for 61% of stops ten minutes before departure and 99% of stops three
+  hours out — and 31% of that last group arrived more than two minutes late.
+  Anchoring the forecast on that number was worth 0.53 minutes of CRPS on
+  trains that have history, and it left the stated 80% range covering 55% of
+  arrivals. Reports of "early" are ignored on the same grounds: those trains
+  averaged 1.4 minutes late. The app will now disagree with the platform
+  display for most trains, and the prediction screen says why.
+
 ## [0.1.4] - 2026-08-22
 
 ### Fixed

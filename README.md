@@ -46,7 +46,11 @@ Android 8.0 (API 26) or newer.
   timetable changes make old runs stale) and a same-weekday boost. When a
   live delay is reported, the *delta* model shifts each run's observed
   last-hop progression (final − previous stop) onto the live report,
-  sharpened towards runs that were similarly late. Trains without history
+  sharpened towards runs that were similarly late. **A report only counts
+  when it reports a delay**: DB states a stop in four shapes and three of
+  them mean "on time", which is the plan restated rather than an
+  observation — see `Predictor.MIN_INFORMATIVE_DELAY_MINUTES` for what
+  believing it cost. Trains without history
   fall back to a Bayesian Normal-inverse-gamma prior per train class and
   time of day (closed-form Student-t predictive).
 - **Connections**: for a journey with a transfer, the app propagates the
@@ -291,19 +295,23 @@ is also shown unpooled, because the first pass at this read a single evening's 1
 missed connections as a result that the next day did not reproduce.
 
 As of three days (2026-08-17/18/19, 45,408 arrival predictions, 67,796
-connections) the app's point forecast beats DB's by 0.24 min of CRPS
-[0.22, 0.27] and is better on the connections that actually failed
-(Brier −0.055 [−0.045, −0.067]). Two problems are open, both replicated on every
-collected day:
+connections) the app's point forecast beats DB's by **0.65 min of CRPS
+[0.60, 0.69]** and is markedly better on the connections that actually failed
+(Brier −0.207 [−0.183, −0.232]). It wins in every lead-time bucket and on every
+collected day.
 
-- The **stated 80% range is not honest** on the shipped path — it contains the
-  truth 53–61% of the time, against 84–88% for the history-only variant. The
-  distribution is the open problem, not the median.
-- **The live number helps only close to departure.** Beyond 45 minutes out,
-  withholding it is 0.74–1.04 min of CRPS *better*, because DB reports "on time"
-  for 91–99% of trains at that range and the model reads that silence as
-  information. Pooled over all lead times the history-only variant wins by
-  0.37 min [0.31, 0.43]; the crossover sits in the 20–45 min bucket.
+Both figures come from taking DB's live number seriously only when it reports a
+delay. Before that change the app beat DB by 0.24 min and its stated 80% range
+held 53–61% of arrivals; the range now holds **78–86% across every lead bucket**
+(77.7 / 84.1 / 80.5 per day) against a nominal 80%. The change is a single
+condition in `Predictor`, and its effect was predicted to three decimal places
+by scoring the rule against already-collected forecasts before it was written.
+
+What remains open is the other half: where DB *does* report a delay it
+understates it, saying +7.2 min for trains that arrive +10.6 on average. Beyond
+90 minutes out, believing such a report is still marginally worse than ignoring
+it (2.70–2.74 against 2.69–2.71 for history alone), which is the residue of the
+previous-stop approximation documented in `Predictor`.
 
 `tools/journey_bench.py` does the same thing against live IRIS. It is limited to
 a few dozen journeys by politeness to a keyless public API, so it is no longer
