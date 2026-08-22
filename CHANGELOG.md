@@ -18,6 +18,15 @@ fixes; expect breaking changes between minors until 1.0).
   arrivals. Reports of "early" are ignored on the same grounds: those trains
   averaged 1.4 minutes late. The app will now disagree with the platform
   display for most trains, and the prediction screen says why.
+- The connection model applies the same rule to a live *departure* report. It
+  had been treating one as fact — reported later than the passenger can arrive
+  meant missed, otherwise caught, with no distribution in between — so a train
+  with a history of leaving late became a certainty on the strength of a
+  restated timetable.
+- The evaluation report shows the distribution of the errors, not only their
+  averages: a box plot per lead-time bucket and the tail as figures. The
+  medians of the two forecasts are close and the difference between them is in
+  the large errors, which an average cannot show.
 
 ## [0.1.4] - 2026-08-22
 

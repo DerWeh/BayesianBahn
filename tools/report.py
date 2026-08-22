@@ -211,7 +211,7 @@ def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
 
 
 def crps_gap(rows: list[dict]) -> tuple[float, float, float]:
-    """Our CRPS minus DB's, per prediction. Negative means we are better."""
+    """BayesianBahn's CRPS minus DB's, per prediction. Negative is the lower score."""
     return cluster_ci(rows, lambda r: r["crps"] - abs(r["db"] - r["truth"]))
 
 
@@ -246,8 +246,10 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
             "what": what, "unit": unit, "n": n,
             "gap": point, "lo": lo, "hi": hi,
             # The interval, not the point, decides what may be claimed.
-            "verdict": "we are better" if hi < 0 else
-                       ("DB is better" if lo > 0 else "not separated"),
+            # Stated as which score came out lower, not as a winner: the
+            # interval decides whether there is a difference at all.
+            "verdict": "BayesianBahn lower" if hi < 0 else
+                       ("DB lower" if lo > 0 else "not separated"),
         })
     return out
 
@@ -718,6 +720,17 @@ def num(x, digits=2):
     return "—" if x != x else f"{x:.{digits}f}"
 
 
+
+def weekday_caveat(days: list[str]) -> str:
+    """Which parts of the week the collected days actually cover."""
+    kinds = {dt.date.fromisoformat(d).weekday() >= 5 for d in days}
+    if kinds == {False}:
+        return "Weekdays only."
+    if kinds == {True}:
+        return "Weekend days only."
+    return "Weekdays and weekend days are pooled."
+
+
 def render(days, arrivals, connections, split, totals, out: Path, *,
            gaps=(), daily=(), clock=(), spread=()) -> None:
     span = ", ".join(days)
@@ -728,21 +741,22 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ("tile", f"{totals['events']:,}", "arrival predictions scored"),
         ("tile", f"{totals['connections']:,}", "one-change connections scored"),
         ("tile", "history only" if cross else "—",
-         f"beats DB from {cross} before departure" if cross else "no crossover found"),
+         f"scores below DB from {cross} before departure" if cross
+         else "no crossover found"),
     ]
     if missed:
         tiles.append(("tile flag", pct(missed["db_right"]),
                       "of missed connections DB called correctly"))
 
-    doc = [f"""<title>Do we beat the DB Navigator?</title>
+    doc = [f"""<title>Forecasts against DB's own</title>
 <style>{STYLE}</style>
 <div class="wrap">
 <header>
   <p class="eyebrow">BayesianBahn · evaluation · {html.escape(span)}</p>
-  <h1>Do we beat the DB Navigator?</h1>
-  <p class="lede">An app that predicts train delays only earns its place if its
-  numbers are better than the ones already on the platform display. This is that
-  comparison, measured against what the trains actually did.</p>
+  <h1>Forecasts against DB’s own</h1>
+  <p class="lede">BayesianBahn’s arrival forecasts and DB’s, scored against what
+  the trains actually did. Sample sizes, method and the limits of each figure
+  are given alongside it.</p>
 </header>
 
 <section>
@@ -757,6 +771,15 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   runs <em>when DB actually reports a delay</em> and leans on the history alone
   when it does not, and <strong>history only</strong>, which never looks at the
   live number at all.</p>
+  <p>Two kinds of answer are scored, and they correspond to the two kinds of
+  journey the app plans. For a journey without a change the answer is an arrival
+  time, scored as a distribution against the arrival that happened. For a journey
+  with one change the answer is the probability of making that change, scored
+  against whether it was made. The two use different scores and are not
+  comparable with each other; each is compared only with DB’s answer to the same
+  question. A complete two-leg journey — the predicted arrival at the far end of
+  a change, against the arrival that happened — is <em>not</em> scored here, and
+  would need the connecting train’s destination in the collected data.</p>
   <div class="tiles">"""]
     for cls, k, v in tiles:
         doc.append(f'<div class="{cls}"><span class="k">{html.escape(k)}</span>'
@@ -766,9 +789,10 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     if gaps:
         doc.append("""
 <section>
-  <h2>The answer, with its uncertainty</h2>
-  <p>Each row is our score minus DB’s for the same predictions, so a
-  <strong>negative number means we are better</strong>. The interval is what
+  <h2>The comparison, with its uncertainty</h2>
+  <p>Each row is BayesianBahn’s score minus DB’s over the same predictions, so
+  a <strong>negative number is the lower score for BayesianBahn</strong>, and
+  lower is better for both scores used here. The interval is what
   decides it: delays arrive in clusters — one late train produces a dozen
   correlated predictions — so the range comes from resampling whole trains, not
   individual predictions. Where the interval crosses zero, the collected days
@@ -810,7 +834,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     worst = max(arrivals, key=lambda r: r["live"] - r["blind"])
     if worst["live"] > worst["blind"]:
         doc.append(f"""
-  <p><strong>The two variants still cross over.</strong> In the
+  <p><strong>The two variants cross over in this bucket.</strong> In the
   <em>{html.escape(worst["bucket"])}</em> bucket the shipped model scores
   {worst["live"]:.2f} against history alone at {worst["blind"]:.2f} — leaning on
   DB’s number makes the answer {worst["live"] - worst["blind"]:.2f} minutes
@@ -820,12 +844,12 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     if spread:
         scored_here = sum(r["n"] for r in spread)
         doc.append(f"""
-  <h3>The average is the least interesting number here</h3>
-  <p>Half of both forecasts land within about a minute — on the median the two
-  are a tie, and no passenger is inconvenienced either way. Everything that
-  separates them is in the upper tail, which is also the only part anybody
-  feels: a forecast two minutes out costs nothing, and one twenty minutes out
-  with no warning costs a connection. The box spans the middle half of the
+  <h3>How the errors are distributed</h3>
+  <p>The means above summarise a skewed distribution, and the two forecasts
+  differ mainly in its upper tail: the medians are close, while the large
+  errors are not equally common. Both parts are worth reading, since a forecast
+  a minute out and one twenty minutes out have very different consequences for
+  a passenger. The box spans the middle half of the
   predictions, the line across it is the median, and the whiskers reach the
   10th and 90th percentiles, so the worst tenth of each forecast reaches past
   the whisker and is given exactly in the table below.</p>""")
@@ -851,19 +875,20 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
              lambda r: pct(r["live"]["awful"], 1)),
         ]))
         doc.append(f"""
-  <p>Reading across the last two columns is the honest summary of this page:
-  the share of forecasts that are out by more than {AWFUL_MINUTES} minutes.
-  That is the number a passenger experiences, and it is the one an average over
-  {scored_here:,} mostly-uneventful predictions is least able to show.</p>""")
+  <p>The last two columns give the share of forecasts out by more than
+  {AWFUL_MINUTES} minutes. Over {scored_here:,} predictions, most of which are
+  uneventful, this is the part of the distribution a mean is least able to
+  convey.</p>""")
 
     doc.append("""</section>
 
 <section>
-  <h2>Is the 80% range honest?</h2>
-  <p>The app does not only give a time, it gives a range it claims will contain
-  the truth four times in five. That claim is checkable: count how often the real
-  arrival landed inside it. A bar near the dashed line is an honest range; well
-  below it means the app is more confident than it has earned.</p>""")
+  <h2>Does the 80% range hold?</h2>
+  <p>The app gives not only a time but a range stated to contain the true
+  arrival four times in five. That is checkable: count how often the real
+  arrival fell inside it. A bar at the dashed line matches the stated
+  probability; below it the range is narrower than the forecast’s accuracy
+  supports, and above it wider.</p>""")
     doc.append('<div class="figure">')
     doc.append(legend(["blind", "live"]))
     doc.append(bar_chart(
@@ -882,11 +907,11 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     doc.append("""</section>
 
 <section>
-  <h2>Will you make your connection?</h2>
-  <p>This is what the app is for. A connection here is a train arriving at one of
-  the sampled stations and another leaving it a few minutes later, judged from
-  before the first train set off — the only moment the answer can still change a
-  decision. DB answers yes or no. The app answers with a probability.</p>""")
+  <h2>Connections</h2>
+  <p>A connection here is a train arriving at one of the sampled stations and
+  another leaving it a few minutes later, judged from before the first train set
+  off — the last moment at which the answer could still change a decision. DB’s
+  timetable answers yes or no; the app answers with a probability.</p>""")
     doc.append('<div class="figure">')
     doc.append(legend(["db", "blind", "live"]))
     doc.append(bar_chart(connections, ["db", "blind", "live"],
@@ -902,10 +927,11 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     ]))
     doc.append("""
   <h3>Split by what actually happened</h3>
-  <p>The averages above hide the finding. Almost every connection is caught, so
-  answering “yes” every time scores well — and that is close to what a yes/no
-  answer computed from the timetable does. The row that matters is the one where
-  the change failed.</p>""")
+  <p>Almost every connection is caught, so answering “yes” every time scores
+  well on the pooled average, and a yes/no answer taken from the timetable is
+  close to doing that. The two outcomes are therefore worth reading apart: the
+  connections that failed are the smaller group and the one the pooled figure
+  says least about.</p>""")
     doc.append(table(split, [
         ("outcome", "Outcome", lambda r: html.escape(r["outcome"])),
         ("n", "Connections", lambda r: f"{r['n']:,}"),
@@ -921,11 +947,11 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         doc.append("""
 <section>
   <h2>Does it hold from one day to the next?</h2>
-  <p>Everything above pools the collected days, which is the right way to get a
-  number and the wrong way to find out whether that number is real. Here each day
-  stands alone. A result worth acting on is one that points the same way in every
-  row; a column that changes its mind between days is telling you about the
-  weather, not about the model.</p>
+  <p>Everything above pools the collected days. Pooling gives the more precise
+  estimate; it cannot show whether a result is a property of the model or of one
+  day’s conditions. Here each day stands alone. A column that points the same
+  way in every row is the more durable result; one that changes sign between
+  days is within the range of day-to-day variation.</p>
   <p>Read the row lengths too. The first day was collected from the evening
   onwards, so it is both smaller and drawn only from the busiest hours — a day
   with fewer missed connections here is not necessarily a calmer day.</p>""")
@@ -957,12 +983,12 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         trough = min(clock, key=lambda r: r["mean"])
         doc.append(f"""
 <section>
-  <h2>Does the day pile up?</h2>
-  <p>Delay is not a property of a train alone. A late train holds a platform,
-  and the next one inherits it — so the morning’s small delays should still be
-  on the network in the afternoon. If that is what happens, an hour-of-day term
-  is not a modelling convenience but the shape of the thing being modelled.</p>
-  <p>It is what happens. The mean arrival delay climbs from
+  <h2>Delay through the day</h2>
+  <p>Delay is not a property of a train alone: a late train occupies a platform
+  and the next one can inherit some of it, so delay accumulated in the morning
+  may still be on the network in the afternoon. If so, an hour-of-day term
+  describes the data rather than merely fitting it.</p>
+  <p>The collected days show that pattern. The mean arrival delay climbs from
   <strong>{trough["mean"]:.2f} min at {trough["bucket"]}:00</strong> to
   <strong>{peak["mean"]:.2f} min at {peak["bucket"]}:00</strong>, a factor of
   {peak["mean"] / max(0.01, trough["mean"]):.1f}, and then drains overnight. Each
@@ -972,10 +998,10 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         doc.append(bar_chart(clock, ["mean"], y_label="Mean arrival delay, minutes",
                              label_key="bucket", height=260))
         doc.append("""
-  <p>The peak is mid-afternoon, not at the evening rush. Delay accumulates all
-  day and is worked off after the last peak departures, so the worst hour to
-  arrive is the one the accumulated delay has reached — not the one with the
-  most passengers.</p>
+  <p>The maximum falls in the mid-afternoon rather than at the evening rush.
+  One reading is that accumulated delay is worked off after the last peak
+  departures, so the worst hour to arrive is set by how much delay the network
+  is still carrying rather than by passenger numbers.</p>
   <h3>What that means for the time bands</h3>
   <p>The model keeps separate delay statistics per time band, which only makes
   sense if the hours inside a band resemble each other. <em>Spread</em> is the
@@ -990,10 +1016,11 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ]))
         doc.append("""
   <p>The bands that ship were chosen from the commuter timetable rather than
-  from this curve, and it shows: the peak band ends before the peak, and the
-  night band reaches from the calmest hour of the night to the tail of the
-  evening. Like the crossover above, this is a finding about the model rather
-  than about the trains, and it points at a specific line of code.</p>
+  from this curve, and do not line up with it: the peak band ends before the
+  peak, and the
+  night band spans the range from the quietest hour of the night to the tail of
+  the evening. This is an observation about the model’s bucketing rather than
+  about the trains, and it is only as good as the days collected so far.</p>
 </section>""")
 
     doc.append("""
@@ -1065,6 +1092,9 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     the cross-check that would confirm it was unavailable while this ran.</li>
     <li><strong>Twenty stations</strong>, chosen before any data existed but still
     twenty. Nothing here is weighted to how often people actually travel.</li>
+    <li><strong>%s</strong> Traffic, staffing and the timetable itself differ
+    between weekdays and weekends, so a figure drawn from one does not transfer
+    to the other — the hour-of-day curve above least of all.</li>
   </ul>
 </section>
 
@@ -1083,6 +1113,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 </div>""" % (
         SURPRISE_MINUTES, TRANSFER_MINUTES,
         "One day" if len(days) == 1 else f"{len(days)} days",
+        weekday_caveat(days),
         html.escape(
             "# collect (runs continuously, survives restarts and power cuts)\n"
             "pixi run -e evaluate collect\n"

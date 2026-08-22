@@ -137,9 +137,9 @@ def test_a_gap_that_straddles_zero_is_not_claimed():
         if row["lo"] <= 0 <= row["hi"]:
             assert row["verdict"] == "not separated"
         elif row["hi"] < 0:
-            assert row["verdict"] == "we are better"
+            assert row["verdict"] == "BayesianBahn lower"
         else:
-            assert row["verdict"] == "DB is better"
+            assert row["verdict"] == "DB lower"
 
 
 def test_the_headline_covers_both_variants_and_the_missed_subset():
@@ -280,7 +280,7 @@ def test_the_page_renders_with_its_definitions_and_percent_signs(tmp_path):
     assert "72%" in page                      # the escaped literal
     assert "<dt>CRPS" in page
     assert "Does it hold from one day to the next?" in page
-    assert "The answer, with its uncertainty" in page
+    assert "The comparison, with its uncertainty" in page
     assert "%d" not in page and "%s" not in page
 
 
@@ -417,7 +417,7 @@ def test_the_page_carries_the_hour_of_day_section(tmp_path):
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn), clock=clock)
     page = out.read_text(encoding="utf-8")
-    assert "Does the day pile up?" in page
+    assert "Delay through the day" in page
     assert "MORNING_PEAK" in page
     assert "%d" not in page and "%s" not in page
 
@@ -430,7 +430,7 @@ def test_the_page_omits_the_hour_section_when_no_day_is_full(tmp_path):
              R.connections_table(conn, conn), R.outcome_split(conn, conn),
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn), clock=[])
-    assert "Does the day pile up?" not in out.read_text(encoding="utf-8")
+    assert "Delay through the day" not in out.read_text(encoding="utf-8")
 
 
 # --- the spread section -----------------------------------------------------
@@ -514,6 +514,25 @@ def test_the_page_carries_the_spread_section(tmp_path):
              {"events": 8, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn), spread=R.error_spread(rows))
     page = out.read_text(encoding="utf-8")
-    assert "The average is the least interesting number here" in page
+    assert "How the errors are distributed" in page
     assert f"over {R.AWFUL_MINUTES} min" in page
     assert "%d" not in page and "%s" not in page
+
+
+def test_the_weekday_caveat_names_what_the_days_cover():
+    """Traffic and the timetable differ at weekends, so a page drawn only from
+    weekdays has to say so — the hour-of-day curve especially."""
+    assert R.weekday_caveat(["2026-08-17", "2026-08-21"]) == "Weekdays only."     # Mon, Fri
+    assert R.weekday_caveat(["2026-08-22", "2026-08-23"]) == "Weekend days only."  # Sat, Sun
+    assert R.weekday_caveat(["2026-08-21", "2026-08-22"]).startswith("Weekdays and")
+
+
+def test_the_weekday_caveat_reaches_the_page(tmp_path):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-17", "2026-08-18"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    assert "Weekdays only." in out.read_text(encoding="utf-8")
