@@ -25,6 +25,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.github.derweh.bayesianbahn.R
@@ -53,7 +54,10 @@ fun SearchScreen(viewModel: AppViewModel, onStationSelected: (Station) -> Unit) 
                     ListItem(
                         headlineContent = { Text(station.name) },
                         supportingContent = {
-                            Text("EVA ${station.eva}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                stringResource(R.string.eva_number, station.eva),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         },
                         modifier = Modifier.fillMaxWidth()
                             .clickable { onStationSelected(station) },
@@ -74,19 +78,25 @@ private fun DataStatusRow(viewModel: AppViewModel) {
         headlineContent = {
             Text(
                 when {
-                    meta?.recentThrough != null -> "Delay history through ${meta.recentThrough}"
-                    meta?.baseGenerated != null -> "Delay history: ${meta.baseGenerated}"
-                    else -> "Delay history: bundled"
+                    meta?.recentThrough != null ->
+                        stringResource(R.string.history_through, meta.recentThrough)
+                    meta?.baseGenerated != null ->
+                        stringResource(R.string.history_generated, meta.baseGenerated)
+                    else -> stringResource(R.string.history_bundled)
                 },
                 style = MaterialTheme.typography.bodySmall,
             )
         },
         supportingContent = {
             Text(
-                viewModel.dataUpdateError
+                viewModel.dataUpdateError?.text()
                     ?: buildString {
-                        meta?.trains?.let { append("$it trains") }
-                        if (meta?.updated == true) append("  ·  downloaded")
+                        meta?.trains?.let {
+                            append(pluralStringResource(R.plurals.history_trains, it, it))
+                        }
+                        if (meta?.updated == true) {
+                            append(stringResource(R.string.history_downloaded))
+                        }
                     },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (viewModel.dataUpdateError != null) {

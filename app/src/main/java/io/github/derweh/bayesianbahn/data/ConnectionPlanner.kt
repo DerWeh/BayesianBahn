@@ -29,7 +29,7 @@ class ConnectionPlanner(
 ) {
 
     sealed interface Outcome {
-        data class Error(val message: String) : Outcome
+        data class Error(val message: UserMessage) : Outcome
         data class Success(
             val result: ConnectionModel.Result,
             val transferStation: Station,
@@ -53,7 +53,7 @@ class ConnectionPlanner(
         // entry first and only then as free text the user typed.
         val transfer = routeStations.station(transferQuery)
             ?: stationRepository.search(transferQuery).firstOrNull()
-            ?: return Outcome.Error("Transfer station \"$transferQuery\" not found.")
+            ?: return Outcome.Error(UserMessage.TransferStationNotFound(transferQuery))
         val destination = stationRepository.search(destinationQuery).firstOrNull()
         val destinationName = destination?.name ?: destinationQuery.trim()
         // Identity against IRIS's own spelling where the station is known,
@@ -82,7 +82,7 @@ class ConnectionPlanner(
             }
         }
         if (board.isEmpty() && offline) {
-            return Outcome.Error(UserMessages.TIMETABLE_UNREACHABLE)
+            return Outcome.Error(UserMessage.TimetableUnreachable)
         }
 
         // The feeder's own stop at the transfer station.
@@ -91,10 +91,10 @@ class ConnectionPlanner(
         }
         val feederArrival = feederThere?.arrival
             ?: return Outcome.Error(
-                "${feeder.label.display} does not reach ${transfer.name} within the next hours.",
+                UserMessage.FeederDoesNotReach(feeder.label.display, transfer.name),
             )
         val feederPlanned = feederArrival.plannedTime
-            ?: return Outcome.Error("No planned arrival time at ${transfer.name}.")
+            ?: return Outcome.Error(UserMessage.NoPlannedArrival(transfer.name))
 
         val feederHistory = historyRepository.load(
             feeder.label.category, feeder.label.number, feeder.label.line,
@@ -126,10 +126,8 @@ class ConnectionPlanner(
             .take(MAX_CANDIDATES)
             .toList()
         if (candidates.isEmpty()) {
-            val restriction = if (deutschlandTicketOnly) "Deutschland-Ticket " else ""
             return Outcome.Error(
-                "No ${restriction}trains towards $destinationName found at " +
-                    "${transfer.name} in the next hours.",
+                UserMessage.NoTrainsTowards(destinationName, transfer.name, deutschlandTicketOnly),
             )
         }
 
@@ -141,10 +139,7 @@ class ConnectionPlanner(
             feederPlannedArrivalMillis = feederPlanned,
             transferMinutes = transferMinutes,
             candidates = modelCandidates,
-        ) ?: return Outcome.Error(
-            "Not enough delay history for the trains towards $destinationName to " +
-                "evaluate this connection.",
-        )
+        ) ?: return Outcome.Error(UserMessage.NotEnoughHistory(destinationName))
         return Outcome.Success(result, transfer, destinationName, feederForecast, feederPlanned)
     }
 

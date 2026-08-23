@@ -78,7 +78,7 @@ fun ConnectionScreen(
             TopAppBar(
                 title = {
                     Text(
-                        "Connection from ${stop.label.display}",
+                        stringResource(R.string.connection_from, stop.label.display),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -100,24 +100,24 @@ fun ConnectionScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Riding ${stop.label.display} from ${station.name} — change at:",
+                stringResource(R.string.riding_change_at, stop.label.display, station.name),
                 style = MaterialTheme.typography.bodyMedium,
             )
             TransferPicker(routeStations, transfer) { transfer = it }
             StationSuggestField(
                 value = destination,
                 onValueChange = { destination = it },
-                label = "Destination station",
+                label = stringResource(R.string.destination_station),
                 suggest = viewModel::suggestStations,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Transfer time", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.transfer_time), style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.weight(1f))
                 OutlinedButton(
                     onClick = { if (transferMinutes > 1) transferMinutes -= 2 },
                 ) { Text("−") }
                 Text(
-                    "$transferMinutes min",
+                    stringResource(R.string.minutes_short, transferMinutes),
                     Modifier.padding(horizontal = 12.dp),
                     fontWeight = FontWeight.Bold,
                 )
@@ -125,9 +125,12 @@ fun ConnectionScreen(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Deutschland-Ticket only", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "Only regional trains (RE, RB, S, …) as connections",
+                        stringResource(R.string.deutschland_ticket_only),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        stringResource(R.string.deutschland_ticket_hint_connections),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -136,8 +139,10 @@ fun ConnectionScreen(
             }
             if (deutschlandTicket && !DeutschlandTicket.covers(stop.label.category)) {
                 Text(
-                    "Note: ${stop.label.display} itself is not covered by the " +
-                        "Deutschland-Ticket.",
+                    stringResource(
+                        R.string.deutschland_ticket_feeder_note,
+                        stop.label.display,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
@@ -151,7 +156,7 @@ fun ConnectionScreen(
                 enabled = transfer.isNotBlank() && destination.isNotBlank() &&
                     viewModel.connectionState != ConnectionState.Loading,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Evaluate connection") }
+            ) { Text(stringResource(R.string.evaluate_connection)) }
 
             when (val state = viewModel.connectionState) {
                 ConnectionState.Idle -> {}
@@ -160,7 +165,7 @@ fun ConnectionScreen(
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator() }
                 is ConnectionState.Error -> Text(
-                    state.message,
+                    state.message.text(),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -179,7 +184,7 @@ private fun TransferPicker(
     var expanded by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-            Text(selected.ifBlank { "Pick transfer station" }, maxLines = 1)
+            Text(selected.ifBlank { stringResource(R.string.pick_transfer_station) }, maxLines = 1)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             stations.forEach { name ->
@@ -213,7 +218,7 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
         ) {
             Column(Modifier.padding(20.dp)) {
                 Text(
-                    "Predicted arrival at ${outcome.destinationName}",
+                    stringResource(R.string.predicted_arrival_at, outcome.destinationName),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -224,8 +229,12 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 Text(
-                    "80% between ${clock(q10)} and ${clock(q90)}, " +
-                        "changing at ${outcome.transferStation.name}",
+                    stringResource(
+                        R.string.interval_changing_at,
+                        clock(q10),
+                        clock(q90),
+                        outcome.transferStation.name,
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -238,17 +247,31 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
             referenceMillis = result.referenceArrivalMillis,
         )
 
-        Text("Which train will you catch?", style = MaterialTheme.typography.titleSmall)
+        Text(stringResource(R.string.which_train), style = MaterialTheme.typography.titleSmall)
         result.candidates.forEach { cand ->
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Column(Modifier.weight(1f)) {
                     Text(cand.candidate.label, style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "dep ${formatTime(cand.candidate.plannedDepartureMillis)} → " +
-                            "arr ${formatTime(cand.candidate.plannedArrivalMillis)}" +
-                            (cand.candidate.liveDepartureDelay?.let {
-                                if (it >= 1) "  (now +${it.roundToInt()})" else ""
-                            } ?: ""),
+                        buildString {
+                            append(
+                                stringResource(
+                                    R.string.candidate_departure_arrival,
+                                    formatTime(cand.candidate.plannedDepartureMillis),
+                                    formatTime(cand.candidate.plannedArrivalMillis),
+                                ),
+                            )
+                            cand.candidate.liveDepartureDelay?.let {
+                                if (it >= 1) {
+                                    append(
+                                        stringResource(
+                                            R.string.candidate_live_delay,
+                                            it.roundToInt(),
+                                        ),
+                                    )
+                                }
+                            }
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -257,7 +280,10 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
                     if (cand.candidate.cancelledLive) {
                         stringResource(R.string.cancelled)
                     } else {
-                        "${(cand.boardProbability * 100).roundToInt()} %"
+                        stringResource(
+                            R.string.percent,
+                            (cand.boardProbability * 100).roundToInt(),
+                        )
                     },
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
@@ -272,15 +298,16 @@ private fun ConnectionResult(outcome: ConnectionPlanner.Outcome.Success) {
         }
         if (result.missProbability > 0.005) {
             Text(
-                "P(miss all of the above): ${(result.missProbability * 100).roundToInt()} % — " +
-                    "later trains are not listed.",
+                stringResource(
+                    R.string.miss_all_above,
+                    (result.missProbability * 100).roundToInt(),
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         Text(
-            "Distributions are empirical; the feeder and connecting trains are " +
-                "assumed independent, so shared disruptions make this optimistic.",
+            stringResource(R.string.independence_caveat),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
