@@ -13,7 +13,7 @@ import io.github.derweh.bayesianbahn.model.DeutschlandTicket
  *
  * **This searches direct journeys and journeys with one change only.** Two or
  * more changes are not attempted at all, so "nothing found" here never means
- * "no connection exists" — see [UserMessages.ONE_CHANGE_ONLY], which is what
+ * "no connection exists" — see [UserMessage.NoConnection], which is what
  * the user is told.
  *
  * Routing is heuristic, not exhaustive, even within that one-change scope:
@@ -62,7 +62,7 @@ class JourneyPlanner(
     }
 
     sealed interface Outcome {
-        data class Error(val message: String) : Outcome
+        data class Error(val message: UserMessage) : Outcome
         data class Success(
             val itineraries: List<Itinerary>,
             val from: Station,
@@ -82,10 +82,10 @@ class JourneyPlanner(
         transferMinutes: Int = 5,
     ): Outcome {
         val from = stationRepository.search(fromQuery).firstOrNull()
-            ?: return Outcome.Error("Station \"$fromQuery\" not found.")
+            ?: return Outcome.Error(UserMessage.StationNotFound(fromQuery))
         val to = stationRepository.search(toQuery).firstOrNull()
-            ?: return Outcome.Error("Station \"$toQuery\" not found.")
-        if (from.eva == to.eva) return Outcome.Error("Origin and destination are the same.")
+            ?: return Outcome.Error(UserMessage.StationNotFound(toQuery))
+        if (from.eva == to.eva) return Outcome.Error(UserMessage.SameOriginAndDestination)
 
         // A dead connection costs live delays, not the whole search: the
         // downloaded history is a timetable in its own right, and the same
@@ -110,7 +110,7 @@ class JourneyPlanner(
             synthetic = true
         }
         if (board.isEmpty() && offline) {
-            return Outcome.Error(UserMessages.TIMETABLE_UNREACHABLE_NO_HISTORY)
+            return Outcome.Error(UserMessage.TimetableUnreachableNoHistory)
         }
 
         val departures = board
@@ -150,9 +150,9 @@ class JourneyPlanner(
                     // Transfers need the transfer station's board, so offline
                     // only direct trains can be planned. Say that rather than
                     // claiming no train goes there.
-                    offline -> UserMessages.TIMETABLE_UNREACHABLE
-                    departures.isEmpty() -> "No timetable data for ${from.name} at that time."
-                    else -> UserMessages.noConnection(from.name, to.name)
+                    offline -> UserMessage.TimetableUnreachable
+                    departures.isEmpty() -> UserMessage.NoTimetableData(from.name)
+                    else -> UserMessage.NoConnection(from.name, to.name)
                 },
             )
         }

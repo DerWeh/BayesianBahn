@@ -15,7 +15,7 @@ import io.github.derweh.bayesianbahn.data.Forecast
 import io.github.derweh.bayesianbahn.data.JourneyPlanner
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.Station
-import io.github.derweh.bayesianbahn.data.UserMessages
+import io.github.derweh.bayesianbahn.data.UserMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -69,7 +69,7 @@ fun staleKeys(known: Set<String>, stack: List<Route>): Set<String> =
 
 sealed interface BoardState {
     data object Loading : BoardState
-    data class Error(val message: String) : BoardState
+    data class Error(val message: UserMessage) : BoardState
     data class Loaded(val stops: List<TimetableStop>) : BoardState
 }
 
@@ -82,14 +82,14 @@ sealed interface ConnectionState {
     /** Waiting for the user to pick transfer and destination. */
     data object Idle : ConnectionState
     data object Loading : ConnectionState
-    data class Error(val message: String) : ConnectionState
+    data class Error(val message: UserMessage) : ConnectionState
     data class Loaded(val outcome: ConnectionPlanner.Outcome.Success) : ConnectionState
 }
 
 sealed interface JourneyState {
     data object Idle : JourneyState
     data object Loading : JourneyState
-    data class Error(val message: String) : JourneyState
+    data class Error(val message: UserMessage) : JourneyState
     data class Loaded(val outcome: JourneyPlanner.Outcome.Success) : JourneyState
 }
 
@@ -172,7 +172,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             boardState = try {
                 BoardState.Loaded(container.irisClient.board(station.eva, hours = 3))
             } catch (e: Exception) {
-                BoardState.Error(UserMessages.TIMETABLE_UNREACHABLE)
+                BoardState.Error(UserMessage.TimetableUnreachable)
             }
         }
     }
@@ -219,7 +219,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var dataUpdating by mutableStateOf(false)
         private set
-    var dataUpdateError by mutableStateOf<String?>(null)
+    var dataUpdateError by mutableStateOf<UserMessage?>(null)
         private set
 
     init {
@@ -242,7 +242,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     // remembered in memory is now the previous release.
                     container.historyRepository.invalidate()
                 }
-                .onFailure { dataUpdateError = it.message ?: "update failed" }
+                .onFailure { dataUpdateError = UserMessage.UpdateFailed(it.message) }
             dataUpdating = false
         }
     }

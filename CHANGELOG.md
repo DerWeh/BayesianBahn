@@ -7,6 +7,13 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [Unreleased]
 
+### Added
+- A German interface, used on a phone set to German; English stays the default
+  and the fallback. Every text the app shows is now a translatable resource,
+  including the failures raised while planning a journey, which used to be
+  written out in English deep in the planner. Android 13 and newer can set the
+  language for this app alone.
+
 ### Changed
 - **DB's live number is only used when it reports a delay.** DB states a stop
   in four shapes and three of them mean "on time"; only one is an observation.
@@ -27,6 +34,13 @@ fixes; expect breaking changes between minors until 1.0).
   averages: a box plot per lead-time bucket and the tail as figures. The
   medians of the two forecasts are close and the difference between them is in
   the large errors, which an average cannot show.
+
+### Fixed
+- A forecast drawn from a single past run no longer reads "1 past runs". Both
+  sentences that count runs are plurals now, in both languages, and so is the
+  effective-run count one of them ends on — a plural chooses on one number,
+  and either of those two can be 1. The English wording carried this from the
+  start; translating it is what made it visible.
 
 ## [0.1.4] - 2026-08-22
 

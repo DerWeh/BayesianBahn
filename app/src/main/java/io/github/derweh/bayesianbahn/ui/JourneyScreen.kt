@@ -86,7 +86,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     IconButton(onClick = viewModel::openStationSearch) {
                         Icon(
                             Icons.AutoMirrored.Filled.List,
-                            contentDescription = "Station boards",
+                            contentDescription = stringResource(R.string.station_boards),
                         )
                     }
                 },
@@ -104,8 +104,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
-                    "Early release: predictions are experimental. Always " +
-                        "cross-check times and connections with DB's official apps.",
+                    stringResource(R.string.early_release_warning),
                     Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -114,13 +113,13 @@ fun JourneyScreen(viewModel: AppViewModel) {
             StationSuggestField(
                 value = from,
                 onValueChange = { from = it },
-                label = "From",
+                label = stringResource(R.string.label_from),
                 suggest = viewModel::suggestStations,
             )
             StationSuggestField(
                 value = to,
                 onValueChange = { to = it },
-                label = "To",
+                label = stringResource(R.string.label_to),
                 suggest = viewModel::suggestStations,
             )
             Row(
@@ -133,7 +132,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     Text(
                         pickedHour?.let { h ->
                             "%02d:%02d".format(h, pickedMinute ?: 0)
-                        } ?: "now",
+                        } ?: stringResource(R.string.depart_now),
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -153,10 +152,10 @@ fun JourneyScreen(viewModel: AppViewModel) {
                         TextButton(onClick = {
                             epochDay = state.selectedDateMillis?.let { it / 86_400_000L }
                             showDatePicker = false
-                        }) { Text("OK") }
+                        }) { Text(stringResource(R.string.action_ok)) }
                     },
                     dismissButton = {
-                        TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+                        TextButton(onClick = { showDatePicker = false }) { Text(stringResource(R.string.action_cancel)) }
                     },
                 ) { DatePicker(state = state) }
             }
@@ -179,9 +178,12 @@ fun JourneyScreen(viewModel: AppViewModel) {
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Deutschland-Ticket only", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "Only regional trains (RE, RB, S, …)",
+                        stringResource(R.string.deutschland_ticket_only),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        stringResource(R.string.deutschland_ticket_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -198,7 +200,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
                 enabled = from.isNotBlank() && to.isNotBlank() &&
                     viewModel.journeyState != JourneyState.Loading,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("Search connections") }
+            ) { Text(stringResource(R.string.search_connections)) }
 
             when (val state = viewModel.journeyState) {
                 JourneyState.Idle -> {}
@@ -214,18 +216,16 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     CircularProgressIndicator()
                     Text(
                         if (beyondLivePlan(epochDay)) {
-                            "Planning from the downloaded timetable — DB publishes " +
-                                "live plans only about a day ahead. This can take a " +
-                                "few minutes for dates further out."
+                            stringResource(R.string.searching_historical_timetable)
                         } else {
-                            "Searching connections…"
+                            stringResource(R.string.searching_connections)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 is JourneyState.Error -> Text(
-                    state.message,
+                    state.message.text(),
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -241,18 +241,18 @@ fun JourneyScreen(viewModel: AppViewModel) {
                                 .atZone(ZONE).toLocalDate() >= change
                         } == true
                         Text(
-                            "Planned from the historical timetable — " +
+                            stringResource(
                                 if (state.outcome.offline) {
-                                    "DB's live timetable could not be reached, so these " +
-                                        "times carry no live delays."
+                                    R.string.synthetic_notice_offline
                                 } else {
-                                    "DB publishes live plans only about a day ahead."
-                                } +
-                                " Times may shift; check again closer to departure." +
+                                    R.string.synthetic_notice_beyond_horizon
+                                },
+                            ) +
                                 if (crossesChange) {
-                                    " Your date lies beyond the timetable change on " +
-                                        change.format(DateTimeFormatter.ofPattern("dd.MM.")) +
-                                        " — expect larger differences."
+                                    stringResource(
+                                        R.string.synthetic_notice_timetable_change,
+                                        change.format(DateTimeFormatter.ofPattern("dd.MM.")),
+                                    )
                                 } else "",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.tertiary,
@@ -260,10 +260,7 @@ fun JourneyScreen(viewModel: AppViewModel) {
                     }
                     state.outcome.itineraries.forEach { ItineraryCard(it) }
                     Text(
-                        "Direct journeys and journeys with one change only — " +
-                            "routes with more changes are not searched yet. " +
-                            "Predicted from each train's real delay history; " +
-                            "transfers use the first catchable connection.",
+                        stringResource(R.string.journey_footnote),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -289,19 +286,25 @@ internal fun departMillis(hour: Int?, minute: Int?, epochDay: Long?): Long {
     return ZonedDateTime.of(date, time, ZONE).toInstant().toEpochMilli()
 }
 
+@Composable
 internal fun formatDuration(millis: Long): String {
     val totalMin = (millis / 60_000L).coerceAtLeast(0)
     val h = totalMin / 60
     val m = totalMin % 60
-    return if (h > 0) "$h h $m min" else "$m min"
+    return if (h > 0) {
+        stringResource(R.string.duration_hours_minutes, h, m)
+    } else {
+        stringResource(R.string.duration_minutes, m)
+    }
 }
 
+@Composable
 private fun dateLabel(epochDay: Long?): String {
     val today = LocalDate.now(ZONE)
     val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today
     return when (date) {
-        today -> "Today"
-        today.plusDays(1) -> "Tomorrow"
+        today -> stringResource(R.string.date_today)
+        today.plusDays(1) -> stringResource(R.string.date_tomorrow)
         else -> date.format(DateTimeFormatter.ofPattern("EE dd.MM."))
     }
 }
@@ -323,15 +326,15 @@ private fun DepartureTimeDialog(
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Departure time") },
+        title = { Text(stringResource(R.string.departure_time)) },
         text = { TimePicker(state = state) },
         confirmButton = {
-            TextButton(onClick = { onConfirm(state.hour, state.minute) }) { Text("OK") }
+            TextButton(onClick = { onConfirm(state.hour, state.minute) }) { Text(stringResource(R.string.action_ok)) }
         },
         dismissButton = {
             Row {
-                TextButton(onClick = onNow) { Text("Now") }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+                TextButton(onClick = onNow) { Text(stringResource(R.string.action_now)) }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
             }
         },
     )
@@ -368,14 +371,31 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
             Text(
                 buildString {
                     if (itinerary.transferStation != null) {
-                        append("Change at ${itinerary.transferStation}")
+                        append(
+                            stringResource(
+                                R.string.itinerary_change_at,
+                                itinerary.transferStation,
+                            ),
+                        )
                         itinerary.catchProbability?.let {
-                            append("  ·  P(first connection) ${(it * 100).roundToInt()} %")
+                            append(
+                                stringResource(
+                                    R.string.itinerary_catch_probability,
+                                    (it * 100).roundToInt(),
+                                ),
+                            )
                         }
                     } else {
-                        append("Direct")
+                        append(stringResource(R.string.itinerary_direct))
                         itinerary.feeder.departure?.liveDelayMinutes?.let {
-                            if (it >= 1) append("  ·  now +${it.roundToInt()} min")
+                            if (it >= 1) {
+                                append(
+                                    stringResource(
+                                        R.string.itinerary_live_delay,
+                                        it.roundToInt(),
+                                    ),
+                                )
+                            }
                         }
                     }
                 },
@@ -383,8 +403,12 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "~${formatDuration(median - itinerary.departureMillis)}  ·  " +
-                    "80% between ${formatTime(q10)} and ${formatTime(q90)}",
+                stringResource(
+                    R.string.itinerary_duration_interval,
+                    formatDuration(median - itinerary.departureMillis),
+                    formatTime(q10),
+                    formatTime(q90),
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -396,16 +420,25 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
                 )
                 itinerary.connection?.result?.candidates?.forEach { cand ->
                     Text(
-                        "${formatTime(cand.candidate.plannedDepartureMillis)} " +
-                            "${cand.candidate.label}: " +
-                            if (cand.candidate.cancelledLive) "cancelled"
-                            else "${(cand.boardProbability * 100).roundToInt()} %",
+                        stringResource(
+                            R.string.itinerary_candidate,
+                            formatTime(cand.candidate.plannedDepartureMillis),
+                            cand.candidate.label,
+                            if (cand.candidate.cancelledLive) {
+                                stringResource(R.string.cancelled_inline)
+                            } else {
+                                stringResource(
+                                    R.string.percent,
+                                    (cand.boardProbability * 100).roundToInt(),
+                                )
+                            },
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 itinerary.missProbability?.takeIf { it > 0.005 }?.let {
                     Text(
-                        "P(miss all listed connections): ${(it * 100).roundToInt()} %",
+                        stringResource(R.string.miss_all_listed, (it * 100).roundToInt()),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )

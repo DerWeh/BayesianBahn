@@ -186,7 +186,7 @@ private fun BoardRow(
         Spacer(Modifier.width(8.dp))
         event.platform?.let { platform ->
             Text(
-                "Gl. $platform",
+                stringResource(R.string.platform_chip, platform),
                 style = MaterialTheme.typography.labelLarge,
                 color = if (event.changedPlatform != null) {
                     MaterialTheme.colorScheme.error

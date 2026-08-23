@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="search_hint">Bahnhof suchen…</string>
+    <string name="departures">Abfahrten</string>
+    <string name="arrivals">Ankünfte</string>
+    <string name="refresh">Aktualisieren</string>
+    <string name="back">Zurück</string>
+    <string name="error_network">Server der Deutschen Bahn nicht erreichbar. Verbindung prüfen und erneut versuchen.</string>
+    <string name="no_trains">Keine Züge in den nächsten Stunden.</string>
+    <string name="cancelled">Fällt aus</string>
+    <string name="update_data">Verspätungsdaten aktualisieren</string>
+
+    <!-- Dialoge -->
+    <string name="action_ok">OK</string>
+    <string name="action_cancel">Abbrechen</string>
+    <string name="action_now">Jetzt</string>
+
+    <!-- Verbindungssuche -->
+    <string name="station_boards">Abfahrtstafeln</string>
+    <string name="early_release_warning">Frühe Version: Die Vorhersagen sind experimentell. Zeiten und Anschlüsse immer mit den offiziellen DB-Apps abgleichen.</string>
+    <string name="label_from">Von</string>
+    <string name="label_to">Nach</string>
+    <string name="depart_now">jetzt</string>
+    <string name="date_today">Heute</string>
+    <string name="date_tomorrow">Morgen</string>
+    <string name="deutschland_ticket_only">Nur Deutschland-Ticket</string>
+    <string name="deutschland_ticket_hint">Nur Nahverkehr (RE, RB, S, …)</string>
+    <string name="search_connections">Verbindungen suchen</string>
+    <string name="searching_historical_timetable">Planung aus dem heruntergeladenen Fahrplan — die DB veröffentlicht Live-Fahrpläne nur etwa einen Tag im Voraus. Für weiter entfernte Daten kann das einige Minuten dauern.</string>
+    <string name="searching_connections">Suche Verbindungen…</string>
+    <string name="synthetic_notice_offline">Geplant aus dem historischen Fahrplan — der Live-Fahrplan der DB war nicht erreichbar, diese Zeiten enthalten also keine Live-Verspätungen. Die Zeiten können sich verschieben; kurz vor Abfahrt erneut prüfen.</string>
+    <string name="synthetic_notice_beyond_horizon">Geplant aus dem historischen Fahrplan — die DB veröffentlicht Live-Fahrpläne nur etwa einen Tag im Voraus. Die Zeiten können sich verschieben; kurz vor Abfahrt erneut prüfen.</string>
+    <string name="synthetic_notice_timetable_change">" Das Datum liegt nach dem Fahrplanwechsel am %1$s — dort sind größere Abweichungen zu erwarten."</string>
+    <string name="journey_footnote">Nur Direktverbindungen und Verbindungen mit einem Umstieg — Routen mit mehr Umstiegen werden noch nicht gesucht. Vorhergesagt aus der echten Verspätungshistorie jedes Zuges; beim Umstieg zählt der erste erreichbare Anschluss.</string>
+    <string name="departure_time">Abfahrtszeit</string>
+
+    <!-- Verbindungskarte -->
+    <string name="itinerary_change_at">Umstieg in %1$s</string>
+    <string name="itinerary_catch_probability">"  ·  P(erster Anschluss) %1$d %%"</string>
+    <string name="itinerary_direct">Direkt</string>
+    <string name="itinerary_live_delay">"  ·  jetzt +%1$d Min."</string>
+    <string name="itinerary_duration_interval">"~%1$s  ·  80 %% zwischen %2$s und %3$s"</string>
+    <string name="itinerary_candidate">%1$s %2$s: %3$s</string>
+    <string name="cancelled_inline">fällt aus</string>
+    <string name="miss_all_listed">P(alle gelisteten Anschlüsse verpasst): %1$d %%</string>
+    <string name="duration_hours_minutes">%1$d Std. %2$d Min.</string>
+    <string name="duration_minutes">%1$d Min.</string>
+
+    <!-- Anschlussplanung -->
+    <string name="connection_from">Anschluss ab %1$s</string>
+    <string name="riding_change_at">Mit %1$s ab %2$s — Umstieg in:</string>
+    <string name="destination_station">Zielbahnhof</string>
+    <string name="transfer_time">Umsteigezeit</string>
+    <string name="minutes_short">%1$d Min.</string>
+    <string name="deutschland_ticket_hint_connections">Nur Nahverkehr (RE, RB, S, …) als Anschluss</string>
+    <string name="deutschland_ticket_feeder_note">Hinweis: %1$s selbst ist nicht vom Deutschland-Ticket abgedeckt.</string>
+    <string name="evaluate_connection">Anschluss bewerten</string>
+    <string name="pick_transfer_station">Umstiegsbahnhof wählen</string>
+    <string name="predicted_arrival_at">Voraussichtliche Ankunft in %1$s</string>
+    <string name="interval_changing_at">80 %% zwischen %1$s und %2$s, mit Umstieg in %3$s</string>
+    <string name="which_train">Welcher Anschluss wird erreicht?</string>
+    <string name="candidate_departure_arrival">ab %1$s → an %2$s</string>
+    <string name="candidate_live_delay">"  (jetzt +%1$d)"</string>
+    <string name="miss_all_above">P(alle oben genannten verpasst): %1$d %% — spätere Züge sind nicht aufgeführt.</string>
+    <string name="independence_caveat">Die Verteilungen sind empirisch; Zubringer und Anschlusszug werden als unabhängig angenommen, gemeinsame Störungen machen die Schätzung also optimistisch.</string>
+
+    <!-- Vorhersage -->
+    <string name="planned_time_inline">"  ·  Plan %1$s"</string>
+    <string name="platform_inline">"  ·  Gl. %1$s"</string>
+    <string name="platform_chip">Gl. %1$s</string>
+    <string name="predicted_arrival">Voraussichtliche Ankunft</string>
+    <string name="predicted_departure">Voraussichtliche Abfahrt</string>
+    <string name="delay_minutes">+%1$d Min.</string>
+    <string name="on_time">pünktlich</string>
+    <string name="interval_between">80 %% zwischen %1$s und %2$s</string>
+    <string name="stat_late5_prob">P(≤ 5 Min. Verspätung)</string>
+    <string name="stat_cancel_prob">P(Ausfall)</string>
+    <string name="not_available">k. A.</string>
+    <string name="percent">%1$d %%</string>
+    <string name="plan_connection_from_train">Anschluss ab diesem Zug planen</string>
+    <plurals name="forecast_empirical_live">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>
+    </plurals>
+    <plurals name="forecast_effective_runs">
+        <item quantity="one">effektiv %1$d Fahrt</item>
+        <item quantity="other">effektiv %1$d Fahrten</item>
+    </plurals>
+    <plurals name="forecast_empirical">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges an diesem Bahnhof.</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges an diesem Bahnhof.</item>
+    </plurals>
+    <string name="forecast_prior">Keine Verspätungshistorie für diesen Zug — gezeigt wird eine A-priori-Schätzung für seine Zuggattung und Tageszeit.</string>
+    <string name="live_note_ignored_on_time">" Die DB meldet diesen Zug derzeit als pünktlich, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>
+    <string name="live_note_ignored_early">" Die DB meldet diesen Zug derzeit als verfrüht, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>
+
+    <!-- Bahnhofssuche und Verspätungsdaten -->
+    <string name="eva_number">EVA %1$s</string>
+    <string name="history_through">Verspätungsdaten bis %1$s</string>
+    <string name="history_generated">Verspätungsdaten: %1$s</string>
+    <string name="history_bundled">Verspätungsdaten: mitgeliefert</string>
+    <string name="history_downloaded">"  ·  heruntergeladen"</string>
+    <plurals name="history_trains">
+        <item quantity="one">%1$d Zug</item>
+        <item quantity="other">%1$d Züge</item>
+    </plurals>
+
+    <!-- Fehler, auf die reagiert werden kann -->
+    <string name="error_update_failed">Aktualisierung fehlgeschlagen</string>
+    <string name="error_timetable_unreachable">Der Live-Fahrplan der DB ist nicht erreichbar. Verbindung prüfen und erneut versuchen.</string>
+    <string name="error_timetable_unreachable_no_history">Der Live-Fahrplan der DB ist nicht erreichbar, und kein heruntergeladener Fahrplan deckt diesen Bahnhof und diese Zeit ab. Verbindung prüfen und erneut versuchen.</string>
+    <string name="error_one_change_only">Bisher werden nur Direktverbindungen und Verbindungen mit einem Umstieg gesucht — die DB-Apps finden womöglich eine Route mit mehr Umstiegen.</string>
+    <string name="error_no_connection">Keine direkte Verbindung und keine Verbindung mit einem Umstieg von %1$s nach %2$s um diese Zeit gefunden. %3$s</string>
+    <string name="error_station_not_found">Bahnhof \"%1$s\" nicht gefunden.</string>
+    <string name="error_transfer_station_not_found">Umstiegsbahnhof \"%1$s\" nicht gefunden.</string>
+    <string name="error_same_origin_and_destination">Start und Ziel sind identisch.</string>
+    <string name="error_no_timetable_data">Keine Fahrplandaten für %1$s zu dieser Zeit.</string>
+    <string name="error_feeder_does_not_reach">%1$s erreicht %2$s nicht innerhalb der nächsten Stunden.</string>
+    <string name="error_no_planned_arrival">Keine geplante Ankunftszeit in %1$s.</string>
+    <string name="error_no_trains_towards">Keine Züge Richtung %1$s in den nächsten Stunden ab %2$s gefunden.</string>
+    <string name="error_no_ticket_trains_towards">Keine Deutschland-Ticket-Züge Richtung %1$s in den nächsten Stunden ab %2$s gefunden.</string>
+    <string name="error_not_enough_history">Zu wenig Verspätungshistorie für die Züge Richtung %1$s, um diesen Anschluss zu bewerten.</string>
+</resources>

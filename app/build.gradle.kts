@@ -65,6 +65,15 @@ android {
     }
 }
 
+// TranslationCompletenessTest reads res/ as files rather than through the
+// generated R class, so Gradle does not know a changed string can change the
+// result: without this the task reports UP-TO-DATE and a stale pass.
+tasks.withType<Test>().configureEach {
+    inputs.dir(layout.projectDirectory.dir("src/main/res"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+        .withPropertyName("resources")
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)

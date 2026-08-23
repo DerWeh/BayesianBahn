@@ -1,16 +1,126 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BayesianBahn</string>
+    <string name="app_name" translatable="false">BayesianBahn</string>
     <string name="search_hint">Search station…</string>
     <string name="departures">Departures</string>
     <string name="arrivals">Arrivals</string>
     <string name="refresh">Refresh</string>
-    <string name="about">About</string>
     <string name="back">Back</string>
-    <string name="loading">Loading…</string>
     <string name="error_network">Could not reach Deutsche Bahn servers. Check your connection and try again.</string>
     <string name="no_trains">No trains in the next hours.</string>
     <string name="cancelled">Cancelled</string>
-    <string name="on_time_prob">P(≤5 min)</string>
     <string name="update_data">Update delay history</string>
+
+    <!-- Dialogs -->
+    <string name="action_ok">OK</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_now">Now</string>
+
+    <!-- Journey search -->
+    <string name="station_boards">Station boards</string>
+    <string name="early_release_warning">Early release: predictions are experimental. Always cross-check times and connections with DB\'s official apps.</string>
+    <string name="label_from">From</string>
+    <string name="label_to">To</string>
+    <string name="depart_now">now</string>
+    <string name="date_today">Today</string>
+    <string name="date_tomorrow">Tomorrow</string>
+    <string name="deutschland_ticket_only">Deutschland-Ticket only</string>
+    <string name="deutschland_ticket_hint">Only regional trains (RE, RB, S, …)</string>
+    <string name="search_connections">Search connections</string>
+    <string name="searching_historical_timetable">Planning from the downloaded timetable — DB publishes live plans only about a day ahead. This can take a few minutes for dates further out.</string>
+    <string name="searching_connections">Searching connections…</string>
+    <string name="synthetic_notice_offline">Planned from the historical timetable — DB\'s live timetable could not be reached, so these times carry no live delays. Times may shift; check again closer to departure.</string>
+    <string name="synthetic_notice_beyond_horizon">Planned from the historical timetable — DB publishes live plans only about a day ahead. Times may shift; check again closer to departure.</string>
+    <string name="synthetic_notice_timetable_change">" Your date lies beyond the timetable change on %1$s — expect larger differences."</string>
+    <string name="journey_footnote">Direct journeys and journeys with one change only — routes with more changes are not searched yet. Predicted from each train\'s real delay history; transfers use the first catchable connection.</string>
+    <string name="departure_time">Departure time</string>
+
+    <!-- Itinerary card -->
+    <string name="itinerary_change_at">Change at %1$s</string>
+    <string name="itinerary_catch_probability">"  ·  P(first connection) %1$d %%"</string>
+    <string name="itinerary_direct">Direct</string>
+    <string name="itinerary_live_delay">"  ·  now +%1$d min"</string>
+    <string name="itinerary_duration_interval">"~%1$s  ·  80%% between %2$s and %3$s"</string>
+    <string name="itinerary_candidate">%1$s %2$s: %3$s</string>
+    <string name="cancelled_inline">cancelled</string>
+    <string name="miss_all_listed">P(miss all listed connections): %1$d %%</string>
+    <string name="duration_hours_minutes">%1$d h %2$d min</string>
+    <string name="duration_minutes">%1$d min</string>
+
+    <!-- Connection planner -->
+    <string name="connection_from">Connection from %1$s</string>
+    <string name="riding_change_at">Riding %1$s from %2$s — change at:</string>
+    <string name="destination_station">Destination station</string>
+    <string name="transfer_time">Transfer time</string>
+    <string name="minutes_short">%1$d min</string>
+    <string name="deutschland_ticket_hint_connections">Only regional trains (RE, RB, S, …) as connections</string>
+    <string name="deutschland_ticket_feeder_note">Note: %1$s itself is not covered by the Deutschland-Ticket.</string>
+    <string name="evaluate_connection">Evaluate connection</string>
+    <string name="pick_transfer_station">Pick transfer station</string>
+    <string name="predicted_arrival_at">Predicted arrival at %1$s</string>
+    <string name="interval_changing_at">80%% between %1$s and %2$s, changing at %3$s</string>
+    <string name="which_train">Which train will you catch?</string>
+    <string name="candidate_departure_arrival">dep %1$s → arr %2$s</string>
+    <string name="candidate_live_delay">"  (now +%1$d)"</string>
+    <string name="miss_all_above">P(miss all of the above): %1$d %% — later trains are not listed.</string>
+    <string name="independence_caveat">Distributions are empirical; the feeder and connecting trains are assumed independent, so shared disruptions make this optimistic.</string>
+
+    <!-- Prediction -->
+    <string name="planned_time_inline">"  ·  plan %1$s"</string>
+    <string name="platform_inline">"  ·  Gl. %1$s"</string>
+    <string name="platform_chip">Gl. %1$s</string>
+    <string name="predicted_arrival">Predicted arrival</string>
+    <string name="predicted_departure">Predicted departure</string>
+    <string name="delay_minutes">+%1$d min</string>
+    <string name="on_time">on time</string>
+    <string name="interval_between">80%% between %1$s and %2$s</string>
+    <string name="stat_late5_prob">P(≤ 5 min late)</string>
+    <string name="stat_cancel_prob">P(cancelled)</string>
+    <string name="not_available">n/a</string>
+    <string name="percent">%1$d %%</string>
+    <string name="plan_connection_from_train">Plan a connection from this train</string>
+    <plurals name="forecast_empirical_live">
+        <item quantity="one">Empirical: %1$d past run of this train here, reweighted to match its current live delay (%2$s).</item>
+        <item quantity="other">Empirical: %1$d past runs of this train here, reweighted to match its current live delay (%2$s).</item>
+    </plurals>
+    <!-- Its own plural rather than a second number in the sentence above: one
+         plural selects on one count, and both counts can be 1. -->
+    <plurals name="forecast_effective_runs">
+        <item quantity="one">effective %1$d run</item>
+        <item quantity="other">effective %1$d runs</item>
+    </plurals>
+    <plurals name="forecast_empirical">
+        <item quantity="one">Empirical: %1$d past run of this train at this station.</item>
+        <item quantity="other">Empirical: %1$d past runs of this train at this station.</item>
+    </plurals>
+    <string name="forecast_prior">No delay history available for this train — showing a prior estimate for its category and time of day.</string>
+    <string name="live_note_ignored_on_time">" DB currently reports this train on time, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>
+    <string name="live_note_ignored_early">" DB currently reports this train ahead of schedule, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>
+
+    <!-- Station search and delay history -->
+    <string name="eva_number">EVA %1$s</string>
+    <string name="history_through">Delay history through %1$s</string>
+    <string name="history_generated">Delay history: %1$s</string>
+    <string name="history_bundled">Delay history: bundled</string>
+    <string name="history_downloaded">"  ·  downloaded"</string>
+    <plurals name="history_trains">
+        <item quantity="one">%1$d train</item>
+        <item quantity="other">%1$d trains</item>
+    </plurals>
+
+    <!-- Failures the user can act on -->
+    <string name="error_update_failed">update failed</string>
+    <string name="error_timetable_unreachable">Could not reach DB\'s live timetable. Check your connection and try again.</string>
+    <string name="error_timetable_unreachable_no_history">Could not reach DB\'s live timetable, and no downloaded timetable covers this station and time. Check your connection and try again.</string>
+    <string name="error_one_change_only">Only direct journeys and journeys with one change are searched so far, so DB\'s own apps may still find a route with more changes.</string>
+    <string name="error_no_connection">No direct or one-change connection from %1$s to %2$s found around that time. %3$s</string>
+    <string name="error_station_not_found">Station \"%1$s\" not found.</string>
+    <string name="error_transfer_station_not_found">Transfer station \"%1$s\" not found.</string>
+    <string name="error_same_origin_and_destination">Origin and destination are the same.</string>
+    <string name="error_no_timetable_data">No timetable data for %1$s at that time.</string>
+    <string name="error_feeder_does_not_reach">%1$s does not reach %2$s within the next hours.</string>
+    <string name="error_no_planned_arrival">No planned arrival time at %1$s.</string>
+    <string name="error_no_trains_towards">No trains towards %1$s found at %2$s in the next hours.</string>
+    <string name="error_no_ticket_trains_towards">No Deutschland-Ticket trains towards %1$s found at %2$s in the next hours.</string>
+    <string name="error_not_enough_history">Not enough delay history for the trains towards %1$s to evaluate this connection.</string>
 </resources>

@@ -30,6 +30,10 @@ upgrade over each other without an uninstall.
 
 Android 8.0 (API 26) or newer.
 
+The interface is English, and German on a phone set to German. Android 13
+and newer can pick either one for this app alone, under the app's system
+settings.
+
 ## How predictions work
 
 - **History**: the [piebro/deutsche-bahn-data](https://github.com/piebro/deutsche-bahn-data)

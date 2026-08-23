@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -123,8 +124,12 @@ private fun PredictionContent(
         Text(
             buildString {
                 append(station.name)
-                planned?.let { append("  ·  plan ${formatTime(it)}") }
-                event?.platform?.let { append("  ·  Gl. $it") }
+                planned?.let {
+                    append(stringResource(R.string.planned_time_inline, formatTime(it)))
+                }
+                event?.platform?.let {
+                    append(stringResource(R.string.platform_inline, it))
+                }
             },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -138,7 +143,11 @@ private fun PredictionContent(
         ) {
             Column(Modifier.padding(20.dp)) {
                 Text(
-                    if (stop.arrival != null) "Predicted arrival" else "Predicted departure",
+                    if (stop.arrival != null) {
+                        stringResource(R.string.predicted_arrival)
+                    } else {
+                        stringResource(R.string.predicted_departure)
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -151,13 +160,17 @@ private fun PredictionContent(
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        if (median >= 0.5) "+${median.roundToInt()} min" else "on time",
+                        if (median >= 0.5) {
+                            stringResource(R.string.delay_minutes, median.roundToInt())
+                        } else {
+                            stringResource(R.string.on_time)
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
                 }
                 Text(
-                    "80% between ${delayToClock(q10)} and ${delayToClock(q90)}",
+                    stringResource(R.string.interval_between, delayToClock(q10), delayToClock(q90)),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
@@ -171,31 +184,47 @@ private fun PredictionContent(
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            StatTile("P(≤ 5 min late)", "${(dist.cdf(5.0) * 100).roundToInt()} %", Modifier.weight(1f))
             StatTile(
-                "P(cancelled)",
-                forecast.cancelProbability?.let { "${(it * 100).roundToInt()} %" } ?: "n/a",
+                stringResource(R.string.stat_late5_prob),
+                stringResource(R.string.percent, (dist.cdf(5.0) * 100).roundToInt()),
+                Modifier.weight(1f),
+            )
+            StatTile(
+                stringResource(R.string.stat_cancel_prob),
+                forecast.cancelProbability
+                    ?.let { stringResource(R.string.percent, (it * 100).roundToInt()) }
+                    ?: stringResource(R.string.not_available),
                 Modifier.weight(1f),
             )
         }
 
         onPlanConnection?.let {
             OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
-                Text("Plan a connection from this train")
+                Text(stringResource(R.string.plan_connection_from_train))
             }
         }
 
         Text(
             when (forecast.source) {
-                ForecastSource.EMPIRICAL_LIVE ->
-                    "Empirical: ${forecast.runCount} past runs of this train here, " +
-                        "reweighted to match its current live delay " +
-                        "(effective ${forecast.effectiveRuns.roundToInt()} runs)."
-                ForecastSource.EMPIRICAL ->
-                    "Empirical: ${forecast.runCount} past runs of this train at this station."
-                ForecastSource.PRIOR ->
-                    "No delay history available for this train — showing a prior " +
-                        "estimate for its category and time of day."
+                ForecastSource.EMPIRICAL_LIVE -> {
+                    val effective = forecast.effectiveRuns.roundToInt()
+                    pluralStringResource(
+                        R.plurals.forecast_empirical_live,
+                        forecast.runCount,
+                        forecast.runCount,
+                        pluralStringResource(
+                            R.plurals.forecast_effective_runs,
+                            effective,
+                            effective,
+                        ),
+                    )
+                }
+                ForecastSource.EMPIRICAL -> pluralStringResource(
+                    R.plurals.forecast_empirical,
+                    forecast.runCount,
+                    forecast.runCount,
+                )
+                ForecastSource.PRIOR -> stringResource(R.string.forecast_prior)
             } + ignoredLiveNote(forecast.ignoredLiveDelay),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -324,10 +353,16 @@ fun DelayDistributionChart(
  * for ignoring it. Without a word here the app looks like it is failing to read
  * the live data it plainly has.
  */
+@Composable
 private fun ignoredLiveNote(ignoredLiveDelay: Double?): String {
     if (ignoredLiveDelay == null) return ""
-    val what = if (ignoredLiveDelay < 0) "ahead of schedule" else "on time"
-    return " DB currently reports this train $what, which it does for almost " +
-        "every train until shortly before departure, so the forecast does not " +
-        "lean on it."
+    // Two whole sentences rather than one with the state substituted in: the
+    // adjective does not stand alone in every language.
+    return stringResource(
+        if (ignoredLiveDelay < 0) {
+            R.string.live_note_ignored_early
+        } else {
+            R.string.live_note_ignored_on_time
+        },
+    )
 }
