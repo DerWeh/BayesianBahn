@@ -29,15 +29,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from score_events import (  # noqa: E402
-    BERLIN, BUCKET_LABELS, SURPRISE_MINUTES, TRANSFER_MINUTES, anchor_minutes,
-    bucket_of, wall_to_epoch,
+    BERLIN, BUCKET_EDGES, BUCKET_LABELS, SURPRISE_MINUTES, TRANSFER_MINUTES,
 )
+from score_events import wall_to_epoch as _wall_to_epoch  # noqa: E402
 
 # Categorical slots 1-3 of the reference palette, which validate on all pairs in
 # both modes. Three series is also the cap here: DB, and the model with and
@@ -54,43 +55,112 @@ SERIES = {
 ANCHOR = "planned_departure"
 
 
-def load(path: Path) -> list[dict]:
-    if not path.is_file():
-        return []
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()]
+def load(path: Path) -> pl.DataFrame:
+    """One scored file, as a frame.
 
-
-
-def mean(values) -> float:
-    """Arithmetic mean over a numeric iterable.
-
-    Not statistics.mean: that sums in exact rational arithmetic, which is the
-    right default for a statistics library and about a hundred times the cost of
-    what is needed for floats that came out of a JSON file. It was 312 of the
-    report's 352 seconds before the bootstrap was vectorised, and 1.9 of the
-    remaining 10 afterwards.
+    Not a list of dicts. polars parses the same file 7.7x faster and holds it in
+    a twentieth of the memory — 435,000 scored events were 1.1 GB of Python
+    dicts and are 100 MB here — which is what stops the report falling over as
+    the collection grows. A dict per row is materialised only where a function
+    still wants one, and never for every day at once.
     """
-    a = np.fromiter(values, dtype=float)
-    return float(a.mean()) if a.size else float("nan")
+    if not path.is_file():
+        return pl.DataFrame()
+    return pl.read_ndjson(path)
 
 
-def by_lead(rows: list[dict]) -> dict[str, list[dict]]:
-    """Group scored events by how long before departure they were made."""
-    out: dict[str, list[dict]] = {}
-    for r in rows:
-        at = anchor_minutes(r, ANCHOR)
-        if at is None:
-            continue
-        label = bucket_of((wall_to_epoch(at) - r["read_at"]) / 60)
-        if label:
-            out.setdefault(label, []).append(r)
-    return out
+def as_frame(rows) -> pl.DataFrame:
+    """Accepts either a frame or the list of dicts the tests build."""
+    if isinstance(rows, pl.DataFrame):
+        return rows
+    return pl.DataFrame(rows, infer_schema_length=None) if rows else pl.DataFrame()
 
 
-def arrivals_table(live: list[dict], blind: list[dict]) -> list[dict]:
+def count(rows) -> int:
+    """How many events, without materialising any of them."""
+    return rows.height if isinstance(rows, pl.DataFrame) else len(rows)
+
+
+def only_missed(rows):
+    """The connections that failed, staying in whatever form it was given."""
+    if isinstance(rows, pl.DataFrame):
+        return rows.filter(~pl.col("caught"))
+    return [r for r in rows if r["caught"] is False]
+
+
+def wall_to_epoch_expr(col: pl.Expr) -> pl.Expr:
+    """`score_events.wall_to_epoch`, over a column.
+
+    IRIS times are naive German local time and the journal stamps polls with
+    real epoch seconds, so this boundary has to be crossed exactly once. Checked
+    against the scalar function over 7,800 consecutive minutes spanning both DST
+    switches: identical everywhere the local time exists. Where it does not —
+    the hour skipped each spring — this yields null rather than silently
+    pretending, and `with_lead` refuses to continue if any appear.
+    """
+    return ((pl.datetime(1970, 1, 1) + pl.duration(minutes=col))
+            .dt.replace_time_zone("Europe/Berlin", ambiguous="earliest",
+                                  non_existent="null")
+            .dt.epoch("s").cast(pl.Float64))
+
+
+def with_lead(rows) -> pl.DataFrame:
+    """Adds the lead time and its bucket, once, as columns.
+
+    Every table that splits by lead time reads these instead of recomputing
+    them, which is the whole point: the first version of this called a
+    row-by-row conversion inside four different functions.
+    """
+    df = as_frame(rows)
+    if not df.height:
+        return df
+    anchor = {"planned_arrival": "planned", "planned_departure": "planned_dep"}[ANCHOR]
+    at = pl.col(anchor)
+    df = df.with_columns(((wall_to_epoch_expr(at) - pl.col("read_at")) / 60).alias("_lead"))
+    lost = df.filter(at.is_not_null() & pl.col("_lead").is_null()).height
+    if lost:
+        raise SystemExit(f"{lost} events fall in an hour that does not exist in "
+                         "Europe/Berlin; the anchor column is wrong or the data is")
+    # bucket_of is [lo, hi) and returns nothing outside the outermost edges, so
+    # cut has to be left-closed and needs a discard label at each end. polars
+    # defaults to (lo, hi], which would move every event that lands exactly on a
+    # boundary into the bucket below.
+    bucket = pl.col("_lead").cut(
+        list(BUCKET_EDGES), labels=["_under", *BUCKET_LABELS, "_over"], left_closed=True)
+    return df.with_columns(
+        pl.when(bucket.cast(pl.String).is_in(["_under", "_over"]))
+          .then(None).otherwise(bucket.cast(pl.String)).alias("_bucket"))
+
+
+COVERED = (pl.col("q10") <= pl.col("truth")) & (pl.col("truth") <= pl.col("q90"))
+
+
+def per_bucket(df: pl.DataFrame, *aggs: pl.Expr) -> dict[str, dict]:
+    """Aggregate over the lead buckets, keyed by label."""
+    if not df.height:
+        return {}
+    grouped = df.drop_nulls("_bucket").group_by("_bucket").agg(*aggs)
+    return {row["_bucket"]: row for row in grouped.to_dicts()}
+
+
+def arrivals_table(live, blind) -> list[dict]:
     """Per lead bucket: DB's error, and both variants of ours."""
-    by_live, by_blind = by_lead(live), by_lead(blind)
+    by_live = per_bucket(
+        with_lead(live),
+        pl.len().alias("n"),
+        pl.col("crps").mean().alias("crps"),
+        COVERED.mean().alias("cover"))
+    by_blind = per_bucket(
+        with_lead(blind),
+        pl.len().alias("n"),
+        # A point forecast's CRPS is its absolute error, so DB's MAE is
+        # directly comparable with our CRPS.
+        (pl.col("db") - pl.col("truth")).abs().mean().alias("db"),
+        (pl.col("db") - pl.col("truth")).mean().alias("db_bias"),
+        (pl.col("truth") > pl.col("db") + SURPRISE_MINUTES).mean().alias("db_surprise"),
+        pl.col("crps").mean().alias("crps"),
+        COVERED.mean().alias("cover"))
+
     rows = []
     for label in BUCKET_LABELS:
         g_live, g_blind = by_live.get(label), by_blind.get(label)
@@ -98,19 +168,14 @@ def arrivals_table(live: list[dict], blind: list[dict]) -> list[dict]:
             continue
         rows.append({
             "bucket": label,
-            "n": len(g_blind),
-            # A point forecast's CRPS is its absolute error, so DB's MAE is
-            # directly comparable with our CRPS.
-            "db": mean(abs(r["db"] - r["truth"]) for r in g_blind),
-            "db_bias": mean(r["db"] - r["truth"] for r in g_blind),
-            "db_surprise": sum(1 for r in g_blind
-                               if r["truth"] > r["db"] + SURPRISE_MINUTES) / len(g_blind),
-            "blind": mean(r["crps"] for r in g_blind),
-            "blind_cover": sum(1 for r in g_blind
-                               if r["q10"] <= r["truth"] <= r["q90"]) / len(g_blind),
-            "live": mean(r["crps"] for r in g_live),
-            "live_cover": sum(1 for r in g_live
-                              if r["q10"] <= r["truth"] <= r["q90"]) / len(g_live),
+            "n": g_blind["n"],
+            "db": g_blind["db"],
+            "db_bias": g_blind["db_bias"],
+            "db_surprise": g_blind["db_surprise"],
+            "blind": g_blind["crps"],
+            "blind_cover": g_blind["cover"],
+            "live": g_live["crps"],
+            "live_cover": g_live["cover"],
         })
     return rows
 
@@ -125,9 +190,9 @@ BAD_MINUTES = 5
 AWFUL_MINUTES = 15
 
 
-def score_spread(rows: list[dict], value) -> dict:
+def score_spread(values: np.ndarray) -> dict:
     """Quantiles of a per-event score, plus how often it goes badly wrong."""
-    a = np.sort(np.fromiter((value(r) for r in rows), dtype=float, count=len(rows)))
+    a = np.sort(np.asarray(values, dtype=float))
     q = lambda p: float(np.quantile(a, p))  # noqa: E731
     return {
         "n": len(a),
@@ -140,7 +205,7 @@ def score_spread(rows: list[dict], value) -> dict:
     }
 
 
-def error_spread(live: list[dict]) -> list[dict]:
+def error_spread(live) -> list[dict]:
     """Per lead bucket, the whole distribution of the score, not its mean.
 
     The mean is the number the table above reports, and on its own it is
@@ -149,35 +214,55 @@ def error_spread(live: list[dict]) -> list[dict]:
     upper tail. A passenger does not notice the minute; they notice the
     twenty-minute miss nobody flagged.
     """
+    df = with_lead(live)
+    if not df.height:
+        return []
+    df = df.drop_nulls("_bucket").with_columns(
+        (pl.col("db") - pl.col("truth")).abs().alias("_db_err"))
     rows = []
-    for label, group in by_lead(live).items():
+    for label in BUCKET_LABELS:
+        group = df.filter(pl.col("_bucket") == label)
+        if not group.height:
+            continue
         rows.append({
             "bucket": label,
-            "n": len(group),
-            "db": score_spread(group, lambda r: abs(r["db"] - r["truth"])),
-            "live": score_spread(group, lambda r: r["crps"]),
+            "n": group.height,
+            "db": score_spread(group["_db_err"].to_numpy()),
+            "live": score_spread(group["crps"].to_numpy()),
         })
-    return [r for r in sorted(rows, key=lambda r: BUCKET_LABELS.index(r["bucket"]))]
+    return rows
 
 
-def brier(rows: list[dict], key: str) -> float:
-    return mean((r[key] - (1.0 if r["caught"] else 0.0)) ** 2 for r in rows)
+def brier_expr(key: str) -> pl.Expr:
+    return ((pl.col(key) - pl.col("caught").cast(pl.Float64)) ** 2).mean()
 
 
-def connections_table(live: list[dict], blind: list[dict]) -> list[dict]:
+def brier(rows, key: str) -> float:
+    df = as_frame(rows)
+    return float(df.select(brier_expr(key)).item()) if df.height else float("nan")
+
+
+def connections_table(live, blind) -> list[dict]:
+    live, blind = as_frame(live), as_frame(blind)
     out = []
     for lo, hi, label in BANDS:
-        g_live = [r for r in live if lo <= r["slack"] < hi]
-        g_blind = [r for r in blind if lo <= r["slack"] < hi]
-        if not g_blind:
+        in_band = (pl.col("slack") >= lo) & (pl.col("slack") < hi)
+        g_live, g_blind = live.filter(in_band), blind.filter(in_band)
+        if not g_blind.height:
             continue
+        stats = g_blind.select(
+            pl.col("caught").mean().alias("caught"),
+            brier_expr("db_catch_p").alias("db"),
+            brier_expr("p_catch").alias("blind"),
+        ).to_dicts()[0]
         out.append({
             "band": label,
-            "n": len(g_blind),
-            "caught": sum(1 for r in g_blind if r["caught"]) / len(g_blind),
-            "db": brier(g_blind, "db_catch_p"),
-            "blind": brier(g_blind, "p_catch"),
-            "live": brier(g_live, "p_catch") if g_live else float("nan"),
+            "n": g_blind.height,
+            "caught": stats["caught"],
+            "db": stats["db"],
+            "blind": stats["blind"],
+            "live": (float(g_live.select(brier_expr("p_catch")).item())
+                     if g_live.height else float("nan")),
         })
     return out
 
@@ -188,7 +273,7 @@ def connections_table(live: list[dict], blind: list[dict]) -> list[dict]:
 BOOTSTRAP_CHUNK = 500
 
 
-def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
+def cluster_ci(rows, value: pl.Expr, *, draws: int = 2000,
                seed: int = 20260819) -> tuple[float, float, float]:
     """Mean of `value`, with a 95% interval from a bootstrap over *trains*.
 
@@ -200,19 +285,20 @@ def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
     A resampled mean depends only on how many times each train was drawn, not
     on the order they came out, so a draw is a multinomial count vector over the
     trains and the whole bootstrap is two matrix products against the per-train
-    sums and sizes. Written as a Python loop over `statistics.mean` this was
-    346 of the report's 352 seconds — `statistics.mean` sums in exact rational
-    arithmetic, which is the right default for a statistics library and about a
-    hundred times the cost of what is needed here.
+    sums and sizes. `value` is a polars expression rather than a callable: the
+    grouping is then done in polars instead of a Python loop over every row,
+    which was 1.8 of the report's remaining seconds.
     """
-    sums: dict[tuple, float] = {}
-    sizes: dict[tuple, int] = {}
-    for r in rows:
-        key = (r["cat"], r["num"])
-        sums[key] = sums.get(key, 0.0) + value(r)
-        sizes[key] = sizes.get(key, 0) + 1
-    group_sum = np.fromiter(sums.values(), dtype=float, count=len(sums))
-    group_size = np.fromiter(sizes.values(), dtype=float, count=len(sizes))
+    df = as_frame(rows)
+    # maintain_order is not cosmetic here. group_by is free to return groups in
+    # any order, and the resampled mean pairs the n-th multinomial count with
+    # the n-th group — so without it the same seed draws the same counts and
+    # applies them to different trains, and the interval moves between runs of
+    # identical input. The determinism test caught exactly that.
+    per_train = df.group_by(["cat", "num"], maintain_order=True).agg(
+        value.sum().alias("_total"), pl.len().alias("_count"))
+    group_sum = per_train["_total"].to_numpy().astype(float)
+    group_size = per_train["_count"].to_numpy().astype(float)
     clusters = len(group_sum)
     point = float(group_sum.sum() / group_size.sum())
 
@@ -227,16 +313,15 @@ def cluster_ci(rows: list[dict], value, *, draws: int = 2000,
     return point, float(means[int(0.025 * draws)]), float(means[int(0.975 * draws)])
 
 
-def crps_gap(rows: list[dict]) -> tuple[float, float, float]:
+def crps_gap(rows) -> tuple[float, float, float]:
     """BayesianBahn's CRPS minus DB's, per prediction. Negative is the lower score."""
-    return cluster_ci(rows, lambda r: r["crps"] - abs(r["db"] - r["truth"]))
+    return cluster_ci(rows, pl.col("crps") - (pl.col("db") - pl.col("truth")).abs())
 
 
-def brier_gap(rows: list[dict]) -> tuple[float, float, float]:
-    def gap(r):
-        outcome = 1.0 if r["caught"] else 0.0
-        return (r["p_catch"] - outcome) ** 2 - (r["db_catch_p"] - outcome) ** 2
-    return cluster_ci(rows, gap)
+def brier_gap(rows) -> tuple[float, float, float]:
+    outcome = pl.col("caught").cast(pl.Float64)
+    return cluster_ci(rows, (pl.col("p_catch") - outcome) ** 2
+                            - (pl.col("db_catch_p") - outcome) ** 2)
 
 
 def headline(live, blind, conn_live, conn_blind) -> list[dict]:
@@ -246,15 +331,16 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
     was exactly this that made a single evening's 189 missed connections look
     like a result.
     """
-    missed_live = [r for r in conn_live if r["caught"] is False]
-    missed_blind = [r for r in conn_blind if r["caught"] is False]
+    missed_live, missed_blind = only_missed(conn_live), only_missed(conn_blind)
     rows = [
-        ("Arrival time, as shipped", "CRPS, minutes", len(live), crps_gap(live)),
-        ("Arrival time, history only", "CRPS, minutes", len(blind), crps_gap(blind)),
-        ("Every connection, as shipped", "Brier", len(conn_live), brier_gap(conn_live)),
-        ("Every connection, history only", "Brier", len(conn_blind), brier_gap(conn_blind)),
-        ("Missed connections, as shipped", "Brier", len(missed_live), brier_gap(missed_live)),
-        ("Missed connections, history only", "Brier", len(missed_blind),
+        ("Arrival time, as shipped", "CRPS, minutes", count(live), crps_gap(live)),
+        ("Arrival time, history only", "CRPS, minutes", count(blind), crps_gap(blind)),
+        ("Every connection, as shipped", "Brier", count(conn_live), brier_gap(conn_live)),
+        ("Every connection, history only", "Brier", count(conn_blind),
+         brier_gap(conn_blind)),
+        ("Missed connections, as shipped", "Brier", count(missed_live),
+         brier_gap(missed_live)),
+        ("Missed connections, history only", "Brier", count(missed_blind),
          brier_gap(missed_blind)),
     ]
     out = []
@@ -271,42 +357,38 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
     return out
 
 
-def of_day(rows: list[dict], day: str) -> list[dict]:
-    return [r for r in rows if r["day"] == day]
-
-
 def per_day(days: list[str], live, blind, conn_live, conn_blind) -> list[dict]:
     """One row per collected day: the same headline numbers, unpooled.
 
     Pooling hides whether a result is a property of the model or of one day's
     weather. A claim that moves when a day is added was never a claim.
-
-    Takes the rows the caller already loaded rather than the directory they came
-    from; reading the same twelve files a second time was a third of what the
-    report spent once the bootstrap stopped dominating it.
     """
+    live, blind = as_frame(live), as_frame(blind)
+    conn_live, conn_blind = as_frame(conn_live), as_frame(conn_blind)
     out = []
     for day in days:
-        day_live, day_blind = of_day(live, day), of_day(blind, day)
-        day_cl, day_cb = of_day(conn_live, day), of_day(conn_blind, day)
-        if not day_blind:
+        this = pl.col("day") == day
+        day_live, day_blind = live.filter(this), blind.filter(this)
+        if not day_blind.height:
             continue
-        missed_l = [r for r in day_cl if r["caught"] is False]
-        missed_b = [r for r in day_cb if r["caught"] is False]
+        missed_l = only_missed(conn_live.filter(this))
+        missed_b = only_missed(conn_blind.filter(this))
+        blind_stats = day_blind.select(
+            (pl.col("db") - pl.col("truth")).abs().mean().alias("db"),
+            pl.col("crps").mean().alias("blind"),
+            COVERED.mean().alias("blind_cover")).to_dicts()[0]
+        live_stats = day_live.select(
+            pl.col("crps").mean().alias("live"),
+            COVERED.mean().alias("live_cover")).to_dicts()[0]
         out.append({
             "day": day,
-            "n": len(day_blind),
-            "db": mean(abs(r["db"] - r["truth"]) for r in day_blind),
-            "blind": mean(r["crps"] for r in day_blind),
-            "live": mean(r["crps"] for r in day_live),
-            "live_cover": sum(1 for r in day_live
-                              if r["q10"] <= r["truth"] <= r["q90"]) / len(day_live),
-            "blind_cover": sum(1 for r in day_blind
-                               if r["q10"] <= r["truth"] <= r["q90"]) / len(day_blind),
-            "missed": len(missed_b),
-            "db_missed": brier(missed_b, "db_catch_p") if missed_b else float("nan"),
-            "blind_missed": brier(missed_b, "p_catch") if missed_b else float("nan"),
-            "live_missed": brier(missed_l, "p_catch") if missed_l else float("nan"),
+            "n": day_blind.height,
+            **blind_stats,
+            **live_stats,
+            "missed": missed_b.height,
+            "db_missed": brier(missed_b, "db_catch_p") if missed_b.height else float("nan"),
+            "blind_missed": brier(missed_b, "p_catch") if missed_b.height else float("nan"),
+            "live_missed": brier(missed_l, "p_catch") if missed_l.height else float("nan"),
         })
     return out
 
@@ -320,7 +402,17 @@ FULL_DAY_HOURS = 20
 MIN_HOUR_EVENTS = 100
 
 
-def full_days(rows: list[dict]) -> set[str]:
+LOCAL_HOUR = (pl.col("planned") // 60) % 24
+"""Hour of the planned arrival.
+
+`planned` is already naive German local time — the same clock the hour is
+wanted in — so this needs no timezone crossing at all. The row-wise version
+converted to epoch and straight back again; checked over a day's 20,735 events,
+the two agree exactly.
+"""
+
+
+def full_days(df: pl.DataFrame) -> set[str]:
     """Days whose events span the clock.
 
     The first collected day started in the evening. Averaging it into an
@@ -328,47 +420,34 @@ def full_days(rows: list[dict]) -> set[str]:
     a full day's evening while contributing nothing before 18:00, which tilts
     the whole shape. A day earns its place here by covering the clock.
     """
-    seen: dict[str, set[int]] = {}
-    for r in rows:
-        seen.setdefault(r["day"], set()).add(hour_of(r))
-    return {day for day, hours in seen.items() if len(hours) >= FULL_DAY_HOURS}
+    if not df.height:
+        return set()
+    spans = (df.select("day", LOCAL_HOUR.alias("hour"))
+               .group_by("day").agg(pl.col("hour").n_unique().alias("hours")))
+    return set(spans.filter(pl.col("hours") >= FULL_DAY_HOURS)["day"].to_list())
 
 
-def hour_of(row: dict) -> int:
-    """Local hour of the train's planned arrival."""
-    return dt.datetime.fromtimestamp(wall_to_epoch(row["planned"]), BERLIN).hour
-
-
-def hourly(rows: list[dict]) -> list[dict]:
+def hourly(rows) -> list[dict]:
     """Mean arrival delay by hour of day, one row per train event.
 
     Deduplicated on the event: a train polled thirty times is one arrival, not
     thirty, and counting the polls would weight the curve by how long each
     train sat in the collector's window rather than by how late it was.
     """
-    days = full_days(rows)
+    df = as_frame(rows)
+    days = full_days(df)
     if not days:
         return []
-    events: dict[tuple, dict] = {}
-    for r in rows:
-        if r["day"] in days:
-            events[(r["day"], r["eva"], r["cat"], r["num"], r["planned"])] = r
-    by_hour: dict[int, list[dict]] = {}
-    for r in events.values():
-        by_hour.setdefault(hour_of(r), []).append(r)
-    out = []
-    for hour in sorted(by_hour):
-        group = by_hour[hour]
-        if len(group) < MIN_HOUR_EVENTS:
-            continue
-        out.append({
-            "bucket": f"{hour:02d}",
-            "hour": hour,
-            "n": len(group),
-            "mean": mean(r["truth"] for r in group),
-            "late": sum(1 for r in group if r["truth"] > SURPRISE_MINUTES) / len(group),
-        })
-    return out
+    events = (df.filter(pl.col("day").is_in(list(days)))
+                .unique(subset=["day", "eva", "cat", "num", "planned"], keep="last")
+                .with_columns(LOCAL_HOUR.alias("hour")))
+    grouped = (events.group_by("hour")
+               .agg(pl.len().alias("n"),
+                    pl.col("truth").mean().alias("mean"),
+                    (pl.col("truth") > SURPRISE_MINUTES).mean().alias("late"))
+               .filter(pl.col("n") >= MIN_HOUR_EVENTS)
+               .sort("hour"))
+    return [{"bucket": f"{r['hour']:02d}", **r} for r in grouped.to_dicts()]
 
 
 def band_spread(rows: list[dict], bands: dict[str, tuple]) -> list[dict]:
@@ -404,24 +483,24 @@ SHIPPED_BANDS = {
 }
 
 
-def outcome_split(live: list[dict], blind: list[dict]) -> list[dict]:
+def outcome_split(live, blind) -> list[dict]:
+    live, blind = as_frame(live), as_frame(blind)
     out = []
     for label, want in (("Connection was caught", True), ("Connection was missed", False)):
-        g_blind = [r for r in blind if r["caught"] is want]
-        g_live = [r for r in live if r["caught"] is want]
-        if not g_blind:
+        g_blind = blind.filter(pl.col("caught") == want)
+        g_live = live.filter(pl.col("caught") == want)
+        if not g_blind.height:
             continue
-        out.append({
-            "outcome": label,
-            "n": len(g_blind),
-            "db_right": sum(1 for r in g_blind
-                            if (r["db_catch_p"] == 1) == r["caught"]) / len(g_blind),
-            "db": brier(g_blind, "db_catch_p"),
-            "blind": brier(g_blind, "p_catch"),
-            "blind_p": mean(r["p_catch"] for r in g_blind),
-            "live": brier(g_live, "p_catch") if g_live else float("nan"),
-            "live_p": mean(r["p_catch"] for r in g_live) if g_live else float("nan"),
-        })
+        stats = g_blind.select(
+            ((pl.col("db_catch_p") == 1) == pl.col("caught")).mean().alias("db_right"),
+            brier_expr("db_catch_p").alias("db"),
+            brier_expr("p_catch").alias("blind"),
+            pl.col("p_catch").mean().alias("blind_p"),
+        ).to_dicts()[0]
+        live_stats = (g_live.select(brier_expr("p_catch").alias("live"),
+                                    pl.col("p_catch").mean().alias("live_p")).to_dicts()[0]
+                      if g_live.height else {"live": float("nan"), "live_p": float("nan")})
+        out.append({"outcome": label, "n": g_blind.height, **stats, **live_stats})
     return out
 
 
@@ -1213,25 +1292,32 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
-    live, blind, conn_live, conn_blind = [], [], [], []
-    # Every row carries the day it came from: the per-day table splits on it,
-    # and the hour-of-day curve uses it to drop days that do not cover the
-    # clock. Tagging on load is what lets the files be read exactly once.
-    for day in args.days:
-        base = args.scored_dir / day
-        for target, name in ((live, "arrivals-live"), (blind, "arrivals-blind"),
-                             (conn_live, "connections-live"),
-                             (conn_blind, "connections-blind")):
-            for row in load(base / f"{name}.jsonl"):
-                row["day"] = day
-                target.append(row)
-    if not blind:
+    def collect(name: str) -> pl.DataFrame:
+        """One frame per file, tagged with its day and stacked.
+
+        diagonal_relaxed rather than plain concat: a column that happens to be
+        all-null on one day is inferred as Null there and as a real type on
+        another, and a strict concat refuses to stack the two.
+        """
+        frames = []
+        for day in args.days:
+            frame = load(args.scored_dir / day / f"{name}.jsonl")
+            if frame.height:
+                frames.append(frame.with_columns(pl.lit(day).alias("day")))
+        return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+    live = collect("arrivals-live")
+    blind = collect("arrivals-blind")
+    conn_live = collect("connections-live")
+    conn_blind = collect("connections-blind")
+
+    if not blind.height:
         raise SystemExit(f"no scored arrivals under {args.scored_dir} for {args.days}")
 
     render(args.days, arrivals_table(live, blind),
            connections_table(conn_live, conn_blind),
            outcome_split(conn_live, conn_blind),
-           {"events": len(blind), "connections": len(conn_blind)}, args.out,
+           {"events": blind.height, "connections": conn_blind.height}, args.out,
            gaps=headline(live, blind, conn_live, conn_blind),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
            clock=hourly(live), spread=error_spread(live))

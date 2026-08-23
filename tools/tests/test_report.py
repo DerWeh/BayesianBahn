@@ -15,6 +15,7 @@ import re
 import sys
 from pathlib import Path
 
+import polars as pl
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -49,20 +50,20 @@ def connection(*, cat="RE", num="1", p_catch=0.5, db_catch=1, caught=True, slack
 
 def test_the_point_estimate_is_just_the_mean():
     rows = [arrival(num=str(i), crps=float(i)) for i in range(10)]
-    point, _, _ = R.cluster_ci(rows, lambda r: r["crps"])
+    point, _, _ = R.cluster_ci(rows, pl.col("crps"))
     assert point == pytest.approx(sum(range(10)) / 10)
 
 
 def test_an_interval_over_identical_values_collapses():
     rows = [arrival(num=str(i), crps=3.0) for i in range(20)]
-    point, lo, hi = R.cluster_ci(rows, lambda r: r["crps"], draws=200)
+    point, lo, hi = R.cluster_ci(rows, pl.col("crps"), draws=200)
     assert (point, lo, hi) == (3.0, 3.0, 3.0)
 
 
 def test_the_same_seed_gives_the_same_interval():
     rows = [arrival(num=str(i), crps=float(i % 7)) for i in range(40)]
-    assert R.cluster_ci(rows, lambda r: r["crps"], draws=200) == \
-        R.cluster_ci(rows, lambda r: r["crps"], draws=200)
+    assert R.cluster_ci(rows, pl.col("crps"), draws=200) == \
+        R.cluster_ci(rows, pl.col("crps"), draws=200)
 
 
 def test_clustering_by_train_widens_the_interval():
@@ -76,14 +77,14 @@ def test_clustering_by_train_widens_the_interval():
     spread = [arrival(num=str(i), crps=v) for i, v in enumerate(values)]
     clumped = [arrival(num=str(i % 3), crps=v) for i, v in enumerate(values)]
 
-    _, lo_spread, hi_spread = R.cluster_ci(spread, lambda r: r["crps"], draws=500)
-    _, lo_clumped, hi_clumped = R.cluster_ci(clumped, lambda r: r["crps"], draws=500)
+    _, lo_spread, hi_spread = R.cluster_ci(spread, pl.col("crps"), draws=500)
+    _, lo_clumped, hi_clumped = R.cluster_ci(clumped, pl.col("crps"), draws=500)
     assert hi_clumped - lo_clumped > hi_spread - lo_spread
 
 
 def test_a_bracketing_interval_contains_the_mean():
     rows = [arrival(num=str(i), crps=float(i % 5)) for i in range(50)]
-    point, lo, hi = R.cluster_ci(rows, lambda r: r["crps"], draws=500)
+    point, lo, hi = R.cluster_ci(rows, pl.col("crps"), draws=500)
     assert lo <= point <= hi
 
 
@@ -339,7 +340,7 @@ def test_repeated_polls_of_one_train_count_once():
 def test_an_hour_with_too_few_trains_is_dropped():
     """Two trains at 02:00 produced the largest mean on the first chart."""
     rows = a_full_day("2026-08-18", {h: 1 for h in range(24)})
-    rows = [r for r in rows if R.hour_of(r) != 2][:]
+    rows = [r for r in rows if (r["planned"] // 60) % 24 != 2]
     rows += [clock_row(day="2026-08-18", hour=2, truth=90, num=f"n{i}", eva="2")
              for i in range(2)]
     assert 2 not in {r["hour"] for r in R.hourly(rows)}
@@ -446,7 +447,7 @@ def graded(*values, **kwargs):
 
 
 def test_the_spread_reports_quantiles_not_just_the_mean():
-    s = R.score_spread(graded(*range(1, 101)), lambda r: r["crps"])
+    s = R.score_spread(list(range(1, 101)))
     assert s["n"] == 100
     assert s["mean"] == pytest.approx(50.5)
     assert s["p50"] == pytest.approx(50.5)
@@ -456,24 +457,22 @@ def test_the_spread_reports_quantiles_not_just_the_mean():
 
 
 def test_the_quantiles_come_out_in_order():
-    s = R.score_spread(graded(*range(1, 101)), lambda r: r["crps"])
+    s = R.score_spread(list(range(1, 101)))
     ordered = [s[k] for k in ("p10", "p25", "p50", "p75", "p90", "p99", "max")]
     assert ordered == sorted(ordered)
 
 
 def test_a_mean_can_hide_a_tail():
     """The case the section exists for: same mean, very different tails."""
-    flat = R.score_spread(graded(*([5.0] * 100)), lambda r: r["crps"])
-    spiky = R.score_spread(graded(*([0.0] * 90 + [50.0] * 10)), lambda r: r["crps"])
+    flat = R.score_spread([5.0] * 100)
+    spiky = R.score_spread([0.0] * 90 + [50.0] * 10)
     assert flat["mean"] == pytest.approx(spiky["mean"])
     assert flat["awful"] == 0.0
     assert spiky["awful"] == pytest.approx(0.10)
 
 
 def test_the_bad_shares_count_strictly_over_the_threshold():
-    s = R.score_spread(
-        graded(R.BAD_MINUTES, R.BAD_MINUTES + 0.1, R.AWFUL_MINUTES, R.AWFUL_MINUTES + 0.1),
-        lambda r: r["crps"])
+    s = R.score_spread([R.BAD_MINUTES, R.BAD_MINUTES + 0.1, R.AWFUL_MINUTES, R.AWFUL_MINUTES + 0.1])
     assert s["bad"] == pytest.approx(0.75)      # three are over BAD_MINUTES
     assert s["awful"] == pytest.approx(0.25)    # one is over AWFUL_MINUTES
 
@@ -625,3 +624,18 @@ def test_the_full_commit_is_in_the_footer(tmp_path, monkeypatch):
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn))
     assert "d" * 40 in out.read_text(encoding="utf-8")
+
+
+def test_the_local_hour_matches_the_wall_clock_it_is_taken_from():
+    """`planned` is naive German local time, so the hour is arithmetic. The
+    row-wise version converted to epoch and back; these must agree, including
+    across midnight."""
+    import polars as pl
+    from score_events import BERLIN, wall_to_epoch
+    import datetime as dt
+
+    minutes = list(range(0, 60 * 24 * 3, 37))
+    direct = (pl.DataFrame({"planned": minutes})
+              .select(R.LOCAL_HOUR.alias("h"))["h"].to_list())
+    roundtrip = [dt.datetime.fromtimestamp(wall_to_epoch(m), BERLIN).hour for m in minutes]
+    assert direct == roundtrip
