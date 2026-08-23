@@ -7,6 +7,13 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [Unreleased]
 
+### Added
+- A German interface, used on a phone set to German; English stays the default
+  and the fallback. Every text the app shows is now a translatable resource,
+  including the failures raised while planning a journey, which used to be
+  written out in English deep in the planner. Android 13 and newer can set the
+  language for this app alone.
+
 ### Changed
 - **DB's live number is only used when it reports a delay.** DB states a stop
   in four shapes and three of them mean "on time"; only one is an observation.

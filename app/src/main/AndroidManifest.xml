@@ -9,6 +9,7 @@
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.BayesianBahn"
         android:supportsRtl="true"
+        android:localeConfig="@xml/locales_config"
         android:allowBackup="true">
         <activity
             android:name=".MainActivity"

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lets Android 13+ offer this app its own language setting, so a German UI can
+  be picked on an otherwise English phone and the other way round.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="de" />
+</locale-config>

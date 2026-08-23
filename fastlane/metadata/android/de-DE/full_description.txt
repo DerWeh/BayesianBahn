@@ -1,0 +1,40 @@
+Frühe Version: Die Vorhersagen sind experimentell — Zeiten und
+Anschlüsse immer mit den offiziellen DB-Apps abgleichen.
+
+BayesianBahn sagt vorher, wann du tatsächlich ankommst — als vollständige
+Wahrscheinlichkeitsverteilung, nicht als einzelne Zahl.
+
+Start, Ziel und Zeit eingeben (auch für spätere Tage): Die App sucht
+Direktverbindungen und Verbindungen mit einem Umstieg — Routen mit zwei
+oder mehr Umstiegen sind noch nicht abgedeckt, sie findet also
+gelegentlich weniger Verbindungen als die DB-Apps. Für jede Option zeigt
+sie:
+
+* die vorhergesagte mittlere Ankunftszeit am Ziel,
+* ein 80-%-Glaubwürdigkeitsintervall (Bayes-Credible-Intervall),
+* die vollständige Verspätungsverteilung als Diagramm,
+* die Wahrscheinlichkeit, jeden Anschlusszug zu erreichen,
+* einen Deutschland-Ticket-Filter, der auf den Nahverkehr beschränkt.
+
+Umstiege werden mit dem Satz von Bayes fortgepflanzt: Du steigst in den
+ersten Anschlusszug, der noch nicht abgefahren ist — ein verspäteter
+früherer Zug zählt also als erreichbar, und ein verpasster Anschluss
+verschiebt ehrlich die gesamte Verteilung. Live-Abfahrtstafeln und
+Vorhersagen je Zug (inklusive Ausfallquote) gibt es ebenfalls.
+
+Die Vorhersagen sind empirisch: Sie stammen aus Monaten echter
+historischer Fahrten genau dieses Zuges an diesem Bahnhof (erhoben über
+die öffentliche IRIS-API der Deutschen Bahn, CC BY 4.0), gewichtet nach
+Aktualität und Wochentag. Meldet die DB eine echte Verspätung, wird die
+Vorhersage daran verankert; meldet sie nichts — was sie für die meisten
+Züge bis kurz vor Abfahrt tut —, spricht allein die Historie, was
+messbar besser ist, als den Fahrplan für eine Vorhersage zu halten.
+Die Verspätungsdaten lassen sich in der App aktualisieren —
+eine kleine tägliche Datenveröffentlichung hält die Vorhersagen auf
+einen Tag genau aktuell. Züge ohne Historie bekommen eine ehrliche
+bayessche A-priori-Schätzung.
+
+Die App spricht ausschließlich mit dem schlüssellosen öffentlichen
+IRIS-Fahrplan-Endpunkt und den Datenveröffentlichungen des Projekts,
+braucht kein Konto, keinen API-Schlüssel, keine Google-Dienste und
+erhebt keine Daten.
