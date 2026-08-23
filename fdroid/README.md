@@ -2,7 +2,7 @@
 
 `io.github.derweh.bayesianbahn.yml` is the source of truth for our entry in
 [fdroiddata](https://gitlab.com/fdroid/fdroiddata). The copy that lives in the
-fdroiddata fork is a mirror — edit it here, then sync.
+fdroiddata copy is maintained by F-Droid's bot — this is the mirror.
 
 ## Before pushing anything
 
@@ -30,7 +30,9 @@ repository contains. These checks cover the gap:
   Needs the tags locally, hence `fetch-depth: 0` in the workflow.
 - `versionName`/`versionCode` agree between the build entry, `CurrentVersion*`,
   and `app/build.gradle.kts` — so a release bump cannot half-land.
-- `--fork` compares against the copy on the fdroiddata branch (see below).
+- `--published` compares against fdroiddata master, which is what F-Droid
+  builds from; `--fork` compares against our merge-request branch instead
+  (see below).
 
 ## Testing the checker
 
@@ -66,17 +68,29 @@ Do not point a trailing-whitespace stripper (editor-on-save, a
 depends on the *ruamel.yaml version*, not on fdroidserver — Debian trixie's
 0.18.x folds where 0.17.x does not, which is why `tools/fdroid-check.sh` pins it.
 
-## Syncing with the fdroiddata fork
+## Keeping in step with fdroiddata
 
-The file fdroiddata's pipeline reads is the one on the fork branch, not this
-one, and the sync goes **both ways**: F-Droid maintainers commit review
-suggestions straight onto the merge-request branch (that is how the category
-became `Public Transport`). A red pipeline right after a fix here usually means
-only that the fix was never pushed across.
+The merge request has landed, so the file F-Droid builds from is
+`metadata/io.github.derweh.bayesianbahn.yml` on **fdroiddata master**, and
+`AutoUpdateMode: Version` means F-Droid's own bot maintains it: when it sees a
+new `vX.Y.Z` tag it appends a build entry and bumps `CurrentVersion` without
+anyone opening a merge request. Our fork branch was the merge-request branch and
+stopped moving the day it merged.
+
+So this file is a *mirror*, and it is allowed to run **ahead** of fdroiddata: a
+release is prepared here before its tag is pushed, and the bot cannot know about
+it yet. What must never happen is the reverse. If fdroiddata describes a build
+this file does not, F-Droid is building something the drift guards here are not
+looking at.
 
 ```sh
-tools/fdroid-check.sh --fork   # diff this file against the fork branch
+tools/fdroid-check.sh --published   # compare against fdroiddata master
+tools/fdroid-check.sh --fork        # compare against our MR branch instead
 ```
+
+Use `--fork` only while a merge request is actually open — F-Droid maintainers
+commit review suggestions straight onto that branch (that is how the category
+became `Public Transport`), so during a review the sync goes **both ways**.
 
 When the fork is the one that moved, apply its change here. Copy through
 `curl`/`tr` rather than a file manager or editor, so neither CRs nor a stripped

@@ -16,7 +16,8 @@
 #
 #   --fix           rewrite the metadata into canonical form instead of failing
 #   --checkupdates  also run `fdroid checkupdates` (network, clones the app repo)
-#   --fork          also compare against the copy on the fdroiddata fork branch
+#   --published     also compare against the copy fdroiddata actually serves
+#   --fork          compare against our MR branch instead of fdroiddata master
 #   --refresh       ignore the download cache
 #   --self-test     assert this script rejects each way the file has broken before
 #
@@ -34,17 +35,23 @@ APPID=io.github.derweh.bayesianbahn
 RUAMEL_PIN=0.18.10
 CACHE_TTL_HOURS=24
 FORK_RAW=${FDROID_FORK_RAW:-https://gitlab.com/DerWeh/fdroiddata/-/raw/$APPID/metadata/$APPID.yml}
+# Once the merge request landed and AutoUpdateMode took over, the file
+# fdroiddata builds from is this one, updated by F-Droid own bot. Our fork
+# branch stopped moving the day the MR merged.
+UPSTREAM_RAW=${FDROID_UPSTREAM_RAW:-https://gitlab.com/fdroid/fdroiddata/-/raw/master/metadata/$APPID.yml}
 
 fix=0
 run_checkupdates=0
-check_fork=0
+check_published=0
+compare_fork=0
 refresh=0
 self_test=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --fix) fix=1 ;;
         --checkupdates) run_checkupdates=1 ;;
-        --fork) check_fork=1 ;;
+        --published) check_published=1 ;;
+        --fork) check_published=1; compare_fork=1 ;;
         --refresh) refresh=1 ;;
         --self-test) self_test=1 ;;
         -h|--help) awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
@@ -332,19 +339,25 @@ if [ "${FDROID_CHECK_NO_NET:-0}" != 1 ] && [ -n "$BINARIES_URL" ] && [ -n "$VERS
 fi
 
 # --- fork copy --------------------------------------------------------------
-# The file fdroiddata's pipeline actually reads is the one on the fork branch,
-# not this one. A red pipeline after a fix here usually means only that the fix
-# was never synced across.
-if [ "$check_fork" = 1 ]; then
-    echo "==> comparing against the fdroiddata fork branch"
-    if curl -fsSL --max-time 60 "$FORK_RAW" -o "$work/fork.yml"; then
-        if ! diff -q "$meta" "$work/fork.yml" >/dev/null; then
-            fail "the fdroiddata fork has a different file (see fdroid/README.md to sync):"
-            git --no-pager diff --no-index --ws-error-highlight=all \
-                "$work/fork.yml" "$meta" || true
+# What fdroiddata serves is the authority on what F-Droid will build. Ours may
+# be *ahead* of it — a release prepared here is not published until the tag is
+# pushed and the bot has run — but it must never be behind or divergent, because
+# then F-Droid is building something this file does not describe.
+if [ "$check_published" = 1 ]; then
+    if [ "$compare_fork" = 1 ]; then
+        published_url=$FORK_RAW
+        published_what="the fdroiddata fork branch"
+    else
+        published_url=$UPSTREAM_RAW
+        published_what="fdroiddata master"
+    fi
+    echo "==> comparing against $published_what"
+    if curl -fsSL --max-time 60 "$published_url" -o "$work/published.yml"; then
+        if ! python3 "$(dirname "$0")/fdroid_compare.py" "$meta" "$work/published.yml" "$published_what"; then
+            fail "this file disagrees with $published_what (see fdroid/README.md)"
         fi
     else
-        warn "could not fetch $FORK_RAW"
+        warn "could not fetch $published_url"
     fi
 fi
 

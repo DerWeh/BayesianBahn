@@ -61,4 +61,4 @@ jobs:
       - name: Run fdroiddata's metadata checks
         env:
           FDROID_SYSTEM_DEPS: "1"
-        run: tools/fdroid-check.sh --checkupdates --fork
+        run: tools/fdroid-check.sh --checkupdates --published
