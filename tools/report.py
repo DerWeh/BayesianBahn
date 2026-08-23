@@ -1178,9 +1178,10 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 </section>
 
 <footer>
-  Generated %s from %s, by BayesianBahn at commit %s. BayesianBahn is
+  Generated %s from %s, by
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit %s.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
-  piebro/deutsche-bahn-data archive.
+  piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>
 </div>""" % (
         SURPRISE_MINUTES, TRANSFER_MINUTES,

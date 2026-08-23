@@ -136,8 +136,8 @@ a { color: var(--series-1); }
   halts. The next day the archive says when each train really arrived, and both
   forecasts are scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>209915e28610</code>, which declares version 0.1.4
-  (versionCode 5). That commit is <strong>not a released version</strong>: the app published in the stores does not contain this model unless a later release says so. It is only ever shown history
+  <code>e65cf541b69b</code>, which declares version 0.1.4
+  (versionCode 5). <strong>That commit does not identify the code that ran:</strong> 1 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
   from before the day it predicts. It appears twice:
   <strong>as shipped</strong>, which adjusts DB’s live number using past runs
   <em>when DB actually reports a delay</em> and leans on the history alone when
@@ -392,8 +392,9 @@ pixi run -e evaluate evaluate 2026-08-17 2026-08-18 2026-08-19 2026-08-20 2026-0
 </section>
 
 <footer>
-  Generated 2026-08-22 from 2026-08-17, 2026-08-18, 2026-08-19, 2026-08-20, 2026-08-21, by BayesianBahn at commit 209915e28610e868da9bdbae44835b8671228cc8. BayesianBahn is
+  Generated 2026-08-23 from 2026-08-17, 2026-08-18, 2026-08-19, 2026-08-20, 2026-08-21, by
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit e65cf541b69b159817eb9df71c9480cf25a3f81d.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
-  piebro/deutsche-bahn-data archive.
+  piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>
 </div>

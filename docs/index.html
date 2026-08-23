@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BayesianBahn</title>
+<meta name="description" content="Empirical arrival-time predictions for Deutsche Bahn trains, as a distribution rather than a point estimate.">
+<style>
+:root {
+  color-scheme: light;
+  --ground: #f6f7f9; --panel: #ffffff; --ink: #14181d; --ink-2: #545d6b;
+  --ink-3: #79828f; --rule: #dfe3e9; --rule-strong: #c3cad4; --accent: #1a5276;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground: #14161a; --panel: #1b1e24; --ink: #eef1f5; --ink-2: #a7b0bd;
+    --ink-3: #7e8895; --rule: #2a2f37; --rule-strong: #3a414b; --accent: #6fa8d6;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #14161a; --panel: #1b1e24; --ink: #eef1f5; --ink-2: #a7b0bd;
+  --ink-3: #7e8895; --rule: #2a2f37; --rule-strong: #3a414b; --accent: #6fa8d6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px; line-height: 1.6;
+}
+.wrap { max-width: 46rem; margin: 0 auto; padding: 4rem 1.5rem 6rem; }
+header { display: flex; gap: 1.1rem; align-items: center;
+         border-bottom: 2px solid var(--rule-strong); padding-bottom: 1.75rem; }
+header img { width: 64px; height: 64px; border-radius: 12px; flex: none; }
+h1 { font-size: 2rem; letter-spacing: -.022em; margin: 0; font-weight: 640; }
+h2 { font-size: 1.15rem; letter-spacing: -.012em; margin: 2.5rem 0 .4rem; font-weight: 620; }
+p { margin: 0 0 1rem; color: var(--ink-2); }
+p.lede { color: var(--ink); font-size: 1.05rem; margin-top: 1.75rem; }
+.note { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent);
+        border-radius: 8px; padding: .9rem 1.1rem; margin: 1.5rem 0; }
+.note p { margin: 0; color: var(--ink-2); font-size: .94rem; }
+ul { padding-left: 1.1rem; color: var(--ink-2); }
+li { margin-bottom: .5rem; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+footer { margin-top: 3.5rem; padding-top: 1.25rem; border-top: 1px solid var(--rule);
+         color: var(--ink-3); font-size: .82rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <img src="social-preview.png" alt="" aria-hidden="true"
+       style="object-fit: cover; object-position: 8% 50%;">
+  <h1>BayesianBahn</h1>
+</header>
+
+<p class="lede">Empirical arrival-time predictions for Deutsche Bahn trains — as a
+distribution, not a point estimate.</p>
+
+<div class="note">
+  <p><strong>Early release.</strong> Predictions are experimental. Always
+  cross-check times and connections with DB’s official apps before relying on
+  them.</p>
+</div>
+
+<p>The app predicts when a train will <em>actually</em> arrive from that train’s
+own delay history, rather than repeating the timetable. It answers with a median,
+an 80% credible interval, the full distribution, and — for a journey with a
+change — the probability of making it.</p>
+
+<h2>How well does it work?</h2>
+
+<p>That is a checkable question, so it is checked. Every ten minutes DB’s own
+forecast is recorded for twenty stations across the network; the next day the
+public archive says when each train really arrived, and both forecasts are scored
+against it.</p>
+
+<ul>
+  <li><a href="evaluation/">The evaluation report</a> — the comparison, its
+  uncertainty, and what it does not establish. Each figure names the commit that
+  produced it.</li>
+</ul>
+
+<h2>Get it</h2>
+
+<ul>
+  <li><a href="https://f-droid.org/packages/io.github.derweh.bayesianbahn/">F-Droid</a>
+  — built from source by F-Droid and checked against the published APK.</li>
+  <li><a href="https://github.com/DerWeh/BayesianBahn">Source on GitHub</a> (MIT),
+  including the collector and scoring code behind the report.</li>
+</ul>
+
+<footer>
+  BayesianBahn is MIT-licensed. Delay data is CC BY 4.0 by Deutsche Bahn, via the
+  <a href="https://github.com/piebro/deutsche-bahn-data">piebro/deutsche-bahn-data</a>
+  archive. Not affiliated with Deutsche Bahn.
+</footer>
+</div>
+</body>
+</html>
