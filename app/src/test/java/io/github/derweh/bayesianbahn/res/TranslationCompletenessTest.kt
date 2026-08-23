@@ -15,7 +15,24 @@ import org.w3c.dom.Element
  */
 class TranslationCompletenessTest {
 
-    private val translations = listOf("de")
+    /**
+     * Discovered, not listed: a hand-written list only guards the locales
+     * someone remembered to add to it, and the next translation would arrive
+     * unchecked.
+     */
+    private val translations =
+        File("src/main/res").listFiles().orEmpty()
+            .mapNotNull { it.name.substringAfter("values-", "").ifEmpty { null } }
+            .filter { File("src/main/res/values-$it/strings.xml").isFile }
+            .sorted()
+
+    @Test
+    fun `there is a translation to check`() {
+        assertTrue(
+            "no values-* directory was found, so every check below passes vacuously",
+            translations.isNotEmpty(),
+        )
+    }
 
     @Test
     fun `every translation defines every string`() {
@@ -69,6 +86,28 @@ class TranslationCompletenessTest {
     }
 
     /**
+     * A plural is formatted with the same arguments whichever quantity Android
+     * picks, so an item that drops one crashes only for the counts that select
+     * it — the single-run wording being the likeliest to go untried.
+     */
+    @Test
+    fun `every plural item takes the same format arguments`() {
+        val base = pluralItems("values")
+        for (dir in listOf("values") + translations.map { "values-$it" }) {
+            for ((key, items) in pluralItems(dir)) {
+                val expected = formatArguments(base.getValue(key).getValue("other"))
+                for ((quantity, value) in items) {
+                    assertEquals(
+                        "format arguments of $key/$quantity differ in $dir",
+                        expected,
+                        formatArguments(value),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
      * Android trims a resource value's leading and trailing whitespace and
      * collapses runs of spaces inside it, unless the whole value is wrapped in
      * double quotes. The separators here are "  ·  " with two spaces a side;
@@ -104,11 +143,14 @@ class TranslationCompletenessTest {
             .associate { it.getAttribute("name") to it.textContent }
 
     private fun plurals(dir: String): Map<String, Set<String>> =
+        pluralItems(dir).mapValues { (_, items) -> items.keys }
+
+    private fun pluralItems(dir: String): Map<String, Map<String, String>> =
         elements(dir, "plurals").associate { plural ->
-            val quantities = plural.getElementsByTagName("item")
-            plural.getAttribute("name") to (0 until quantities.length)
-                .map { (quantities.item(it) as Element).getAttribute("quantity") }
-                .toSet()
+            val items = plural.getElementsByTagName("item")
+            plural.getAttribute("name") to (0 until items.length)
+                .map { items.item(it) as Element }
+                .associate { it.getAttribute("quantity") to it.textContent }
         }
 
     private fun elements(dir: String, tag: String): List<Element> {

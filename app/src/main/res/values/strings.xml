@@ -5,13 +5,10 @@
     <string name="departures">Departures</string>
     <string name="arrivals">Arrivals</string>
     <string name="refresh">Refresh</string>
-    <string name="about">About</string>
     <string name="back">Back</string>
-    <string name="loading">Loading…</string>
     <string name="error_network">Could not reach Deutsche Bahn servers. Check your connection and try again.</string>
     <string name="no_trains">No trains in the next hours.</string>
     <string name="cancelled">Cancelled</string>
-    <string name="on_time_prob">P(≤5 min)</string>
     <string name="update_data">Update delay history</string>
 
     <!-- Dialogs -->
@@ -82,8 +79,20 @@
     <string name="not_available">n/a</string>
     <string name="percent">%1$d %%</string>
     <string name="plan_connection_from_train">Plan a connection from this train</string>
-    <string name="forecast_empirical_live">Empirical: %1$d past runs of this train here, reweighted to match its current live delay (effective %2$d runs).</string>
-    <string name="forecast_empirical">Empirical: %1$d past runs of this train at this station.</string>
+    <plurals name="forecast_empirical_live">
+        <item quantity="one">Empirical: %1$d past run of this train here, reweighted to match its current live delay (%2$s).</item>
+        <item quantity="other">Empirical: %1$d past runs of this train here, reweighted to match its current live delay (%2$s).</item>
+    </plurals>
+    <!-- Its own plural rather than a second number in the sentence above: one
+         plural selects on one count, and both counts can be 1. -->
+    <plurals name="forecast_effective_runs">
+        <item quantity="one">effective %1$d run</item>
+        <item quantity="other">effective %1$d runs</item>
+    </plurals>
+    <plurals name="forecast_empirical">
+        <item quantity="one">Empirical: %1$d past run of this train at this station.</item>
+        <item quantity="other">Empirical: %1$d past runs of this train at this station.</item>
+    </plurals>
     <string name="forecast_prior">No delay history available for this train — showing a prior estimate for its category and time of day.</string>
     <string name="live_note_ignored_on_time">" DB currently reports this train on time, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>
     <string name="live_note_ignored_early">" DB currently reports this train ahead of schedule, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>

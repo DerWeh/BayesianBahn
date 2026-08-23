@@ -4,13 +4,10 @@
     <string name="departures">Abfahrten</string>
     <string name="arrivals">Ankünfte</string>
     <string name="refresh">Aktualisieren</string>
-    <string name="about">Über</string>
     <string name="back">Zurück</string>
-    <string name="loading">Wird geladen…</string>
     <string name="error_network">Server der Deutschen Bahn nicht erreichbar. Verbindung prüfen und erneut versuchen.</string>
     <string name="no_trains">Keine Züge in den nächsten Stunden.</string>
     <string name="cancelled">Fällt aus</string>
-    <string name="on_time_prob">P(≤ 5 Min.)</string>
     <string name="update_data">Verspätungsdaten aktualisieren</string>
 
     <!-- Dialoge -->
@@ -81,8 +78,18 @@
     <string name="not_available">k. A.</string>
     <string name="percent">%1$d %%</string>
     <string name="plan_connection_from_train">Anschluss ab diesem Zug planen</string>
-    <string name="forecast_empirical_live">Empirisch: %1$d frühere Fahrten dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (effektiv %2$d Fahrten).</string>
-    <string name="forecast_empirical">Empirisch: %1$d frühere Fahrten dieses Zuges an diesem Bahnhof.</string>
+    <plurals name="forecast_empirical_live">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>
+    </plurals>
+    <plurals name="forecast_effective_runs">
+        <item quantity="one">effektiv %1$d Fahrt</item>
+        <item quantity="other">effektiv %1$d Fahrten</item>
+    </plurals>
+    <plurals name="forecast_empirical">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges an diesem Bahnhof.</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges an diesem Bahnhof.</item>
+    </plurals>
     <string name="forecast_prior">Keine Verspätungshistorie für diesen Zug — gezeigt wird eine A-priori-Schätzung für seine Zuggattung und Tageszeit.</string>
     <string name="live_note_ignored_on_time">" Die DB meldet diesen Zug derzeit als pünktlich, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>
     <string name="live_note_ignored_early">" Die DB meldet diesen Zug derzeit als verfrüht, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>

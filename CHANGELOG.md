@@ -35,6 +35,13 @@ fixes; expect breaking changes between minors until 1.0).
   medians of the two forecasts are close and the difference between them is in
   the large errors, which an average cannot show.
 
+### Fixed
+- A forecast drawn from a single past run no longer reads "1 past runs". Both
+  sentences that count runs are plurals now, in both languages, and so is the
+  effective-run count one of them ends on — a plural chooses on one number,
+  and either of those two can be 1. The English wording carried this from the
+  start; translating it is what made it visible.
+
 ## [0.1.4] - 2026-08-22
 
 ### Fixed

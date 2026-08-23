@@ -32,6 +32,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -205,13 +206,24 @@ private fun PredictionContent(
 
         Text(
             when (forecast.source) {
-                ForecastSource.EMPIRICAL_LIVE -> stringResource(
-                    R.string.forecast_empirical_live,
+                ForecastSource.EMPIRICAL_LIVE -> {
+                    val effective = forecast.effectiveRuns.roundToInt()
+                    pluralStringResource(
+                        R.plurals.forecast_empirical_live,
+                        forecast.runCount,
+                        forecast.runCount,
+                        pluralStringResource(
+                            R.plurals.forecast_effective_runs,
+                            effective,
+                            effective,
+                        ),
+                    )
+                }
+                ForecastSource.EMPIRICAL -> pluralStringResource(
+                    R.plurals.forecast_empirical,
                     forecast.runCount,
-                    forecast.effectiveRuns.roundToInt(),
+                    forecast.runCount,
                 )
-                ForecastSource.EMPIRICAL ->
-                    stringResource(R.string.forecast_empirical, forecast.runCount)
                 ForecastSource.PRIOR -> stringResource(R.string.forecast_prior)
             } + ignoredLiveNote(forecast.ignoredLiveDelay),
             style = MaterialTheme.typography.bodySmall,
