@@ -129,6 +129,42 @@ class TranslationCompletenessTest {
     }
 
     /** Positional specifiers only — `%1$s` and friends, not a literal `%%`. */
+    /**
+     * Strings that are meant to read the same in every language: pure format
+     * strings, and names that are not words. Everything else being identical
+     * across two locales means one of them was never translated.
+     */
+    private val localeNeutral = setOf("action_ok", "eva_number")
+
+    @Test
+    fun `no translated string is left as another language's wording`() {
+        val base = strings("values")
+        for (locale in translations) {
+            for ((key, value) in strings("values-$locale")) {
+                val english = base[key] ?: continue
+                if (english.trim() != value.trim() || key in localeNeutral) continue
+                assertTrue(
+                    "$key reads identically in values and values-$locale " +
+                        "(\"${english.trim()}\") — either translate it or add it to " +
+                        "localeNeutral. `platform_chip` shipped as the German " +
+                        "\"Gl.\" in English for exactly this reason.",
+                    !hasWords(english),
+                )
+            }
+        }
+    }
+
+    /**
+     * Whether anything is left to translate once the format arguments go.
+     *
+     * Two letters, not three. The bug this guards against was `Gl.` — the
+     * German short form of *Gleis* sitting in the English strings — and a
+     * three-letter threshold skipped straight past it.
+     */
+    private fun hasWords(value: String): Boolean =
+        Regex("[A-Za-z\\u00C0-\\u024F]{2,}")
+            .containsMatchIn(value.replace(Regex("%[0-9]+\\\$[sd]"), " ").replace("%%", " "))
+
     private fun formatArguments(value: String): Set<String> =
         Regex("""%\d+\$[a-zA-Z]""").findAll(value).map { it.value }.toSet()
 

@@ -36,6 +36,10 @@ fixes; expect breaking changes between minors until 1.0).
   the large errors, which an average cannot show.
 
 ### Fixed
+- The English interface says "Platform" where it said "Gl." — the German
+  abbreviation for *Gleis*. It had been hardcoded in two screens since long
+  before there was a German translation for it to belong to, and the
+  extraction into resources carried it across faithfully.
 - A forecast drawn from a single past run no longer reads "1 past runs". Both
   sentences that count runs are plurals now, in both languages, and so is the
   effective-run count one of them ends on — a plural chooses on one number,

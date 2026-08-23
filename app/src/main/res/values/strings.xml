@@ -67,8 +67,8 @@
 
     <!-- Prediction -->
     <string name="planned_time_inline">"  ·  plan %1$s"</string>
-    <string name="platform_inline">"  ·  Gl. %1$s"</string>
-    <string name="platform_chip">Gl. %1$s</string>
+    <string name="platform_inline">"  ·  Platform %1$s"</string>
+    <string name="platform_chip">Plat. %1$s</string>
     <string name="predicted_arrival">Predicted arrival</string>
     <string name="predicted_departure">Predicted departure</string>
     <string name="delay_minutes">+%1$d min</string>
