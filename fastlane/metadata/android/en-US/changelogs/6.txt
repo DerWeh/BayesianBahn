@@ -1,0 +1,9 @@
+DB's live number is now believed only when it reports a delay. For
+most trains DB restates the timetable, which is not an observation:
+over seven collected days it called 99% of trains three hours out
+"on time", and a quarter of those arrived more than two minutes late.
+Expect the app to disagree with the platform display more often; the
+prediction screen says why. Scored against DB's own forecasts, this
+version comes out lower on arrival times and on missed connections.
+
+The interface is now available in German.

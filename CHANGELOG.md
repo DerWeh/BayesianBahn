@@ -7,6 +7,8 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-24
+
 ### Added
 - A German interface, used on a phone set to German; English stays the default
   and the fallback. Every text the app shows is now a translatable resource,
@@ -28,14 +30,15 @@ fixes; expect breaking changes between minors until 1.0).
 ### Changed
 - **DB's live number is only used when it reports a delay.** DB states a stop
   in four shapes and three of them mean "on time"; only one is an observation.
-  Scored against the archive over three collected days, DB called a train on
-  time for 61% of stops ten minutes before departure and 99% of stops three
-  hours out — and 31% of that last group arrived more than two minutes late.
-  Anchoring the forecast on that number was worth 0.53 minutes of CRPS on
-  trains that have history, and it left the stated 80% range covering 55% of
-  arrivals. Reports of "early" are ignored on the same grounds: those trains
-  averaged 1.4 minutes late. The app will now disagree with the platform
-  display for most trains, and the prediction screen says why.
+  Over seven collected days, DB called a train on time for 69% of stops ten
+  minutes before departure and 99% of stops three hours out — and 26% of that
+  last group arrived more than two minutes late. Reports of "early" are ignored
+  on the same grounds: those trains averaged 1.0 minute late. Measured over the
+  first three days, anchoring the forecast on that number cost 0.53 minutes of
+  CRPS on trains that have history and left the stated 80% range covering 55%
+  of arrivals; with the rule in place that range covers 78-89% of arrivals,
+  day by day. The app will now disagree with the platform display for most
+  trains, and the prediction screen says why.
 - The connection model applies the same rule to a live *departure* report. It
   had been treating one as fact — reported later than the passenger can arrive
   meant missed, otherwise caught, with no distribution in between — so a train
@@ -44,7 +47,19 @@ fixes; expect breaking changes between minors until 1.0).
 - The evaluation report shows the distribution of the errors, not only their
   averages: a box plot per lead-time bucket and the tail as figures. The
   medians of the two forecasts are close and the difference between them is in
-  the large errors, which an average cannot show.
+  the large errors, which an average cannot show. With a weekend in the data it
+  also splits working days from the weekend, which had been a caveat it could
+  not check: DB's own mean error is 3.14 minutes from Monday to Friday against
+  1.84 at the weekend, so the two are different problems.
+- Over the seven days published in
+  [the evaluation](https://derweh.github.io/BayesianBahn/evaluation/), this
+  release scores 0.523 minutes of CRPS below DB's own forecast (95% interval
+  0.489 to 0.556) across 121,395 predictions, and 0.211 Brier below it on the
+  7,246 connections that were actually missed. Without the rule above the same
+  model is 0.310 below DB on arrivals and cannot be separated from it on missed
+  connections at all. Two caveats travel with those numbers: seven days is a
+  small sample for something that clusters by line and by incident, and every
+  feasible change counts as a connection, including ones nobody would make.
 
 ### Fixed
 - The English interface says "Platform" where it said "Gl." — the German
@@ -181,6 +196,7 @@ times and connections with DB's official apps.
   Augsburg/München region; optional bulk download for offline use,
   refreshed daily to within ~a day of reality.
 
+[0.2.0]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.2.0
 [0.1.4]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.4
 [0.1.3]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.3
 [0.1.2]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.2

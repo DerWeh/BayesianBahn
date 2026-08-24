@@ -14,8 +14,8 @@ android {
         applicationId = "io.github.derweh.bayesianbahn"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.2.0"
     }
 
     // Release signing from an untracked keystore.properties (or CI secrets);
