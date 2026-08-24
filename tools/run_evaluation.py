@@ -68,9 +68,17 @@ def gradle_wrapper() -> str:
     return str(ROOT / ("gradlew.bat" if os.name == "nt" else "gradlew"))
 
 
-def score_day(day: str, scored: Path, station_list: str) -> None:
+def score_day(day: str, scored: Path, station_list: str,
+              cohort: int = 1) -> None:
     out = scored / day
     (out / "raw").mkdir(parents=True, exist_ok=True)
+    # Which registered group of origins to score. The cohorts are never pooled:
+    # they were sampled on different axes and started on different days, so a
+    # figure over both describes neither. Cohort 1 is what the published page
+    # speaks for; a later one is scored by asking for it.
+    suffix = [] if cohort == 1 else ["--cohort", str(cohort)]
+    ends = TOOLS / ("forecast_destinations.csv" if cohort == 1
+                    else f"forecast_destinations_cohort{cohort}.csv")
     truth_dir = out / "truthdir"
 
     # The archive fetch is the slow, network-bound stage and its output never
@@ -87,15 +95,17 @@ def score_day(day: str, scored: Path, station_list: str) -> None:
 
     print(f"== {day}: building events")
     run(python("tools/score_events.py", "events", "--day", day, "--truth", "archive",
-               "--data-dir", str(truth_dir), "--events-out", str(out / "arrivals.jsonl")))
+               "--data-dir", str(truth_dir), *suffix,
+               "--events-out", str(out / "arrivals.jsonl")))
     run(python("tools/score_events.py", "connections", "--day", day,
-               "--data-dir", str(truth_dir),
+               "--data-dir", str(truth_dir), *suffix,
                "--events-out", str(out / "connections.jsonl")))
     # Two-leg journeys need a forecast at the far end, which only exists from
     # the day the second tier started being polled. Before that the builder
     # produces nothing, which is the honest outcome and not an error.
     run(python("tools/score_events.py", "journeys", "--day", day,
-               "--data-dir", str(truth_dir),
+               "--data-dir", str(truth_dir), *suffix,
+               "--destinations", str(ends),
                "--events-out", str(out / "journeys.jsonl")))
 
     # Shards are cached across days and trimmed inside the harness to runs
@@ -143,6 +153,8 @@ def main() -> None:
     ap.add_argument("days", nargs="+", help="YYYY-MM-DD, one per collected day")
     ap.add_argument("--scored-dir", type=Path, default=TOOLS / ".scored")
     ap.add_argument("--skip-report", action="store_true")
+    ap.add_argument("--cohort", type=int, default=1,
+                    help="which registered group of origins to score")
     # The collector runs on a laptop, so nothing in CI can rebuild this page:
     # publishing is a local render into the tree, then a commit.
     ap.add_argument("--publish", action="store_true",
@@ -152,9 +164,11 @@ def main() -> None:
     args = ap.parse_args()
 
     station_list = stations(TOOLS / "forecast_stations.csv",
-                            TOOLS / "forecast_destinations.csv")
+                            TOOLS / "forecast_destinations.csv",
+                            TOOLS / "forecast_stations_cohort2.csv",
+                            TOOLS / "forecast_destinations_cohort2.csv")
     for day in args.days:
-        score_day(day, args.scored_dir, station_list)
+        score_day(day, args.scored_dir, station_list, args.cohort)
 
     if not args.skip_report:
         print("== rendering the report")

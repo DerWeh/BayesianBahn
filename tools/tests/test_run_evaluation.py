@@ -170,3 +170,35 @@ def test_the_real_two_tier_list_parses() -> None:
     evas = got.split(",")
     assert len(evas) == len(set(evas)), "the archive filter is a set"
     assert evas[:20] == re_.stations(TOOLS / "forecast_stations.csv").split(",")
+
+
+def test_the_first_cohort_is_scored_without_being_asked_for(tmp_path, monkeypatch):
+    """It is what every published figure so far speaks for, so it stays the
+    default and the flag is what selects anything else."""
+    calls, _ = stub_run(monkeypatch, "2026-08-17", tmp_path, journeys='{"a":1}\n')
+    re_.score_day("2026-08-17", tmp_path, "8000001")
+    joined = " ".join(" ".join(c) for c in calls)
+    assert "--cohort" not in joined
+    assert "forecast_destinations.csv" in joined
+
+
+def test_a_later_cohort_is_scored_with_its_own_far_ends(tmp_path, monkeypatch):
+    """Its own, not the first cohort's: the far ends were derived from its own
+    origins, and scoring it against another cohort's would find almost none."""
+    calls, _ = stub_run(monkeypatch, "2026-08-17", tmp_path, journeys='{"a":1}\n')
+    re_.score_day("2026-08-17", tmp_path, "8000001", cohort=2)
+    joined = " ".join(" ".join(c) for c in calls)
+    assert "--cohort 2" in joined
+    assert "forecast_destinations_cohort2.csv" in joined
+
+
+def test_the_truth_filter_covers_every_cohort() -> None:
+    """A far end with no recorded arrival cannot end a scored journey, so every
+    station any cohort might need truth for has to survive the archive trim."""
+    got = re_.stations(TOOLS / "forecast_stations.csv",
+                       TOOLS / "forecast_destinations.csv",
+                       TOOLS / "forecast_stations_cohort2.csv",
+                       TOOLS / "forecast_destinations_cohort2.csv").split(",")
+    import collect_forecasts as cf
+    assert set(got) == {s.eva for s in cf.station_set(TOOLS)}
+    assert len(got) == len(set(got))
