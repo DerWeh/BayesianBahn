@@ -28,3 +28,6 @@ tools/.iris-cache/
 keystore.properties
 *.jks
 *.keystore
+
+# Signed APKs staged for a GitHub release; the release is the copy that counts
+dist/
