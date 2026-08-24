@@ -165,24 +165,17 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
-- **Score complete journeys, not only their parts.** The evaluation scores an
-  arrival time for a journey without a change and a catch probability for one
-  with a change, and cannot compare the two: it never follows a passenger
-  through a transfer to their destination. Answering "is the app better where
-  you have to change?" needs the connecting train's *destination* arrival, and
-  DB's own forecast for it, which IRIS serves only from that station's feed.
-  *Collection for this is in place since 2026-08-24*: `collect_forecasts.py`
-  now polls a second tier of stations — the termini of the trains leaving the
-  twenty pre-registered ones, derived from the timetable by
-  `build_destinations.py` — and keeps each departure's whole onward path. Tier
-  2 supplies the far end only; it never originates a scored arrival or
-  connection, so the pre-registered set is unchanged. What remains is the
-  scorer: follow the passenger onto whichever train they actually catch and
-  compare the predicted final arrival with the one that happened, in the same
-  units as a direct journey. It can only cover days collected under the second
-  tier. Tagging arrivals by whether a connection leaves from them is not a
-  substitute: 96% of them qualify, and the remainder is last trains and
-  terminus arrivals rather than direct journeys.
+- Stratify the report by the kind of line, now that the second cohort samples
+  it: does the advantage hold on a single-track branch as well as on a
+  multi-track corridor, and where long-distance services share the tracks? Each
+  station carries its busiest-segment traffic and long-distance share in
+  `forecast_stations_cohort2.csv`; the report does not read them yet.
+- Track count and freight are still not observed. Both drive delay and neither
+  appears in a passenger timetable, so `network_graph.py` uses segment traffic
+  and traffic mix as proxies and says so. OpenStreetMap has the track data but
+  rate-limits per-station queries and leaves `tracks` unset on most German ways
+  — double track is mapped as two ways — so using it needs a bulk extract
+  rather than an API.
 - On-device [TabICL v2](https://github.com/soda-inria/tabicl) (BSD-3) via ONNX
   Runtime as the conditional model: context = this connection's historical
   runs, query = today's features, output = full predictive distribution.
