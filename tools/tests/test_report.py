@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -558,14 +559,23 @@ def test_only_model_and_scoring_files_count_as_dirty():
     assert 'startswith(("app/src/main/", "tools/", "pipeline/"))' in body
 
 
+def fake_prov(**over):
+    """A complete provenance dict. One place to keep in step with the real one:
+    `render` reads every key directly, so a test that builds its own by hand
+    starts failing with a KeyError the day a key is added."""
+    return {"commit": "a" * 40, "short": "a" * 12, "version": "0.1.4",
+            "code": "5", "tag": "", "release": "", "dirty": [], **over}
+
+
+def test_the_fake_provenance_has_the_keys_the_real_one_has():
+    assert set(fake_prov()) == set(R.provenance())
+
+
 def test_an_unreleased_commit_is_labelled_as_such(tmp_path, monkeypatch):
     out = tmp_path / "report.html"
     rows = [arrival(num=str(i)) for i in range(4)]
     conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
-    monkeypatch.setattr(R, "provenance", lambda: {
-        "commit": "a" * 40, "short": "a" * 12, "version": "0.1.4",
-        "code": "5", "tag": "", "dirty": [],
-    })
+    monkeypatch.setattr(R, "provenance", lambda: fake_prov())
     R.render(["2026-08-17"], R.arrivals_table(rows, rows),
              R.connections_table(conn, conn), R.outcome_split(conn, conn),
              {"events": 4, "connections": 4}, out,
@@ -615,10 +625,8 @@ def test_the_full_commit_is_in_the_footer(tmp_path, monkeypatch):
     out = tmp_path / "report.html"
     rows = [arrival(num=str(i)) for i in range(4)]
     conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
-    monkeypatch.setattr(R, "provenance", lambda: {
-        "commit": "d" * 40, "short": "d" * 12, "version": "0.2.0",
-        "code": "6", "tag": "", "dirty": [],
-    })
+    monkeypatch.setattr(R, "provenance", lambda: fake_prov(
+        commit="d" * 40, short="d" * 12, version="0.2.0", code="6"))
     R.render(["2026-08-17"], R.arrivals_table(rows, rows),
              R.connections_table(conn, conn), R.outcome_split(conn, conn),
              {"events": 4, "connections": 4}, out,
@@ -700,3 +708,205 @@ def test_a_part_of_the_week_with_no_missed_connection_says_so():
     rows = R.week_split(*days(a_day("2026-08-17", [arrival()],
                                     [connection(caught=True)])))
     assert rows[0]["missed_n"] == 0 and rows[0]["missed"] is None
+
+
+# --- the box plot has to be readable, not merely correct ---------------------
+#
+# DB answers in whole minutes, so its per-event error piles onto the integers:
+# in the collected data p25 is 0.00 and p50 and p75 are both 1.00 in the <10m
+# bucket. A median drawn only across the box then lands exactly on the box's own
+# rounded top edge and disappears, leaving the reader with the boxes alone — and
+# DB's box reaches further down (to zero, which only a point forecast can reach)
+# while its median is the higher of the two. The chart then says the opposite of
+# the table underneath it. Everything below guards that reading.
+
+
+def median_lines(svg: str) -> list[tuple[float, float, float]]:
+    """(x1, x2, y) of every mark drawn in ink — the medians."""
+    out = []
+    for m in re.finditer(r'<line x1="([0-9.]+)" x2="([0-9.]+)" y1="([0-9.]+)" '
+                         r'y2="\3" stroke="var\(--ink\)"', svg):
+        out.append((float(m.group(1)), float(m.group(2)), float(m.group(3))))
+    return out
+
+
+def boxes(svg: str) -> list[tuple[float, float]]:
+    """(x, width) of every box rect."""
+    return [(float(x), float(w)) for x, w in
+            re.findall(r'<rect x="([0-9.]+)"[^>]*width="([0-9.]+)"', svg)]
+
+
+def tied_at_the_hinge():
+    """A bucket where DB's median equals its own p75, as it does at <10m.
+
+    A quarter exactly right, most one minute out, the rest four: enough ties on
+    the integer 1 that both the 50th and the 75th percentile land on it.
+    """
+    def db_for(i):
+        return 2 if i < 25 else (3 if i < 85 else 6)
+    return R.error_spread([arrival(num=str(i), db=db_for(i), truth=2,
+                                   crps=0.4 + i / 50)
+                           for i in range(100)])
+
+
+def test_the_median_is_drawn_even_when_it_lands_on_a_box_edge():
+    rows = tied_at_the_hinge()
+    assert rows[0]["db"]["p50"] == rows[0]["db"]["p75"], "the case being guarded"
+    svg = R.box_chart(rows, ["db", "live"], y_label="minutes")
+    assert len(median_lines(svg)) == 2 * len(rows)
+
+
+def test_the_median_overhangs_its_box_on_both_sides():
+    """The overhang is what survives the coincidence: a line the width of the
+    box, sitting on the box's edge, is the edge."""
+    svg = R.box_chart(tied_at_the_hinge(), ["db", "live"], y_label="minutes")
+    for (x1, x2, _), (bx, bw) in zip(median_lines(svg), boxes(svg)):
+        assert x1 < bx and x2 > bx + bw
+
+
+def test_the_median_is_not_drawn_in_the_surface_colour():
+    """It used to be, which reads against a fill and vanishes against the page
+    — and the page is exactly what is behind it when it sits on an edge."""
+    svg = R.box_chart(tied_at_the_hinge(), ["db", "live"], y_label="minutes")
+    assert 'stroke="var(--panel)"' not in svg
+
+
+def test_only_a_point_forecast_can_score_zero():
+    """The asymmetry the caption now states: DB names one minute and can be
+    exactly right; a distribution always pays for its spread."""
+    assert R.score_spread([0.0, 0.0, 1.0, 2.0])["zeros"] == pytest.approx(0.5)
+    assert R.score_spread([0.2, 0.5, 1.0])["zeros"] == 0.0
+
+
+def test_the_spread_counts_how_often_db_scores_lower():
+    """Slightly more than half, while its mean is higher — the sentence that
+    stops the chart being read as a contradiction of the table."""
+    rows = R.error_spread([arrival(num="1", db=2, truth=2, crps=1.0),
+                           arrival(num="2", db=2, truth=2, crps=1.0),
+                           arrival(num="3", db=9, truth=2, crps=1.0)])
+    assert rows[0]["db_wins"] == pytest.approx(2 / 3)
+
+
+def test_a_tie_counts_for_neither_forecast():
+    rows = R.error_spread([arrival(num="1", db=3, truth=2, crps=1.0)])
+    assert rows[0]["db_wins"] == 0.0
+
+
+def test_the_page_states_the_zero_score_asymmetry(tmp_path):
+    """Without it the bottom of the boxes is read as a like-for-like race."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i), db=2, truth=2 + (i > 5), crps=float(i) / 4)
+            for i in range(8)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": len(rows), "connections": len(conn)}, out,
+             gaps=R.headline(rows, rows, conn, conn),
+             spread=R.error_spread(rows))
+    page = out.read_text(encoding="utf-8")
+    assert "A distribution cannot score zero" in page
+    assert "DB lower on the prediction" in page
+
+
+# --- provenance: the claim that a figure is traceable ------------------------
+#
+# This block is the page's only defence against publishing numbers nobody can
+# reproduce, and both failures it had were silent. `git status --porcelain`
+# puts the status in columns 1-2, so `.strip()` on the whole output shifted the
+# first line left by one and dropped that file from the dirty list — with a
+# single uncommitted file, the page announced a clean tree. And `git diff
+# --quiet` reports "differs" through exit code 1, which the helper swallows
+# into the same empty string it returns for "identical", so a check written
+# with it passes whatever the trees hold.
+
+
+def repo(tmp_path: Path, version: str = "0.2.0") -> Path:
+    """A git repository shaped like this one: app code, a tag, a generator."""
+    def run(*args):
+        subprocess.run(args, cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "app/src/main").mkdir(parents=True)
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "app/build.gradle.kts").write_text(
+        f'versionCode = 6\nversionName = "{version}"\n', encoding="utf-8")
+    (tmp_path / "app/src/main/Model.kt").write_text("fun predict() = 1\n",
+                                                    encoding="utf-8")
+    # Tracked from the start: git collapses a wholly untracked directory to
+    # `?? tools/`, which would make the test agree with a bug it is not about.
+    (tmp_path / "tools/report.py").write_text("# generator\n", encoding="utf-8")
+    run("git", "init", "-q", "-b", "main")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "T")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "release")
+    run("git", "tag", f"v{version}")
+    return tmp_path
+
+
+def commit_a_generator_change(path: Path) -> None:
+    """A commit that moves HEAD past the tag without touching the model."""
+    def run(*args):
+        subprocess.run(args, cwd=path, check=True, capture_output=True)
+    (path / "tools/report.py").write_text("# regenerated\n", encoding="utf-8")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "re-render")
+
+
+def test_a_single_uncommitted_file_is_still_reported(tmp_path, monkeypatch):
+    """The exact shape of the bug: one modified file, and it is the first line
+    of `git status --porcelain`, which is where the strip did its damage."""
+    monkeypatch.setattr(R, "ROOT", repo(tmp_path))
+    (tmp_path / "app/src/main/Model.kt").write_text("fun predict() = 2\n",
+                                                    encoding="utf-8")
+    assert R.provenance()["dirty"] == ["app/src/main/Model.kt"]
+
+
+def test_every_uncommitted_file_is_reported_not_all_but_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "ROOT", repo(tmp_path))
+    (tmp_path / "app/src/main/Model.kt").write_text("x\n", encoding="utf-8")
+    (tmp_path / "tools/report.py").write_text("y\n", encoding="utf-8")
+    assert R.provenance()["dirty"] == ["app/src/main/Model.kt", "tools/report.py"]
+
+
+def test_a_clean_tree_reports_nothing_dirty(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "ROOT", repo(tmp_path))
+    assert R.provenance()["dirty"] == []
+
+
+def test_the_tag_is_named_when_head_is_the_tag(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "ROOT", repo(tmp_path))
+    assert R.provenance()["tag"] == "v0.2.0"
+
+
+def test_a_page_only_commit_still_carries_the_released_model(tmp_path, monkeypatch):
+    """Publishing the page moves HEAD past the tag. The model did not move, and
+    calling it unreleased is the same error as calling it released."""
+    path = repo(tmp_path)
+    commit_a_generator_change(path)
+    monkeypatch.setattr(R, "ROOT", path)
+    prov = R.provenance()
+    assert prov["tag"] == "", "HEAD is no longer the tag"
+    assert prov["release"] == "v0.2.0"
+
+
+def test_a_changed_model_is_not_the_released_one(tmp_path, monkeypatch):
+    """The guard against the exit-code trap: this must come out empty, and with
+    `git diff --quiet` behind it, it did not."""
+    path = repo(tmp_path)
+    (path / "app/src/main/Model.kt").write_text("fun predict() = 99\n",
+                                                encoding="utf-8")
+    subprocess.run(["git", "commit", "-aqm", "new model"], cwd=path, check=True,
+                   capture_output=True)
+    monkeypatch.setattr(R, "ROOT", path)
+    assert R.provenance()["release"] == ""
+
+
+def test_a_version_with_no_tag_at_all_is_not_a_release(tmp_path, monkeypatch):
+    path = repo(tmp_path)
+    (path / "app/build.gradle.kts").write_text(
+        'versionCode = 7\nversionName = "0.3.0"\n', encoding="utf-8")
+    subprocess.run(["git", "commit", "-aqm", "bump"], cwd=path, check=True,
+                   capture_output=True)
+    monkeypatch.setattr(R, "ROOT", path)
+    prov = R.provenance()
+    assert prov["version"] == "0.3.0" and prov["release"] == "" and prov["tag"] == ""

@@ -202,6 +202,11 @@ def score_spread(values: np.ndarray) -> dict:
         "max": float(a[-1]),
         "bad": float(np.mean(a > BAD_MINUTES)),
         "awful": float(np.mean(a > AWFUL_MINUTES)),
+        # Exactly right, which only a point forecast can be: DB names one
+        # minute and the train arrives in it. A distribution always pays
+        # something for its spread, so this is zero for us by construction —
+        # and it is what pins DB's lower quantiles to the axis.
+        "zeros": float(np.mean(a == 0.0)),
     }
 
 
@@ -213,6 +218,12 @@ def error_spread(live) -> list[dict]:
     so the median is a tie, and everything that separates them sits in the
     upper tail. A passenger does not notice the minute; they notice the
     twenty-minute miss nobody flagged.
+
+    `db_wins` is the share of predictions where DB's own score is the lower one.
+    It belongs next to the quantiles because it is what makes them readable:
+    DB scores lower on slightly more than half of the individual predictions
+    and still has the higher mean, which is the tail stated as a count rather
+    than as a percentile.
     """
     df = with_lead(live)
     if not df.height:
@@ -229,6 +240,7 @@ def error_spread(live) -> list[dict]:
             "n": group.height,
             "db": score_spread(group["_db_err"].to_numpy()),
             "live": score_spread(group["crps"].to_numpy()),
+            "db_wins": float((group["_db_err"] < group["crps"]).mean()),
         })
     return rows
 
@@ -641,6 +653,10 @@ def bar_chart(rows, keys, *, y_label, label_key, height=240, y_max=None,
 
 
 
+# How far the median mark sticks out past the box on each side.
+MEDIAN_OVERHANG = 4.0
+
+
 def box_chart(rows, keys, *, y_label, height=300) -> str:
     """Box-and-whisker per category: box p25-p75, median rule, whiskers p10-p90.
 
@@ -690,10 +706,18 @@ def box_chart(rows, keys, *, y_label, height=300) -> str:
                 f'height="{max(2.0, y(d["p25"]) - y(d["p75"])):.1f}" rx="3" '
                 f'fill="{colour}" class="marker">'
                 f'<title>{html.escape(title)}</title></rect>')
-            # Median in the surface colour so it reads against the fill.
-            parts.append(f'<line x1="{bx:.1f}" x2="{bx + box_w:.1f}" '
+            # The median overhangs the box on both sides, and is drawn in ink
+            # rather than in the surface colour. A median that lands exactly on
+            # a hinge — DB's does, at <10m, where p50 and p75 are both 1.00 —
+            # would otherwise be a surface-coloured line along the box's own
+            # rounded edge, which is to say invisible; the reader then has only
+            # the box to go on, and DB's box reaches lower while its median is
+            # higher. Ink reads against both fills and against the page, so the
+            # overhang is visible wherever the median falls.
+            parts.append(f'<line x1="{bx - MEDIAN_OVERHANG:.1f}" '
+                         f'x2="{bx + box_w + MEDIAN_OVERHANG:.1f}" '
                          f'y1="{y(d["p50"]):.1f}" y2="{y(d["p50"]):.1f}" '
-                         f'stroke="var(--panel)" stroke-width="2"/>')
+                         f'stroke="var(--ink)" stroke-width="2"/>')
         parts.append(f'<text class="tick" x="{centre:.1f}" y="{height - pad_b + 20}" '
                      f'text-anchor="middle">{html.escape(row["bucket"])}</text>')
     parts.append(f'<text class="axis-label" x="{pad_l}" y="{height - 6}">'
@@ -865,9 +889,14 @@ def provenance() -> dict:
     figure on this page traceable to the code that produced it.
     """
     def git(*args: str) -> str:
+        """Trailing whitespace only. `git status --porcelain` puts the status
+        in the first two columns, so a leading space is data: stripping both
+        ends shifted the *first* line left by one and dropped it from the dirty
+        list below. With a single uncommitted file that is the whole list, and
+        the page then claimed to be reproducible from the commit alone."""
         try:
             return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
-                                  text=True, check=True).stdout.strip()
+                                  text=True, check=True).stdout.rstrip()
         except (OSError, subprocess.CalledProcessError):
             return ""
 
@@ -880,12 +909,31 @@ def provenance() -> dict:
     dirty = [line[3:] for line in git("status", "--porcelain").splitlines()
              if line[3:].startswith(("app/src/main/", "tools/", "pipeline/"))]
     described = git("describe", "--tags", "--exact-match") or ""
+    version = name.group(1) if name else "unknown"
+    # `--exact-match` answers a question about the whole repository, and the
+    # sentence this feeds is about the model. A commit that only re-renders
+    # this page, or edits its generator, still carries the released model — and
+    # calling that "not a released version" is as wrong as the mistake the
+    # check was added to catch. So: is the app code identical to the tag this
+    # version claims to be? The tag has to be the matching one, because two
+    # releases can share app code (0.1.4 changed none) and answering with the
+    # older of them would be a different claim.
+    release = f"v{version}"
+    # `--name-only` and not `--quiet`: `--quiet` signals "differs" through exit
+    # code 1, which `git()` swallows into the same empty string it returns for
+    # "identical", so every comparison would have come out equal.
+    same_app = bool(described) or (
+        git("rev-parse", "--verify", f"{release}^{{commit}}") != ""
+        and git("diff", "--name-only", release, "HEAD", "--",
+                "app/src/main", "app/build.gradle.kts") == "")
     return {
         "commit": commit,
         "short": commit[:12],
-        "version": name.group(1) if name else "unknown",
+        "version": version,
         "code": code.group(1) if code else "?",
         "tag": described,
+        # The tag whose app code this is, even when HEAD has moved past it.
+        "release": release if same_app else "",
         "dirty": sorted(dirty),
     }
 
@@ -916,6 +964,12 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     elif prov["tag"]:
         release_note = (f"That commit is the released tag <code>{html.escape(prov['tag'])}</code>, "
                         "so this is the model in that version of the app.")
+    elif prov["release"]:
+        release_note = (
+            "The app code at that commit is identical to the released tag "
+            f"<code>{html.escape(prov['release'])}</code>, so this is the model "
+            "in that version of the app; the commits since the tag change only "
+            "this page and how it is generated.")
     else:
         release_note = ("That commit is <strong>not a released version</strong>: the app "
                         "published in the stores does not contain this model unless a "
@@ -1029,16 +1083,31 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   where it should not be.</p>""")
     if spread:
         scored_here = sum(r["n"] for r in spread)
+        zero_share = (sum(r["n"] * r["db"]["zeros"] for r in spread)
+                      / max(scored_here, 1))
         doc.append(f"""
   <h3>How the errors are distributed</h3>
-  <p>The means above summarise a skewed distribution, and the two forecasts
-  differ mainly in its upper tail: the medians are close, while the large
-  errors are not equally common. Both parts are worth reading, since a forecast
-  a minute out and one twenty minutes out have very different consequences for
-  a passenger. The box spans the middle half of the
-  predictions, the line across it is the median, and the whiskers reach the
-  10th and 90th percentiles, so the worst tenth of each forecast reaches past
-  the whisker and is given exactly in the table below.</p>""")
+  <p>The means above summarise a badly skewed distribution, and the two
+  forecasts differ in its upper tail rather than in its middle. That is worth
+  reading in full, because a forecast a minute out and one twenty minutes out
+  have very different consequences for a passenger.</p>
+  <p>One asymmetry has to be held in mind while reading the boxes. DB answers
+  with a single minute, so its error is a whole number of minutes and is
+  <em>exactly</em> zero — the train arrived in the minute DB named — for
+  {pct(zero_share)} of all predictions here. A distribution cannot score zero:
+  it always pays something for its own spread, however well placed it is. So
+  the <em>bottom</em> of the two boxes is not a like-for-like comparison and
+  should not be read as one; the medians and everything above them are. The
+  same asymmetry is why DB's median is exactly 1.00 minute in every bucket.</p>
+  <p>The last two columns of the table are the point. DB's score is the lower
+  one on slightly more than half of the individual predictions, and its mean is
+  higher all the same. Being closer more often and worse on average is what a
+  heavy tail looks like from the inside.</p>
+  <p>The box spans the middle half of the predictions, the ruled line across
+  it — overhanging on both sides, so it stays visible where it meets a box
+  edge — is the median, and the whiskers reach the 10th and 90th percentiles.
+  The worst tenth of each forecast therefore reaches past the whisker, and is
+  given exactly in the table below.</p>""")
         doc.append('<div class="figure">')
         doc.append(legend(["db", "live"]))
         doc.append(box_chart(spread, ["db", "live"],
@@ -1059,6 +1128,10 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
              lambda r: pct(r["db"]["awful"], 1)),
             ("livebad", f"Ours over {AWFUL_MINUTES} min",
              lambda r: pct(r["live"]["awful"], 1)),
+            ("db_wins", "DB lower on the prediction",
+             lambda r: pct(r["db_wins"], 1)),
+            ("dbmean", "DB mean", lambda r: num(r["db"]["mean"])),
+            ("livemean", "Our mean", lambda r: num(r["live"]["mean"])),
         ]))
         doc.append(f"""
   <p>The last two columns give the share of forecasts out by more than
