@@ -910,3 +910,89 @@ def test_a_version_with_no_tag_at_all_is_not_a_release(tmp_path, monkeypatch):
     monkeypatch.setattr(R, "ROOT", path)
     prov = R.provenance()
     assert prov["version"] == "0.3.0" and prov["release"] == "" and prov["tag"] == ""
+
+
+# --- journeys with a change --------------------------------------------------
+#
+# This section starts later than every other one on the page, because the far
+# end of a change only began being polled once the second tier existed. The
+# failure to guard against is therefore not a wrong number but a section that
+# appears anyway, full of zeros, and reads as a result.
+
+
+def journey(*, crps=1.0, db=2.0, truth=2.0, q10=-1.0, q90=5.0,
+            lead_minutes=30.0, candidates=4, miss_p=0.05, num="1"):
+    return {
+        "eva": "8000001", "cat": "RE", "num": num, "dest": "Musterstadt",
+        "tau": 0, "lead": lead_minutes,
+        "planned": 8 * 60 + 5, "planned_dep": 8 * 60,
+        "read_at": wall_to_epoch(8 * 60) - lead_minutes * 60,
+        "candidates": candidates, "miss_p": miss_p,
+        "db": db, "truth": truth, "crps": crps,
+        "cdf_at": 0.5, "cdf_below": 0.4, "q10": q10, "q50": 1.0, "q90": q90,
+        "source": "EMPIRICAL", "runs": 9,
+    }
+
+
+def test_the_journey_section_is_absent_until_there_is_something_in_it(tmp_path):
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn),
+             journeys=R.journeys_table([], []))
+    assert "Journeys with a change" not in out.read_text(encoding="utf-8")
+
+
+def test_the_headline_gains_no_journey_row_until_there_is_one():
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    got = R.headline(rows, rows, conn, conn, [], [])
+    assert not any("Journey" in r["what"] for r in got)
+
+
+def test_the_headline_carries_both_variants_of_the_journey():
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    trips = [journey(num=str(i)) for i in range(4)]
+    got = R.headline(rows, rows, conn, conn, trips, trips)
+    journeys = [r["what"] for r in got if "Journey" in r["what"]]
+    assert journeys == ["Journey with a change, as shipped",
+                        "Journey with a change, history only"]
+
+
+def test_a_journey_is_scored_in_the_same_units_as_a_direct_one():
+    """The whole point of the section: CRPS in minutes against DB's own error,
+    so a row here and a row from the arrivals table can be read together."""
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    trips = [journey(num=str(i), crps=1.0, db=2.0, truth=4.0) for i in range(4)]
+    got = R.headline(rows, rows, conn, conn, trips, trips)
+    row = next(r for r in got if r["what"] == "Journey with a change, as shipped")
+    assert row["unit"] == "CRPS, minutes"
+    assert row["gap"] == pytest.approx(1.0 - 2.0)
+
+
+def test_the_journey_table_is_bucketed_by_lead_time():
+    trips = (
+        [journey(num="1", lead_minutes=5.0)]
+        + [journey(num="2", lead_minutes=200.0)]
+    )
+    got = R.journeys_table(trips, trips)
+    assert [r["bucket"] for r in got] == ["<10m", ">3h"]
+
+
+def test_the_journey_table_reports_what_the_model_was_given():
+    """How many trains it chose between, and how much weight it put on catching
+    none of them — without those the CRPS is a number with no context."""
+    trips = [journey(candidates=6, miss_p=0.2), journey(num="2", candidates=2,
+                                                        miss_p=0.0)]
+    got = R.journeys_table(trips, trips)[0]
+    assert got["candidates"] == pytest.approx(4.0)
+    assert got["miss_p"] == pytest.approx(0.1)
+
+
+def test_an_empty_journey_table_is_empty_not_a_row_of_zeros():
+    assert R.journeys_table([], []) == []

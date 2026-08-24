@@ -336,7 +336,8 @@ def brier_gap(rows) -> tuple[float, float, float]:
                             - (pl.col("db_catch_p") - outcome) ** 2)
 
 
-def headline(live, blind, conn_live, conn_blind) -> list[dict]:
+def headline(live, blind, conn_live, conn_blind,
+             journey_live=(), journey_blind=()) -> list[dict]:
     """The comparisons against DB, each with the uncertainty that decides it.
 
     Without an interval a difference in the third decimal reads as a finding. It
@@ -355,6 +356,15 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
         ("Missed connections, history only", "Brier", count(missed_blind),
          brier_gap(missed_blind)),
     ]
+    # Only once the far end is being polled, which is a later start than the
+    # rest of this page: a row of zeros would read as a result.
+    if count(journey_blind):
+        rows += [
+            ("Journey with a change, as shipped", "CRPS, minutes",
+             count(journey_live), crps_gap(journey_live)),
+            ("Journey with a change, history only", "CRPS, minutes",
+             count(journey_blind), crps_gap(journey_blind)),
+        ]
     out = []
     for what, unit, n, (point, lo, hi) in rows:
         out.append({
@@ -367,6 +377,42 @@ def headline(live, blind, conn_live, conn_blind) -> list[dict]:
                        ("DB lower" if lo > 0 else "not separated"),
         })
     return out
+
+
+def journeys_table(live, blind) -> list[dict]:
+    """A journey with a change, scored as a journey: when does the passenger
+    arrive at the far end.
+
+    The same units as the direct-journey table above, deliberately: this is the
+    first row of this page that can be compared with another row of this page
+    rather than only with DB's answer to the same question. Bucketed by lead
+    time for the same reason the arrivals are — it is the axis a passenger can
+    act on.
+    """
+    live, blind = with_lead(as_frame(live)), with_lead(as_frame(blind))
+    if not blind.height:
+        return []
+    rows = []
+    for label in BUCKET_LABELS:
+        part_live = live.filter(pl.col("_bucket") == label)
+        part_blind = blind.filter(pl.col("_bucket") == label)
+        if not part_blind.height:
+            continue
+        stats = part_blind.select(
+            (pl.col("db") - pl.col("truth")).abs().mean().alias("db"),
+            pl.col("crps").mean().alias("blind"),
+            COVERED.mean().alias("blind_cover"),
+            pl.col("candidates").mean().alias("candidates"),
+            pl.col("miss_p").mean().alias("miss_p"),
+        ).to_dicts()[0]
+        rows.append({
+            "bucket": label, "n": part_blind.height, **stats,
+            **(part_live.select(pl.col("crps").mean().alias("live"),
+                                COVERED.mean().alias("live_cover")).to_dicts()[0]
+               if part_live.height else {"live": float("nan"),
+                                         "live_cover": float("nan")}),
+        })
+    return rows
 
 
 def per_day(days: list[str], live, blind, conn_live, conn_blind) -> list[dict]:
@@ -949,7 +995,7 @@ def weekday_caveat(days: list[str]) -> str:
 
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
-           gaps=(), daily=(), clock=(), spread=(), week=()) -> None:
+           gaps=(), daily=(), clock=(), spread=(), week=(), journeys=()) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -1236,6 +1282,40 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ]))
         doc.append("</section>")
 
+    if journeys:
+        totals_j = {k: sum(r[k] * r["n"] for r in journeys) / sum(r["n"] for r in journeys)
+                    for k in ("candidates", "miss_p")}
+        doc.append(f"""
+<section>
+  <h2>Journeys with a change, end to end</h2>
+  <p>Everything above scores a journey with a change by whether the change
+  works. That is not the question a passenger has, which is when they get
+  there — and it cannot be compared with the direct-journey figures, because a
+  probability and a distribution over arrival times are not in the same units.
+  This section asks the passenger's question. The answer is scored the same way
+  a direct journey is, in minutes of CRPS, so the two rows can finally be read
+  against each other.</p>
+  <p>Both forecasters are asked before the feeder sets off and see the same
+  {num(totals_j["candidates"], 1)} candidate trains on average. DB answers with
+  the arrival of whichever train its own forecasts say the passenger catches;
+  ours answers with a distribution over the arrival, which includes missing the
+  planned connection and taking a later train — it puts
+  {pct(totals_j["miss_p"], 1)} of its weight on catching none of the candidates
+  at all. The truth is the arrival of whichever train was actually caught.</p>
+  <p>This is the newest part of the page and rests on the fewest days: the far
+  end of a change only began being polled once the second tier existed, so this
+  table starts later than every other one here.</p>""")
+        doc.append(table(journeys, [
+            ("bucket", "Before departure", lambda r: html.escape(r["bucket"])),
+            ("n", "Journeys", lambda r: f"{r['n']:,}"),
+            ("db", "DB", lambda r: num(r["db"])),
+            ("blind", "History only", lambda r: num(r["blind"])),
+            ("live", "As shipped", lambda r: num(r["live"])),
+            ("blind_cover", "80% range, history", lambda r: pct(r["blind_cover"])),
+            ("live_cover", "80% range, shipped", lambda r: pct(r["live_cover"])),
+        ]))
+        doc.append("</section>")
+
     if len(week) > 1:
         when = {"Monday to Friday": "from Monday to Friday",
                 "Saturday and Sunday": "at the weekend"}
@@ -1455,6 +1535,8 @@ def main() -> None:
     blind = collect("arrivals-blind")
     conn_live = collect("connections-live")
     conn_blind = collect("connections-blind")
+    journey_live = collect("journeys-live")
+    journey_blind = collect("journeys-blind")
 
     if not blind.height:
         raise SystemExit(f"no scored arrivals under {args.scored_dir} for {args.days}")
@@ -1463,7 +1545,9 @@ def main() -> None:
            connections_table(conn_live, conn_blind),
            outcome_split(conn_live, conn_blind),
            {"events": blind.height, "connections": conn_blind.height}, args.out,
-           gaps=headline(live, blind, conn_live, conn_blind),
+           gaps=headline(live, blind, conn_live, conn_blind,
+                         journey_live, journey_blind),
+           journeys=journeys_table(journey_live, journey_blind),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
            clock=hourly(live), spread=error_spread(live),
            week=week_split(live, blind, conn_live, conn_blind))
