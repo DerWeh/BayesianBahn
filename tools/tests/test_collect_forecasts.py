@@ -398,27 +398,71 @@ def write_stations(path: Path, rows: list[tuple[str, str]]) -> Path:
     return path
 
 
+ONE = (1, "o1.csv", "d1.csv")
+TWO = (2, "o2.csv", "d2.csv")
+
+
+def roles(stations) -> list[tuple[str, int, int]]:
+    return [(s.eva, s.tier, s.cohort) for s in stations]
+
+
 def test_destinations_are_loaded_as_a_second_tier(tmp_path: Path) -> None:
-    origins = write_stations(tmp_path / "o.csv", [("8000001", "Aachen Hbf")])
-    ends = write_stations(tmp_path / "d.csv", [("8000041", "Bochum Hbf")])
-    got = cf.station_set(origins, ends)
-    assert [(s.eva, s.tier) for s in got] == [("8000001", 1), ("8000041", 2)]
+    write_stations(tmp_path / "o1.csv", [("8000001", "Aachen Hbf")])
+    write_stations(tmp_path / "d1.csv", [("8000041", "Bochum Hbf")])
+    assert roles(cf.station_set(tmp_path, (ONE,))) == [
+        ("8000001", 1, 1), ("8000041", 2, 1)]
 
 
 def test_a_station_in_both_files_is_polled_once_as_an_origin(tmp_path: Path) -> None:
     """Three of the twenty origins are also termini. Polling them twice a round
     would double their requests, and tier 2 must not shadow tier 1."""
-    origins = write_stations(tmp_path / "o.csv", [("8000310", "Remagen")])
-    ends = write_stations(tmp_path / "d.csv",
-                          [("8000310", "Remagen"), ("8000041", "Bochum Hbf")])
-    got = cf.station_set(origins, ends)
-    assert [(s.eva, s.tier) for s in got] == [("8000310", 1), ("8000041", 2)]
+    write_stations(tmp_path / "o1.csv", [("8000310", "Remagen")])
+    write_stations(tmp_path / "d1.csv",
+                   [("8000310", "Remagen"), ("8000041", "Bochum Hbf")])
+    assert roles(cf.station_set(tmp_path, (ONE,))) == [
+        ("8000310", 1, 1), ("8000041", 2, 1)]
 
 
 def test_a_missing_destinations_file_leaves_the_origins_alone(tmp_path: Path) -> None:
-    origins = write_stations(tmp_path / "o.csv", [("8000001", "Aachen Hbf")])
-    got = cf.station_set(origins, tmp_path / "nope.csv")
-    assert [(s.eva, s.tier) for s in got] == [("8000001", 1)]
+    write_stations(tmp_path / "o1.csv", [("8000001", "Aachen Hbf")])
+    assert roles(cf.station_set(tmp_path, (ONE,))) == [("8000001", 1, 1)]
+
+
+def test_a_later_cohort_cannot_take_a_station_from_an_earlier_one(tmp_path: Path
+                                                                  ) -> None:
+    """The collision rule that keeps a cohort's data interpretable: a station
+    already polled for cohort 1 stays cohort 1, whatever a later file says. Data
+    already collected under a registration cannot be re-labelled by a new one."""
+    write_stations(tmp_path / "o1.csv", [("8000001", "Aachen Hbf")])
+    write_stations(tmp_path / "d1.csv", [("8000041", "Bochum Hbf")])
+    write_stations(tmp_path / "o2.csv",
+                   [("8000041", "Bochum Hbf"), ("8000025", "Bamberg")])
+    write_stations(tmp_path / "d2.csv", [("8000001", "Aachen Hbf")])
+    assert roles(cf.station_set(tmp_path, (ONE, TWO))) == [
+        ("8000001", 1, 1), ("8000041", 2, 1), ("8000025", 1, 2)]
+
+
+def test_a_cohort_with_no_files_yet_is_simply_absent(tmp_path: Path) -> None:
+    write_stations(tmp_path / "o1.csv", [("8000001", "Aachen Hbf")])
+    assert roles(cf.station_set(tmp_path, (ONE, TWO))) == [("8000001", 1, 1)]
+
+
+def test_a_poll_records_which_cohort_the_station_belongs_to(tmp_path: Path) -> None:
+    clock = [1781000000.0]
+    got = collector(tmp_path, {"/plan/": PLAN, "/fchg/": FCHG}, clock)
+    got.poll_station(cf.Station("8000170", "Ulm Hbf", 1, 2))
+    records, _ = cf.Journal.read(tmp_path / f"forecasts-{got._today()}.jsonl")
+    poll = next(r for r in records if r["t"] == "poll")
+    assert (poll["tier"], poll["cohort"]) == (1, 2)
+
+
+def test_a_journal_without_a_cohort_is_the_first_one() -> None:
+    """Every day before cohort 2 existed. Reading them as anything else would
+    empty the days the published comparison rests on."""
+    assert cf.roles_of([{"t": "poll", "at": 1, "eva": "8000001", "ok": True}]) == {
+        "8000001": (1, 1)}
+    assert cf.roles_of([{"t": "poll", "at": 1, "eva": "8000041", "tier": 2,
+                         "ok": True}]) == {"8000041": (2, 1)}
 
 
 def test_a_poll_records_which_tier_the_station_was(tmp_path: Path) -> None:
@@ -467,15 +511,25 @@ def test_the_destination_set_is_derived_and_committed() -> None:
     assert all(s.tier == 2 for s in ends)
 
 
-def test_polling_both_tiers_still_fits_inside_a_slot() -> None:
+def test_polling_every_cohort_still_fits_inside_a_slot() -> None:
     """A round that overruns [CADENCE_MINUTES] drops slots, and the whole
-    comparison rests on having a reading close to the moment being scored."""
-    stations = cf.station_set(TOOLS / "forecast_stations.csv",
-                              TOOLS / "forecast_destinations.csv")
-    # One fchg per station, plus the pause; plan documents are cached after the
-    # first round of each hour. A second per station is a pessimistic request.
-    worst_case = len(stations) * (1.0 + cf.PAUSE_BETWEEN_REQUESTS)
-    assert worst_case < cf.CADENCE_MINUTES * 60 / 2, worst_case
+    comparison rests on having a reading close to the moment being scored.
+
+    This is also the rate limit. Growing the station set is how the comparison
+    widens, and this is the check that says how far it may grow."""
+    stations = cf.station_set(TOOLS)
+    slot = cf.CADENCE_MINUTES * 60
+    assert len(stations) * cf.SECONDS_PER_STATION < slot * cf.MAX_SLOT_FRACTION, (
+        f"{len(stations)} stations overruns the slot")
+
+
+def test_the_station_set_stays_inside_the_self_imposed_request_rate() -> None:
+    """One fchg per station per round, plus one plan document per station per
+    hour — the horizon is cached after the first round of each hour."""
+    stations = cf.station_set(TOOLS)
+    rounds_per_hour = 60 / cf.CADENCE_MINUTES
+    per_hour = len(stations) * rounds_per_hour + len(stations)
+    assert per_hour / 3600 < cf.MAX_REQUESTS_PER_SECOND, f"{per_hour / 3600:.2f}/s"
 
 
 def test_the_tier_comes_from_the_journal_not_the_station_files() -> None:
@@ -494,7 +548,5 @@ def test_status_judges_a_day_by_the_tiers_it_was_collected_under(
         journal.append({"t": "poll", "at": 1787000000, "eva": eva, "ok": True,
                         "stops": 1})
     journal.close()
-    cf.status(tmp_path, TOOLS / "forecast_stations.csv",
-              now=lambda: 1787000060.0,
-              destinations=TOOLS / "forecast_destinations.csv")
+    cf.status(tmp_path, TOOLS, now=lambda: 1787000060.0)
     assert "stations" not in capsys.readouterr().out.split("rounds")[1]

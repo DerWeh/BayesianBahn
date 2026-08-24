@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import collections
 import datetime as dt
 import json
 import os
@@ -78,8 +79,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / ".forecasts"
-STATIONS = Path(__file__).parent / "forecast_stations.csv"
-DESTINATIONS = Path(__file__).parent / "forecast_destinations.csv"
+# The registered sets, in the order they were registered: a cohort is a group
+# of origins plus the far ends its trains reach. Cohorts are never pooled —
+# they start on different days and were sampled on different axes, cohort 1 by
+# station size and cohort 2 by the kind of line — so the journal records which
+# one a poll belongs to and the scorer takes one at a time.
+COHORTS: tuple[tuple[int, str, str], ...] = (
+    (1, "forecast_stations.csv", "forecast_destinations.csv"),
+    (2, "forecast_stations_cohort2.csv", "forecast_destinations_cohort2.csv"),
+)
 IRIS = "https://iris.noncd.db.de/iris-tts/timetable"
 HAFAS = "https://v6.db.transport.rest"
 UA = "BayesianBahn/0.1 (F-Droid; FOSS delay prediction; evaluation harness)"
@@ -99,6 +107,20 @@ JITTER_SECONDS = 300
 PLAN_HORIZON_HOURS = 4
 REQUEST_TIMEOUT = 20
 PAUSE_BETWEEN_REQUESTS = 0.4
+# What a station actually costs a round, pause included: measured at 0.58 s
+# across 24 two-tier rounds on 2026-08-24, rounded up for headroom. This and
+# the two ceilings below are the budget the station set has to fit inside, and
+# they are what decides how far the comparison may be widened. Growing the set
+# is otherwise a change with no visible limit until slots start being missed —
+# and a missed slot is collection lost for good.
+SECONDS_PER_STATION = 0.7
+# A round may occupy at most this much of its slot. Overrunning drops the next
+# one, and the comparison rests on holding a reading close to the moment scored.
+MAX_SLOT_FRACTION = 0.5
+# Sustained requests a second, averaged over the slot, counting the hourly plan
+# fetch each station also needs. Self-imposed: IRIS publishes no limit, and the
+# archive we take ground truth from polls about three times this hard.
+MAX_REQUESTS_PER_SECOND = 1.0
 # The community HAFAS proxy is rate-limited and often down — as of 2026-08-17 it
 # answers 503 on every data endpoint while its root still returns 200. It is a
 # cross-check, not a data source, so it is sampled rarely, its failure is not an
@@ -205,19 +227,25 @@ class Journal:
         return records, torn
 
 
-def tiers_of(records: list[dict]) -> dict[str, int]:
-    """Which tier each station was polled as, read from the journal itself.
+def roles_of(records: list[dict]) -> dict[str, tuple[int, int]]:
+    """Each station's (tier, cohort) as it was polled, from the journal itself.
 
-    Not from the station CSVs: those can be edited, and a later edit must not
-    be able to re-label data already collected. A journal written before the
-    second tier existed carries no tier at all, and every station in it was an
-    origin — hence the default.
+    Not from the station CSVs: those can be edited, and a later edit must not be
+    able to re-label data already collected. A journal written before either
+    field existed carries neither, and every station in it was a cohort-1
+    origin — hence the defaults.
     """
-    out: dict[str, int] = {}
+    out: dict[str, tuple[int, int]] = {}
     for record in records:
         if record["t"] == "poll":
-            out.setdefault(record["eva"], int(record.get("tier", 1)))
+            out.setdefault(record["eva"],
+                           (int(record.get("tier", 1)), int(record.get("cohort", 1))))
     return out
+
+
+def tiers_of(records: list[dict]) -> dict[str, int]:
+    """Each station's tier alone, for callers that do not care about cohorts."""
+    return {eva: tier for eva, (tier, _) in roles_of(records).items()}
 
 
 def slot_start(now: float, cadence: int = CADENCE_MINUTES) -> float:
@@ -230,40 +258,50 @@ def slot_start(now: float, cadence: int = CADENCE_MINUTES) -> float:
 class Station:
     eva: str
     name: str
-    # 1 = pre-registered origin, 2 = the far end of a change. Only tier 1 may
-    # start a scored connection; tier 2 exists so DB's forecast for the second
-    # leg's arrival can be read, and widening tier 1 after the fact would let
-    # the station set be chosen in hindsight. The journal records the tier per
-    # poll so this stays a property of the data, not of the current CSVs.
+    # 1 = registered origin, 2 = the far end of a change. Only tier 1 may start
+    # a scored connection; tier 2 exists so DB's forecast for the second leg's
+    # arrival can be read, and widening tier 1 after the fact would let the
+    # station set be chosen in hindsight. The journal records the tier per poll
+    # so this stays a property of the data, not of the current CSVs.
     tier: int = 1
+    # Which registered group this station belongs to. Same reasoning: a station
+    # cannot be moved between cohorts after its data exists.
+    cohort: int = 1
 
 
-def load_stations(path: Path, tier: int = 1) -> list[Station]:
+def load_stations(path: Path, tier: int = 1, cohort: int = 1) -> list[Station]:
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         eva, name = line.split(";")[:2]
-        out.append(Station(eva.strip(), name.strip(), tier))
+        out.append(Station(eva.strip(), name.strip(), tier, cohort))
     return out
 
 
-def station_set(stations: Path, destinations: Path | None = None) -> list[Station]:
-    """The pre-registered origins, then the destinations they reach.
+def station_set(directory: Path | None = None,
+                cohorts: tuple[tuple[int, str, str], ...] = COHORTS) -> list[Station]:
+    """Every station polled: each cohort's origins, then the far ends it reaches.
 
-    A station can be both — three of the twenty are also termini — and polling
-    it twice a round would double its requests for nothing. Tier 1 wins the
-    collision: the data is identical either way, and the tier decides only
-    whether the station may originate a connection, where the narrower reading
-    is the honest one.
+    One entry per station, first registration winning. A station can appear in
+    more than one file — three of the first twenty are also termini of their own
+    trains — and polling it twice a round would double its requests for nothing.
+    Order decides the collision, which is why the cohorts are listed in the order
+    they were registered and origins come before far ends: the narrower role and
+    the earlier cohort are the honest readings, since data already collected
+    under them cannot be re-labelled by a later file.
     """
-    out = load_stations(stations, 1)
-    seen = {s.eva for s in out}
-    if destinations is not None and destinations.exists():
-        for station in load_stations(destinations, 2):
-            if station.eva not in seen:
-                seen.add(station.eva)
-                out.append(station)
+    directory = directory or Path(__file__).parent
+    out: list[Station] = []
+    seen: set[str] = set()
+    for cohort, origins, destinations in cohorts:
+        for path, tier in ((directory / origins, 1), (directory / destinations, 2)):
+            if not path.exists():
+                continue
+            for station in load_stations(path, tier, cohort):
+                if station.eva not in seen:
+                    seen.add(station.eva)
+                    out.append(station)
     return out
 
 
@@ -354,12 +392,13 @@ class Collector:
             changes = parse_changes(xml)
         except Exception as error:  # network, HTTP, malformed XML
             journal.append({"t": "poll", "at": int(now), "eva": station.eva,
-                            "tier": station.tier, "ok": False,
-                            "err": type(error).__name__})
+                            "tier": station.tier, "cohort": station.cohort,
+                            "ok": False, "err": type(error).__name__})
             return
 
         journal.append({"t": "poll", "at": int(now), "eva": station.eva,
-                        "tier": station.tier, "ok": True, "stops": len(changes)})
+                        "tier": station.tier, "cohort": station.cohort,
+                        "ok": True, "stops": len(changes)})
 
         for trip, change in changes.items():
             key = (station.eva, trip)
@@ -467,14 +506,13 @@ def health(records: list[dict], expected_stations: int, cadence: int = CADENCE_M
     }
 
 
-def status(out: Path, stations_path: Path, now=time.time,
-           destinations: Path | None = None) -> None:
+def status(out: Path, directory: Path | None = None, now=time.time) -> None:
     days = sorted(out.glob("forecasts-*.jsonl"))
     if not days:
         print(f"nothing collected in {out}")
         return
     try:
-        configured = station_set(stations_path, destinations)
+        configured = station_set(directory)
     except OSError:
         configured = []
     for path in days:
@@ -482,12 +520,12 @@ def status(out: Path, stations_path: Path, now=time.time,
         kinds: dict[str, int] = {}
         for record in records:
             kinds[record["t"]] = kinds.get(record["t"], 0) + 1
-        # Against the tiers that day was collected under, not against today's
+        # Against the roles that day was collected under, not against today's
         # station files: the days before the second tier existed are complete
-        # with twenty stations, and judging them by 101 would report every one
+        # with twenty stations, and judging them by 281 would report every one
         # of them as broken.
-        seen_tiers = set(tiers_of(records).values()) or {1}
-        expected = len([s for s in configured if s.tier in seen_tiers])
+        seen = set(roles_of(records).values()) or {(1, 1)}
+        expected = len([s for s in configured if (s.tier, s.cohort) in seen])
         h = health(records, expected)
         span = ""
         if h["first_at"]:
@@ -515,18 +553,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["run", "status"])
-    ap.add_argument("--stations", type=Path, default=STATIONS)
-    ap.add_argument("--destinations", type=Path, default=DESTINATIONS,
-                    help="second-tier stations; the far end of a change")
+    ap.add_argument("--stations-dir", type=Path, default=Path(__file__).parent,
+                    help="where the cohorts' station files live")
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--minutes", type=int, help="stop after roughly this long")
     args = ap.parse_args()
 
     if args.command == "status":
-        status(args.out, args.stations, destinations=args.destinations)
+        status(args.out, args.stations_dir)
         return
 
-    collector = Collector(station_set(args.stations, args.destinations), args.out)
+    collector = Collector(station_set(args.stations_dir), args.out)
     # A shutdown must not tear a record: finish the station in flight, then go.
     def stop(_signum, _frame):
         collector.stopping = True
@@ -535,7 +572,11 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
 
     torn = collector.restore(collector._today())
-    print(f"{len(collector.stations)} stations, every {CADENCE_MINUTES} min -> {args.out}"
+    roles = collections.Counter((s.tier, s.cohort) for s in collector.stations)
+    shape = ", ".join(f"cohort {c} tier {t}: {n}"
+                      for (t, c), n in sorted(roles.items(), key=lambda kv: kv[0][::-1]))
+    print(f"{len(collector.stations)} stations ({shape}), "
+          f"every {CADENCE_MINUTES} min -> {args.out}"
           + (f" (resumed; {torn} torn lines skipped)" if torn else ""), file=sys.stderr)
     collector.run(minutes=args.minutes)
 

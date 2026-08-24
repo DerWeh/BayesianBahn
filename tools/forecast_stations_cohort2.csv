@@ -1,0 +1,53 @@
+# Second cohort for the forecast comparison: sampled by kind of line.
+# Derived, not chosen — rebuild with tools/build_cohort.py.
+# From the timetable of 2026-08-18: every station with >= 20 calls
+#   that day and not already polled (4908 of them), split into six
+#   cells by busiest-segment traffic (cuts at 41 and 74
+#   trains a day) and by whether long-distance services call, then
+#   7 sampled per cell with seed 20260824, refusing any pick
+#   within 2 segments of one already taken.
+# Equal allocation, so this is NOT a representative sample of the
+#   network and is never pooled with the first twenty.
+# eva;name;calls;peak_segment;long_distance_share;degree;stratum
+8000025;Bamberg;334;95;0.084;13;high-mixed
+8000110;Freudenstadt Hbf;135;41;0.000;4;low-regional
+8000123;Gerolstein;47;40;0.000;3;low-regional
+8000129;Treysa;82;37;0.122;7;low-mixed
+8000163;Tuttlingen;206;58;0.228;12;mid-mixed
+8000247;Marktredwitz;198;50;0.000;11;mid-regional
+8000249;Memmingen;197;48;0.010;10;mid-mixed
+8000279;Nienburg(Weser);120;48;0.133;6;mid-mixed
+8000309;Regensburg Hbf;309;114;0.006;13;high-mixed
+8000333;Hausach;112;87;0.000;5;high-regional
+8000712;Bad Homburg;218;159;0.000;3;high-regional
+8000781;Baierbrunn;159;139;0.000;2;high-regional
+8001443;Diepholz;45;40;0.111;4;low-mixed
+8001457;Diez;61;61;0.000;3;mid-regional
+8001597;Düsseldorf-Hamm;329;314;0.000;2;high-regional
+8001752;Ellzee;32;32;0.000;2;low-regional
+8002581;Hannover-Bornum;68;68;0.000;2;mid-regional
+8003487;Hannover Messe/Laatzen;41;40;0.024;4;low-mixed
+8003494;Lahr(Schwarzw);71;53;0.014;5;mid-mixed
+8003515;Landstuhl;67;47;0.015;6;mid-mixed
+8003539;Langenfeld(Rhld)-Berghausen;149;149;0.000;2;high-regional
+8003701;Lingen(Ems);52;40;0.231;4;low-mixed
+8003743;Lörrach Schwarzwaldstraße;142;142;0.000;2;high-regional
+8004158;München-Pasing;841;417;0.083;17;high-mixed
+8004202;Nagold-Iselshausen;40;40;0.000;2;low-regional
+8004343;Niebüll;131;78;0.031;6;high-mixed
+8004585;Oberstdorf;41;39;0.049;2;low-mixed
+8004907;Quadrath-Ichendorf;72;72;0.000;2;mid-regional
+8004965;Ravensburg;130;73;0.015;7;mid-mixed
+8005208;Rückersbacher Schlucht;45;45;0.000;2;mid-regional
+8005392;Schoden-Ockfen;71;71;0.000;2;mid-regional
+8005791;Sulz(Neckar);63;62;0.349;2;mid-mixed
+8006132;Wächtersbach;91;54;0.000;3;mid-regional
+8010001;Adorf(Vogtl);27;17;0.000;3;low-regional
+8010050;Bitterfeld;220;77;0.105;10;high-mixed
+8010177;Hoyerswerda;60;34;0.067;4;low-mixed
+8010396;Züssow;88;38;0.114;7;low-mixed
+8010404;Berlin-Spandau;316;117;0.269;12;high-mixed
+8011201;Flughafen BER;264;161;0.053;9;high-mixed
+8011554;Frankenberg(Sachs) Süd;36;36;0.000;2;low-regional
+8012384;Moidentin;20;21;0.000;2;low-regional
+8089168;Berlin-Schöneweide (S);524;391;0.000;3;high-regional

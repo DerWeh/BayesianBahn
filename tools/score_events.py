@@ -157,19 +157,26 @@ class Stop:
 
 
 def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
+             cohorts: tuple[int, ...] = (1,),
              ) -> tuple[dict[tuple[str, str], Stop], dict[str, list[float]]]:
     """Stops keyed by (station, trip), plus successful poll times per station.
 
-    Tier 1 only by default. The comparison's stations were pre-registered, and
-    the second tier is polled solely to supply the far end of a change — letting
-    those stations originate an arrival or a connection would widen the
-    pre-registered set with stations picked after the data was in.
+    Cohort 1, tier 1 by default — the twenty stations registered before any data
+    existed, which is the sample the headline speaks for.
+
+    Both filters exist for the same reason. The second tier is polled solely to
+    supply the far end of a change, so letting those stations originate an
+    arrival or a connection would widen a registered set with stations picked
+    after the data was in. And the cohorts were sampled on different axes and
+    started on different days, so pooling them would produce a number that
+    describes neither.
     """
     records, torn = cf.Journal.read(out / f"forecasts-{day}.jsonl")
     if torn:
         print(f"note: skipped {torn} torn line(s)", file=sys.stderr)
-    tier = cf.tiers_of(records)
-    wanted = {eva for eva, t in tier.items() if t in tiers}
+    roles = cf.roles_of(records)
+    wanted = {eva for eva, (tier, cohort) in roles.items()
+              if tier in tiers and cohort in cohorts}
     stops: dict[tuple[str, str], Stop] = {}
     polls: dict[str, list[float]] = {}
     for r in records:
@@ -606,6 +613,8 @@ def main() -> None:
     ap.add_argument("--day", default="1970-01-01")
     ap.add_argument("--out", type=Path, default=cf.OUT)
     ap.add_argument("--truth", choices=["settled", "archive"], default="settled")
+    ap.add_argument("--cohort", type=int, default=1,
+                    help="which registered group of origins to score")
     ap.add_argument("--data-dir", type=Path, nargs="+",
                     default=[Path(__file__).resolve().parents[1] / "pipeline/data"])
     ap.add_argument("--stations", type=Path,
@@ -632,7 +641,7 @@ def main() -> None:
         return
 
     day = dt.date.fromisoformat(args.day)
-    stops, polls = read_day(args.out, day)
+    stops, polls = read_day(args.out, day, cohorts=(args.cohort,))
     if args.command == "connections":
         truth = load_truth(args.data_dir, day,
                            {s.eva for s in cf.load_stations(args.stations)})

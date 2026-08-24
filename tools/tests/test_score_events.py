@@ -500,3 +500,51 @@ def test_a_far_end_cannot_originate_a_connection(tmp_path: Path) -> None:
     station, so a leaked tier-2 station would invent journeys nobody registered."""
     stops, polls = se.read_day(tier_journal(tmp_path), DAY)
     assert all(stop.eva == "8000001" for stop in stops.values())
+
+
+# --- and the cohorts must not be pooled either -------------------------------
+#
+# The second cohort samples by the kind of line, deliberately over-representing
+# rare structures, and it started collecting weeks after the first. Pooling the
+# two produces a number that describes neither sample — and the first is the one
+# every published figure so far rests on.
+
+
+def cohort_journal(tmp_path: Path) -> Path:
+    return write(tmp_path, [
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000001", "tier": 1,
+         "cohort": 1, "ok": True, "stops": 1},
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000025", "tier": 1,
+         "cohort": 2, "ok": True, "stops": 1},
+        plan_rec(EPOCH_1800 - 3600, trip="t1", eva="8000001"),
+        plan_rec(EPOCH_1800 - 3600, trip="t2", eva="8000025"),
+        obs_rec(EPOCH_1800 - 3600, PLANNED + 4, trip="t1", eva="8000001"),
+        obs_rec(EPOCH_1800 - 3600, PLANNED + 4, trip="t2", eva="8000025"),
+    ])
+
+
+def test_a_second_cohort_origin_is_not_scored_by_default(tmp_path: Path) -> None:
+    stops, polls = se.read_day(cohort_journal(tmp_path), DAY)
+    assert set(polls) == {"8000001"}, "cohort 1 is what the headline speaks for"
+    assert {eva for eva, _ in stops} == {"8000001"}
+
+
+def test_the_second_cohort_is_there_when_it_is_asked_for(tmp_path: Path) -> None:
+    stops, polls = se.read_day(cohort_journal(tmp_path), DAY, cohorts=(2,))
+    assert set(polls) == {"8000025"}
+    assert {eva for eva, _ in stops} == {"8000025"}
+
+
+def test_the_two_filters_are_independent(tmp_path: Path) -> None:
+    """A far end in cohort 2 is excluded twice over; asking for cohort 2 alone
+    must not also let its far ends originate."""
+    path = write(tmp_path, [
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000025", "tier": 1,
+         "cohort": 2, "ok": True, "stops": 1},
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000041", "tier": 2,
+         "cohort": 2, "ok": True, "stops": 1},
+        plan_rec(EPOCH_1800 - 3600, trip="t1", eva="8000025"),
+        plan_rec(EPOCH_1800 - 3600, trip="t2", eva="8000041"),
+    ])
+    stops, polls = se.read_day(path, DAY, cohorts=(2,))
+    assert set(polls) == {"8000025"}

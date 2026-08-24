@@ -18,15 +18,35 @@ The output is committed. A timetable change would otherwise re-derive a
 different set later and silently re-interpret data already collected, and the
 file records the window it came from so that stays visible.
 
-Names come from the plan documents' `ppth`, which is IRIS's own spelling, so
-they are resolved through IRIS's own station lookup rather than matched against
-a station list — an exact answer instead of a fuzzy one. Stops IRIS does not
-serve a timetable for (`db="false"`, mostly replacement bus stops) are dropped:
-there is no forecast to read there.
+Two sources, because the two cohorts were registered under different ones.
+
+The first twenty were already collecting when this was written, so their
+termini come from the plan documents the collector had cached, and names are
+resolved through IRIS's own station lookup — exact, since `ppth` is IRIS's own
+spelling. That set is frozen and this path exists to reproduce it.
+
+Everything since reads an archive day instead, which covers every station
+rather than the ones already polled, and resolves names against the archive's
+own station list. That is the better source for one reason beyond convenience:
+a terminus the archive does not cover has no recorded arrival, so a journey
+ending there could never be scored however faithfully we polled it. Resolving
+against the archive drops those by construction — ten of the first twenty's
+eighty-four termini are foreign or unlisted stations that can only ever cost
+requests.
+
+Stops IRIS serves no timetable for (`db="false"`, mostly replacement bus stops)
+are dropped on the IRIS path for the same reason: there is no forecast to read.
 
 Usage:
+    # the frozen first set, from the collector's own plan cache
     python tools/build_destinations.py --plan-dir tools/.forecasts/plan \
         --out tools/forecast_destinations.csv
+
+    # any later cohort, from an archive day
+    python tools/build_destinations.py --raw-dir tools/.scored/2026-08-18/raw \
+        --day 2026-08-18 --origins tools/forecast_stations_cohort2.csv \
+        --exclude tools/forecast_stations.csv tools/forecast_destinations.csv \
+        --out tools/forecast_destinations_cohort2.csv
 """
 
 from __future__ import annotations
@@ -85,6 +105,41 @@ def terminus_counts(plan_dir: Path) -> tuple[collections.Counter, set[str]]:
     return counts, days
 
 
+def terminus_counts_from_archive(raw_dir: Path, origins: set[str]
+                                 ) -> tuple[collections.Counter, set[str]]:
+    """The same count, taken from an archive day and only for `origins`.
+
+    The archive holds one day, so the count is already per day and the caller
+    passes days=1 — the plan cache spans however long the collector has run.
+    """
+    import network_graph as ng
+
+    counts: collections.Counter = collections.Counter()
+    for eva, xml in ng.plan_documents(raw_dir):
+        if eva not in origins:
+            continue
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            continue
+        for stop in root.findall("s"):
+            departure = stop.find("dp")
+            if departure is None:
+                continue
+            path_stops = [s for s in (departure.get("ppth") or "").split("|") if s]
+            if path_stops:
+                counts[path_stops[-1]] += 1
+    return counts, {"archive"}
+
+
+def archive_names(raw_dir: Path) -> dict[str, str]:
+    """IRIS station name -> eva, from the archive's own documents."""
+    import network_graph as ng
+
+    stations, _ = ng.build(raw_dir)
+    return {s.name: s.eva for s in stations.values()}
+
+
 def frequent(counts: collections.Counter, days: int,
              minimum: int = MIN_DEPARTURES_PER_DAY) -> list[str]:
     """Termini served often enough to be worth a poll, in a stable order."""
@@ -133,13 +188,15 @@ def http(url: str) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def render(rows: list[tuple[str, str, int]], days: list[str], minimum: int) -> str:
+def render(rows: list[tuple[str, str, int]], days: list[str], minimum: int,
+           *, source: str = "the collector's plan cache") -> str:
     span = f"{days[0]}..{days[-1]}" if days else "no plan documents"
     lines = [
         "# Second tier for the forecast comparison: the far end of a change.",
         "# Derived, not chosen — rebuild with tools/build_destinations.py.",
-        "# Rule: terminus of a train departing a pre-registered station, with",
-        f"#   at least {minimum} departures a day over {span} ({len(days)} days).",
+        "# Rule: terminus of a train departing a registered origin, with at",
+        f"#   least {minimum} departures a day over {span} ({len(days)} days),",
+        f"#   read from {source}.",
         "# These stations are polled so DB's forecast for the second leg can be",
         "# read; they are never used as the origin of a scored connection.",
         "# eva;name;departures",
@@ -148,29 +205,61 @@ def render(rows: list[tuple[str, str, int]], days: list[str], minimum: int) -> s
     return "\n".join(lines) + "\n"
 
 
+def read_evas(paths: list[Path]) -> set[str]:
+    out: set[str] = set()
+    for path in paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                out.add(line.split(";")[0].strip())
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plan-dir", type=Path, default=TOOLS / ".forecasts" / "plan")
+    ap.add_argument("--raw-dir", type=Path,
+                    help="an archive day; reads every station, not only polled ones")
+    ap.add_argument("--day", help="the day --raw-dir covers")
+    ap.add_argument("--origins", type=Path, nargs="*", default=[],
+                    help="whose departures to follow (archive source only)")
+    ap.add_argument("--exclude", type=Path, nargs="*", default=[],
+                    help="stations already polled, left out of the result")
     ap.add_argument("--out", type=Path, default=TOOLS / "forecast_destinations.csv")
     ap.add_argument("--min-per-day", type=int, default=MIN_DEPARTURES_PER_DAY)
     args = ap.parse_args()
 
-    counts, days = terminus_counts(args.plan_dir)
-    if not days:
-        raise SystemExit(f"no cached plan documents under {args.plan_dir}")
+    if args.raw_dir:
+        if not args.day or not args.origins:
+            raise SystemExit("--raw-dir needs --day and --origins")
+        origins = read_evas(args.origins)
+        counts, _ = terminus_counts_from_archive(args.raw_dir, origins)
+        days, source = [args.day.replace("-", "")[2:]], f"the archive of {args.day}"
+        resolver = archive_names(args.raw_dir)
+    else:
+        counts, day_set = terminus_counts(args.plan_dir)
+        if not day_set:
+            raise SystemExit(f"no cached plan documents under {args.plan_dir}")
+        days, source, resolver = sorted(day_set), "the collector's plan cache", None
     names = frequent(counts, len(days), args.min_per_day)
-    print(f"{len(counts)} termini over {len(days)} days, "
+    print(f"{len(counts)} termini over {len(days)} day(s), "
           f"{len(names)} at >= {args.min_per_day}/day")
 
+    skip = read_evas(args.exclude)
     rows, dropped = [], []
     for name in names:
-        found = lookup(name, http)
+        if resolver is None:
+            found = lookup(name, http)
+            time.sleep(PAUSE_BETWEEN_LOOKUPS)
+        else:
+            eva = resolver.get(name)
+            found = (eva, name) if eva else None
         if found is None:
             dropped.append(name)
-        else:
+        elif found[0] not in skip:
             rows.append((found[0], found[1], counts[name]))
-        time.sleep(PAUSE_BETWEEN_LOOKUPS)
 
     # A station can appear under more than one spelling; one row per eva, so
     # the collector cannot end up polling the same feed twice.
@@ -180,14 +269,14 @@ def main() -> None:
             seen.add(eva)
             unique.append((eva, name, n))
 
-    args.out.write_text(render(unique, sorted(days), args.min_per_day),
+    args.out.write_text(render(unique, days, args.min_per_day, source=source),
                         encoding="utf-8")
     covered = sum(counts[name] for _, name, _ in unique)
     print(f"wrote {len(unique)} stations to {args.out} "
           f"({covered / max(sum(counts.values()), 1):.0%} of departures)")
     if dropped:
-        print(f"no IRIS timetable for {len(dropped)}: {', '.join(dropped[:8])}"
-              + (" ..." if len(dropped) > 8 else ""))
+        print(f"no timetable or no archive coverage for {len(dropped)}: "
+              + ", ".join(dropped[:8]) + (" ..." if len(dropped) > 8 else ""))
 
 
 if __name__ == "__main__":

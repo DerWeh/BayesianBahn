@@ -1,0 +1,146 @@
+# Second tier for the forecast comparison: the far end of a change.
+# Derived, not chosen — rebuild with tools/build_destinations.py.
+# Rule: terminus of a train departing a registered origin, with at
+#   least 5 departures a day over 260818..260818 (1 days),
+#   read from the archive of 2026-08-18.
+# These stations are polled so DB's forecast for the second leg can be
+# read; they are never used as the origin of a scored connection.
+# eva;name;departures
+8000002;Aalen Hbf;6
+8000013;Augsburg Hbf;18
+8000014;Aulendorf;18
+8000020;Bad Hersfeld;9
+8000027;Schwandorf;44
+8000028;Bayreuth Hbf;17
+8000030;Bedburg(Erft);36
+8000032;Schweinfurt Hbf;39
+8000036;Bielefeld Hbf;8
+8000050;Bremen Hbf;22
+8000077;Donaueschingen;10
+8000078;Donauwörth;16
+8000085;Düsseldorf Hbf;21
+8000092;Elmshorn;6
+8000096;Stuttgart Hbf;108
+8000107;Freiburg(Breisgau) Hbf;16
+8000112;Friedrichshafen Stadt;25
+8000115;Fulda;12
+8000119;Geltendorf;43
+8000124;Gießen;19
+8000139;Günzburg;16
+8000170;Ulm Hbf;89
+8000177;Horb;18
+8000178;Horrem;16
+8000181;Husum;9
+8000182;Immendingen;16
+8000183;Ingolstadt Hbf;5
+8000191;Karlsruhe Hbf;52
+8000193;Kassel Hbf;21
+8000197;Kempten(Allgäu)Hbf;11
+8000204;Weiden(Oberpf);20
+8000220;Weilheim(Oberbay);13
+8000229;Limburg(Lahn);24
+8000253;Mönchengladbach Hbf;71
+8000263;Münster(Westf)Hbf;22
+8000287;Oberkotzau;23
+8000290;Offenburg;74
+8000294;Osnabrück Hbf;20
+8000299;Pforzheim Hbf;20
+8000322;Rottweil;45
+8000338;Mindelheim;8
+8000454;Aichstetten;26
+8000675;Aying;75
+8000871;Bennemühlen;20
+8000899;Bergisch Gladbach;47
+8001080;Bondorf(b Herrenberg);9
+8001168;Bremerhaven-Lehe;16
+8001229;Buchenau(Oberbay);18
+8001338;Coburg;6
+8001468;Dinkelscherben;13
+8001580;Düsseldorf Flughafen Terminal;48
+8001582;Düsseldorf Wehrhahn;55
+8001590;Düsseldorf-Gerresheim;48
+8001629;Ebern;19
+8001768;Emden Hbf;25
+8001806;Enzisweiler;16
+8002041;Frankfurt(Main)Süd;71
+8002096;Fridingen(b Tuttlingen);5
+8002108;Friedrichsdorf(Taunus);42
+8002110;Friedrichshafen Hafen;23
+8002159;Furth im Wald;7
+8002187;Garmisch-Partenkirchen;9
+8002549;Hamburg Hbf;27
+8002553;Hamburg-Altona;27
+8002634;Haste;51
+8002792;Herrsching;60
+8002924;Hof Hbf;29
+8003001;Hornberg(Schwarzw);12
+8003039;Icking;79
+8003065;Immenstadt;5
+8003076;Ingolstadt Nord;16
+8003158;Kall;18
+8003355;Kochel;16
+8003373;Köln-Worringen;45
+8003400;Konstanz;25
+8003446;Kronach;13
+8003457;Krumbach(Schwab);8
+8003481;Kusel;20
+8003540;Langenfeld(Rhld);16
+8003580;Lauf(links Pegnitz);20
+8003582;Laufach;12
+8004043;Mittenwald;10
+8004155;München-Moosach;10
+8004168;München Flughafen Terminal;30
+8004204;Mammendorf;57
+8004305;Neumarkt(Oberpf);25
+8004759;Pegnitz;40
+8005221;Rüsselsheim Opelwerk;16
+8005333;Schelklingen;12
+8005701;Steinen;24
+8005927;Tutzing;59
+8006272;Weil am Rhein;28
+8006369;Westerland(Sylt);50
+8006641;Zell(Wiesental);50
+8006718;Wuppertal-Vohwinkel;5
+8006719;Wuppertal-Oberbarmen;49
+8007768;Norddeich Mole;13
+8010004;Angermünde;11
+8010053;Blankenfelde(Teltow-Fläming);18
+8010073;Cottbus Hbf;20
+8010077;Dessau Hbf;46
+8010085;Dresden Hbf;5
+8010093;Eberswalde Hbf;17
+8010099;Elsterwerda;16
+8010101;Erfurt Hbf;7
+8010103;Falkenberg(Elster);8
+8010131;Görlitz;8
+8010159;Halle(Saale)Hbf;39
+8010182;Jüterbog;9
+8010193;Königs Wusterhausen;79
+8010205;Leipzig Hbf;38
+8010206;Leipzig-Connewitz;45
+8010215;Ludwigsfelde;18
+8010220;Lübbenau(Spreewald);13
+8010222;Lutherstadt Wittenberg Hbf;30
+8010239;Nauen;36
+8010296;Rathenow;9
+8010304;Rostock Hbf;7
+8010309;Saalfeld(Saale);16
+8010334;Stendal Hbf;9
+8010338;Stralsund Hbf;20
+8010367;Weischlitz;8
+8010381;Wismar;19
+8010382;Wittenberge;25
+8010403;Berlin-Charlottenburg;61
+8011102;Berlin Gesundbrunnen;10
+8011113;Berlin Südkreuz;24
+8011116;Baruth(Mark);8
+8011695;Potsdam Griebnitzsee;14
+8011802;Hainichen;18
+8012666;Potsdam Hbf;22
+8013008;Sonneberg(Thür)Hbf;12
+8013487;Oranienburg;16
+8089063;Berlin-Grünau;9
+8089088;Berlin-Spindlersfeld;64
+8089201;Flughafen BER (S-Bahn);124
+8098160;Berlin Hbf;92
+8098261;München Hbf Gl.27-36;5
