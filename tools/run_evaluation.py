@@ -91,6 +91,12 @@ def score_day(day: str, scored: Path, station_list: str) -> None:
     run(python("tools/score_events.py", "connections", "--day", day,
                "--data-dir", str(truth_dir),
                "--events-out", str(out / "connections.jsonl")))
+    # Two-leg journeys need a forecast at the far end, which only exists from
+    # the day the second tier started being polled. Before that the builder
+    # produces nothing, which is the honest outcome and not an error.
+    run(python("tools/score_events.py", "journeys", "--day", day,
+               "--data-dir", str(truth_dir),
+               "--events-out", str(out / "journeys.jsonl")))
 
     # Shards are cached across days and trimmed inside the harness to runs
     # before the evaluated day, so a fresh download cannot leak the answer.
@@ -110,6 +116,25 @@ def score_day(day: str, scored: Path, station_list: str) -> None:
                 env["HARNESS_BLIND"] = "1"
             run([gradle_wrapper(), "testDebugUnitTest", "--tests", "*ForecastHarness",
                  "-q", "--rerun-tasks"], env=env)
+
+    # Skipped rather than run empty: a day before the second tier existed has
+    # no journeys at all, and a gradle round trip per mode to discover that
+    # costs minutes across a week.
+    if (out / "journeys.jsonl").stat().st_size == 0:
+        print(f"== {day}: no two-leg journeys (the far end was not yet polled)")
+        return
+    for mode in ("live", "blind"):
+        print(f"== {day}: scoring journeys ({mode})")
+        env = {
+            "HARNESS_JOURNEYS": str(out / "journeys.jsonl"),
+            "HARNESS_SHARDS": str(TOOLS / ".shards"),
+            "HARNESS_OUT": str(out / f"journeys-{mode}.jsonl"),
+            "HARNESS_DAY": day,
+        }
+        if mode == "blind":
+            env["HARNESS_BLIND"] = "1"
+        run([gradle_wrapper(), "testDebugUnitTest", "--tests", "*JourneyHarness",
+             "-q", "--rerun-tasks"], env=env)
 
 
 def main() -> None:

@@ -44,11 +44,33 @@ def test_stages_run_through_the_interpreter_running_the_driver() -> None:
     assert re_.python("tools/report.py")[0] == sys.executable
 
 
+def stub_run(monkeypatch, day: str, scored: Path, *, journeys: str = ""):
+    """Record the stages, and leave behind the file the driver decides on.
+
+    `journeys` is what the event builder would have written: empty means the
+    far end was not yet polled that day, which is a real state for every day
+    before 2026-08-24 and the one the driver has to skip rather than run.
+    """
+    calls: list[list[str]] = []
+    envs: list[dict] = []
+
+    def record(cmd, env=None):
+        calls.append(cmd)
+        if env:
+            envs.append(env)
+        if "journeys" in cmd:
+            out = scored / day
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "journeys.jsonl").write_text(journeys, encoding="utf-8")
+
+    monkeypatch.setattr(re_, "run", record)
+    return calls, envs
+
+
 def test_the_archive_fetch_is_skipped_when_its_output_exists(tmp_path, monkeypatch):
     """The slow, network-bound stage whose output never changes."""
-    calls: list[list[str]] = []
-    monkeypatch.setattr(re_, "run", lambda cmd, env=None: calls.append(cmd))
     day = "2026-08-17"
+    calls, _ = stub_run(monkeypatch, day, tmp_path)
     truth = tmp_path / day / "truthdir"
     truth.mkdir(parents=True)
     (truth / f"data-recent-{day}.parquet").touch()
@@ -61,24 +83,40 @@ def test_the_archive_fetch_is_skipped_when_its_output_exists(tmp_path, monkeypat
 
 
 def test_the_archive_is_fetched_when_it_is_missing(tmp_path, monkeypatch) -> None:
-    calls: list[list[str]] = []
-    monkeypatch.setattr(re_, "run", lambda cmd, env=None: calls.append(cmd))
+    calls, _ = stub_run(monkeypatch, "2026-08-17", tmp_path)
     re_.score_day("2026-08-17", tmp_path, "8000001")
     joined = " ".join(" ".join(c) for c in calls)
     assert "fetch_raw_day" in joined and "build_recent" in joined
 
 
 def test_both_model_variants_are_scored_for_both_event_kinds(tmp_path, monkeypatch):
-    envs: list[dict] = []
-    monkeypatch.setattr(re_, "run",
-                        lambda cmd, env=None: envs.append(env) if env else None)
+    _, envs = stub_run(monkeypatch, "2026-08-17", tmp_path, journeys='{"a":1}\n')
     re_.score_day("2026-08-17", tmp_path, "8000001")
     outs = {Path(e["HARNESS_OUT"]).name for e in envs}
     assert outs == {"arrivals-live.jsonl", "arrivals-blind.jsonl",
-                    "connections-live.jsonl", "connections-blind.jsonl"}
+                    "connections-live.jsonl", "connections-blind.jsonl",
+                    "journeys-live.jsonl", "journeys-blind.jsonl"}
     blind = {Path(e["HARNESS_OUT"]).name for e in envs if "HARNESS_BLIND" in e}
-    assert blind == {"arrivals-blind.jsonl", "connections-blind.jsonl"}
+    assert blind == {"arrivals-blind.jsonl", "connections-blind.jsonl",
+                     "journeys-blind.jsonl"}
     assert all(e["HARNESS_DAY"] == "2026-08-17" for e in envs)
+
+
+def test_a_day_with_no_journeys_skips_the_journey_harness(tmp_path, monkeypatch):
+    """Every day before the second tier started being polled. Two gradle round
+    trips per day to discover an empty file costs minutes across a week."""
+    _, envs = stub_run(monkeypatch, "2026-08-17", tmp_path, journeys="")
+    re_.score_day("2026-08-17", tmp_path, "8000001")
+    assert not any("JOURNEY" in k for e in envs for k in e)
+
+
+def test_the_journey_events_are_built_even_when_they_are_not_scored(
+        tmp_path, monkeypatch):
+    """The builder still runs: its count of journeys with no answer from one
+    side or the other is the diagnostic that says why a day is empty."""
+    calls, _ = stub_run(monkeypatch, "2026-08-17", tmp_path, journeys="")
+    re_.score_day("2026-08-17", tmp_path, "8000001")
+    assert any("journeys" in c for c in calls)
 
 
 def test_a_failing_stage_stops_the_run(monkeypatch) -> None:

@@ -126,7 +126,7 @@ class JourneyPlanner(
 
         val itineraries = mutableListOf<Itinerary>()
         for (stop in direct.take(MAX_DIRECT)) {
-            directItinerary(stop, to)?.let { itineraries += it }
+            directItinerary(stop, from, to)?.let { itineraries += it }
         }
         var transferBudget = MAX_TRANSFER_ATTEMPTS
         var found = 0
@@ -166,14 +166,25 @@ class JourneyPlanner(
     }
 
     /** A train running through the destination: predict its arrival there. */
-    private suspend fun directItinerary(stop: TimetableStop, to: Station): Itinerary? {
+    private suspend fun directItinerary(
+        stop: TimetableStop,
+        from: Station,
+        to: Station,
+    ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
         val history = historyRepository.load(stop.label.category, stop.label.number, stop.label.line)
         val destHistory = history?.stations?.entries
             ?.firstOrNull { (name, sh) -> sh.eva == to.eva || pathMatches(name, to.name) }
             ?.value ?: return null
-        val arrivalTod = destHistory.runs.maxByOrNull { it.date }?.plannedTimeOfDay ?: return null
-        val plannedArr = ConnectionPlanner.arrivalMillis(departure, arrivalTod) ?: return null
+        // From the same runs at both ends, not from the destination's latest
+        // time of day: see CandidateBuilder.plannedArrival for what the latter
+        // does to a train whose schedule has shifted since.
+        val originHistory = history.stations.entries
+            .firstOrNull { (name, sh) -> sh.eva == from.eva || pathMatches(name, from.name) }
+            ?.value ?: return null
+        val plannedArr = CandidateBuilder.plannedArrival(
+            originHistory.runs, destHistory.runs, departure,
+        ) ?: return null
         val forecast = predictor.forecast(
             history = history,
             stationEva = to.eva,

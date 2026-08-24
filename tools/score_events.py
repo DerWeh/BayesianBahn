@@ -87,6 +87,10 @@ class Stop:
     line: str | None
     planned: int | None               # wall-clock minutes, planned arrival
     planned_dep: int | None = None    # planned departure from the same stop
+    # Stations this train calls at after here, in order, as IRIS spells them.
+    # The last is where it ends up, which is the far end of a two-leg journey
+    # for anyone changing onto it.
+    ppth: list[str] = field(default_factory=list)
     obs: list[tuple[int, int | None, int | None, bool]] = field(default_factory=list)
 
     def forecast_at(self, when: float) -> int | None:
@@ -191,6 +195,7 @@ def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
             stops[(r["eva"], r["id"])] = Stop(
                 eva=r["eva"], trip=r["id"], cat=r["cat"], num=r["num"],
                 line=r.get("line"), planned=r.get("par"), planned_dep=r.get("pdp"),
+                ppth=list(r.get("ppth") or ()),
             )
     for r in records:
         if r["t"] != "obs":
@@ -420,6 +425,18 @@ def score(events: list[dict], truth_key: str) -> None:
 
 
 
+def run_key(trip: str) -> str:
+    """The trip id without its stop number: `{run}-{yymmddHHMM}`.
+
+    IRIS numbers each stop of a run separately, so the same train carries a
+    different id at the transfer and at its destination. The run itself is what
+    identifies it across stations — and the run segment can be negative, so the
+    stop number has to be taken off the end rather than the run read off the
+    front.
+    """
+    return trip.rsplit("-", 1)[0]
+
+
 def build_connections(stops: dict, polls: dict, truth: dict, *,
                       min_slack: int = 2, max_slack: int = 30) -> list[dict]:
     """One-change journeys, scored from before the passenger boards.
@@ -489,6 +506,193 @@ def build_connections(stops: dict, polls: dict, truth: dict, *,
                     "cancelled": False,
                 })
     return out
+
+
+# The app's own window: trains leaving up to half an hour before the feeder is
+# due are candidates too, because a delayed one is sometimes the connection that
+# works. ConnectionPlanner.MAX_CANDIDATES caps how many the model is given.
+CANDIDATE_WINDOW_BEFORE = 30
+MAX_CANDIDATES = 6
+
+
+def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
+                   truth: dict, destinations: dict[str, str], *,
+                   min_slack: int = 2, max_slack: int = 30) -> list[dict]:
+    """Two-leg journeys, scored end to end against the arrival that happened.
+
+    The connection scorer asks whether the change worked. This asks the question
+    a passenger actually has: *when do I get there* — the same question the
+    direct-journey scorer asks, in the same units, so for the first time the two
+    kinds of journey can be compared with each other rather than only each with
+    DB.
+
+    A journey is a feeder arriving at a registered station and a destination
+    reachable from it, judged from before the feeder set off. Every train from
+    the transfer towards that destination is a candidate, not just the one that
+    happens to fit the timetable: missing the planned connection and taking the
+    next train is an outcome with an arrival time, not a failure to predict.
+
+    Both forecasters answer over the same candidates and from the same moment.
+    Ours answers with a distribution over the final arrival; DB's answer is the
+    arrival of whichever train *its* forecasts say the passenger catches. The
+    truth is the arrival of whichever train they actually caught.
+
+    `far` holds the same trains' stops at the destination — collected from the
+    second tier, which exists for exactly this — keyed by (eva, run), and
+    `far_polls` says when those stations answered. Both are needed, because a
+    stop DB lists no change for is DB saying *on time*, not DB saying nothing:
+    that is one of the four shapes, and reading it as silence would discard most
+    of DB's answers and leave the comparison drawn from the trains DB flagged.
+    Only a station we were not yet polling is genuinely unknown, and that is
+    what the poll log distinguishes.
+    """
+    by_station: dict[str, list[Stop]] = {}
+    for stop in stops.values():
+        by_station.setdefault(stop.eva, []).append(stop)
+
+    out = []
+    for eva, at_station in by_station.items():
+        station_polls = polls.get(eva, [])
+        feeders = [s for s in at_station if s.planned is not None]
+        onward = [s for s in at_station if s.planned_dep is not None and s.ppth]
+        for feeder in feeders:
+            start = feeder.trip_start()
+            if start is None:
+                continue
+            read_at = last_poll_before(station_polls, wall_to_epoch(start))
+            if read_at is None:
+                continue      # we were not yet collecting when it set off
+            feeder_truth = truth.get((eva, feeder.cat, feeder.num, feeder.planned))
+            if feeder_truth is None or feeder_truth["cancelled"]:
+                continue
+
+            # Destinations worth asking about: the terminus of a train that
+            # forms a change nobody would have to invent, and that the second
+            # tier covers so DB's answer for the far end can be read at all.
+            wanted: set[str] = set()
+            for conn in onward:
+                if conn.trip == feeder.trip:
+                    continue
+                slack = conn.planned_dep - feeder.planned - TRANSFER_MINUTES
+                if min_slack <= slack <= max_slack and conn.ppth[-1] in destinations:
+                    wanted.add(conn.ppth[-1])
+
+            for name in sorted(wanted):
+                dest_eva = destinations[name]
+                candidates = []
+                for conn in sorted(onward, key=lambda s: s.planned_dep):
+                    if conn.trip == feeder.trip or name not in conn.ppth:
+                        continue
+                    if conn.planned_dep < feeder.planned - CANDIDATE_WINDOW_BEFORE:
+                        continue
+                    arrival = far.get((dest_eva, run_key(conn.trip)))
+                    if arrival is None or arrival.planned is None:
+                        continue    # nothing collected at the far end for it
+                    if not polled_by(far_polls.get(dest_eva, []), read_at):
+                        continue    # we were not yet watching the far end
+                    arrival_truth = truth.get(
+                        (dest_eva, conn.cat, conn.num, arrival.planned))
+                    departure_truth = truth.get(
+                        ("dep", eva, conn.cat, conn.num, conn.planned_dep))
+                    candidates.append({
+                        "id": conn.trip, "cat": conn.cat, "num": conn.num,
+                        "line": conn.line,
+                        "planned_dep": conn.planned_dep,
+                        "planned_arr": arrival.planned,
+                        # `or 0`, not `is None`: both stations had answered by
+                        # now, so no change listed means on time.
+                        "live_dep": conn.departure_forecast_at(read_at) or 0,
+                        "cancelled_live": conn.cancelled_at(read_at),
+                        "db_arr": arrival.forecast_at(read_at) or 0,
+                        "truth_dep": (None if departure_truth is None
+                                      else departure_truth["dep_delay"]),
+                        "truth_arr": (None if arrival_truth is None
+                                      else arrival_truth["delay"]),
+                        # None, not True: a row the archive never joined is
+                        # unknown, and calling it cancelled would quietly skip
+                        # past the train the passenger may actually have taken.
+                        "cancelled": (None if departure_truth is None
+                                      else departure_truth["cancelled"]),
+                    })
+                    if len(candidates) == MAX_CANDIDATES:
+                        break
+                if not candidates:
+                    continue
+                out.append({
+                    "eva": eva, "trip": feeder.trip, "cat": feeder.cat,
+                    "num": feeder.num, "line": feeder.line,
+                    "planned": feeder.planned, "planned_dep": feeder.planned_dep,
+                    "read_at": read_at,
+                    "lead": round((wall_to_epoch(start) - read_at) / 60, 1),
+                    "tau": 0,
+                    "dest_eva": dest_eva, "dest": name,
+                    "db": feeder.forecast_at(read_at) or 0,
+                    "archive": feeder_truth["delay"],
+                    "archive_dep": feeder_truth["dep_delay"],
+                    "cancelled": False,
+                    "candidates": candidates,
+                    **boarded(feeder.planned, feeder_truth["delay"],
+                              feeder.forecast_at(read_at) or 0, candidates),
+                })
+    return out
+
+
+def boarded(planned_arrival: int, feeder_delay: int, feeder_db: int,
+            candidates: list[dict]) -> dict:
+    """Which train the passenger caught, and which one DB said they would.
+
+    Pure bookkeeping over times that are already fixed — no model — so it lives
+    here rather than in the harness. The rule is the model's own: board the
+    first candidate that has not left by the time you reach the platform.
+
+    The two answers differ only in which clock they read. Truth uses the delays
+    that happened; DB uses the delays it was predicting at the moment we read
+    it, for the feeder and for every candidate alike, so neither forecaster is
+    given a fact the other was denied.
+
+    Both come back as wall-clock minutes at the destination, absolute rather
+    than relative, because the harness rebases them onto whatever reference the
+    model ends up using. `None` means that forecaster names no train at all:
+    for DB a journey it does not think is possible, for truth a passenger left
+    behind by every candidate we hold. Those are dropped rather than scored —
+    the two forecasters would otherwise be answering different questions — and
+    counted, because a rule that drops the hard cases flatters everyone.
+    """
+    def db_choice(ready: int) -> dict | None:
+        """DB's own forecasts resolve completely: it names a time for every
+        candidate, because a stop it lists no change for is a stop it says runs
+        to plan."""
+        for candidate in candidates:
+            if candidate["cancelled_live"]:
+                continue
+            if candidate["planned_dep"] + candidate["live_dep"] >= ready:
+                return candidate
+        return None
+
+    def actually_caught(ready: int) -> dict | None:
+        """The archive does not always join. A candidate we cannot resolve stops
+        the walk rather than being stepped over: stepping over it would hand the
+        passenger a later train than they may have taken, and the error would
+        land in the tail, which is the part being measured."""
+        for candidate in candidates:
+            if candidate["cancelled"] is None or candidate["truth_dep"] is None:
+                return None
+            if candidate["cancelled"]:
+                continue
+            if candidate["planned_dep"] + candidate["truth_dep"] >= ready:
+                return candidate if candidate["truth_arr"] is not None else None
+        return None
+
+    caught = actually_caught(planned_arrival + feeder_delay + TRANSFER_MINUTES)
+    predicted = db_choice(planned_arrival + feeder_db + TRANSFER_MINUTES)
+    return {
+        "truth_arrival": (None if caught is None
+                          else caught["planned_arr"] + caught["truth_arr"]),
+        "caught_id": None if caught is None else caught["id"],
+        "db_arrival": (None if predicted is None
+                       else predicted["planned_arr"] + predicted["db_arr"]),
+        "db_id": None if predicted is None else predicted["id"],
+    }
 
 
 def report_catch(scored: Path) -> None:
@@ -609,7 +813,7 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command",
                     choices=["events", "score", "compare", "connections",
-                             "catch"])
+                             "journeys", "catch"])
     ap.add_argument("--day", default="1970-01-01")
     ap.add_argument("--out", type=Path, default=cf.OUT)
     ap.add_argument("--truth", choices=["settled", "archive"], default="settled")
@@ -624,6 +828,9 @@ def main() -> None:
                     help="what the lead time is measured back from")
     ap.add_argument("--events-out", type=Path,
                     help="write every event as JSONL here, for the JVM harness")
+    ap.add_argument("--destinations", type=Path,
+                    default=Path(cf.__file__).parent / "forecast_destinations.csv",
+                    help="the far ends this cohort can be scored to")
     args = ap.parse_args()
 
     if args.command == "catch":
@@ -642,6 +849,32 @@ def main() -> None:
 
     day = dt.date.fromisoformat(args.day)
     stops, polls = read_day(args.out, day, cohorts=(args.cohort,))
+    if args.command == "journeys":
+        # The far end is read from the second tier, which is polled for exactly
+        # this and never originates anything, and truth has to cover both.
+        far_stops, far_polls = read_day(args.out, day, tiers=(2,),
+                                        cohorts=(args.cohort,))
+        far = {(stop.eva, run_key(stop.trip)): stop for stop in far_stops.values()}
+        destinations = {s.name: s.eva
+                        for s in cf.load_stations(args.destinations, 2)}
+        truth = load_truth(args.data_dir, day,
+                           {s.eva for s in cf.load_stations(args.stations)}
+                           | set(destinations.values()))
+        trips = build_journeys(stops, far, polls, far_polls, truth,
+                               destinations)
+        scoreable = [t for t in trips
+                     if t["truth_arrival"] is not None and t["db_arrival"] is not None]
+        no_truth = sum(1 for t in trips if t["truth_arrival"] is None)
+        no_db = sum(1 for t in trips if t["db_arrival"] is None)
+        print(f"{len(trips)} journeys, {len(scoreable)} with both answers "
+              f"({no_truth} nobody caught anything, {no_db} DB names no train)",
+              file=sys.stderr)
+        if args.events_out:
+            with args.events_out.open("w", encoding="utf-8") as fh:
+                for t in scoreable:
+                    fh.write(json.dumps(t, sort_keys=True) + "\n")
+            print(f"wrote {len(scoreable)} to {args.events_out}", file=sys.stderr)
+        return
     if args.command == "connections":
         truth = load_truth(args.data_dir, day,
                            {s.eva for s in cf.load_stations(args.stations)})

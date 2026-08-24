@@ -7,6 +7,33 @@ fixes; expect breaking changes between minors until 1.0).
 
 ## [Unreleased]
 
+### Fixed
+- **A predicted arrival could be a day late.** Where a journey ends, the IRIS
+  board gives a departure and nothing beyond it, so the arrival was recovered
+  by taking the destination's most recent *time of day* from history and
+  hanging it on today's date — rolling the date forward whenever that landed
+  before the departure. A timetable that had shifted by half an hour was enough
+  to trigger it: a 28-minute leg was published as 24 hours and 28 minutes.
+  Departure and arrival are now read from the same historical run and the leg
+  between them applied to today's departure, so a schedule that shifts moves
+  both; the median run sets it, and a leg longer than 14 hours is declined
+  rather than published. This affected journeys with a change and direct
+  journeys alike — both recovered the arrival the same way. Found by the
+  two-leg evaluation on its first end-to-end run, where four candidates in six
+  landed a day out on one collected day.
+
+### Added
+- **The evaluation scores a complete two-leg journey**, not only its parts: the
+  predicted arrival at the far end of a change against the arrival that
+  happened, in the same units as a direct journey, so for the first time the
+  two kinds of journey can be compared with each other rather than each only
+  with DB. Both forecasters answer over the same candidate trains and from the
+  same moment, and neither is shown a delay the other was denied: DB's answer
+  is the arrival of whichever train its own forecasts say the passenger
+  catches. The harness drives the shipping code — `CandidateBuilder`, which the
+  app itself uses, and `ConnectionModel.propagate` — rather than a description
+  of it.
+
 ## [0.2.0] - 2026-08-24
 
 ### Added

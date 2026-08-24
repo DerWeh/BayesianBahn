@@ -548,3 +548,351 @@ def test_the_two_filters_are_independent(tmp_path: Path) -> None:
     ])
     stops, polls = se.read_day(path, DAY, cohorts=(2,))
     assert set(polls) == {"8000025"}
+
+
+# --- two-leg journeys --------------------------------------------------------
+#
+# No collected day yet holds both a far-end forecast and an archive truth for
+# it, so these fixtures are the only check this code has until one does. They
+# are written against the behaviours that decide whether the comparison is fair
+# rather than merely non-crashing: both forecasters answer from the same moment,
+# over the same candidates, and neither is handed a fact the other was denied.
+
+DEST = {"Musterstadt": "8000999"}
+# The far end answered from long before anything is read, so the only
+# reason a reading can be missing in these fixtures is the stop itself.
+FAR_POLLS = {"8000999": [0.0]}
+
+
+def far_stop(planned, *, trip="c1", eva="8000999", cat="RE", num="2",
+             obs=()):
+    stop = se.Stop(eva=eva, trip=trip, cat=cat, num=num, line=None, planned=planned)
+    stop.obs = list(obs)
+    return stop
+
+
+def leg(planned_dep, *, trip="c1", cat="RE", num="2", eva="8000001",
+        ppth=("Musterstadt",), obs=()):
+    stop = se.Stop(eva=eva, trip=trip, cat=cat, num=num, line=None, planned=None,
+                   planned_dep=planned_dep, ppth=list(ppth))
+    stop.obs = list(obs)
+    return stop
+
+
+def feeder_stop(planned, *, trip="f1-2608171200-3", eva="8000001", cat="RE", num="1"):
+    return se.Stop(eva=eva, trip=trip, cat=cat, num=num, line=None, planned=planned)
+
+
+def journey_fixture(*, feeder_delay=0, feeder_db=0, cand_dep_truth=0,
+                    cand_dep_live=0, cand_arr_truth=0, cand_arr_db=0,
+                    slack=10):
+    """One feeder, one candidate, both forecasters holding a reading."""
+    arrive = 12 * 60          # feeder due at 12:00 wall-clock minutes
+    depart = arrive + se.TRANSFER_MINUTES + slack
+    reach = depart + 60
+    read_at = se.wall_to_epoch(arrive) - 3600
+    feeder = feeder_stop(arrive)
+    feeder.obs = [(read_at - 60, arrive + feeder_db, None, False)]
+    candidate = leg(depart, obs=[(read_at - 60, None, depart + cand_dep_live, False)])
+    far = {("8000999", se.run_key("c1")):
+           far_stop(reach, obs=[(read_at - 60, reach + cand_arr_db, None, False)])}
+    truth = {
+        ("8000001", "RE", "1", arrive): {"delay": feeder_delay, "dep_delay": 0,
+                                         "cancelled": False},
+        ("dep", "8000001", "RE", "2", depart): {"delay": 0,
+                                                "dep_delay": cand_dep_truth,
+                                                "cancelled": False},
+        ("8000999", "RE", "2", reach): {"delay": cand_arr_truth, "dep_delay": 0,
+                                        "cancelled": False},
+    }
+    stops = {("8000001", feeder.trip): feeder, ("8000001", "c1"): candidate}
+    polls = {"8000001": [read_at]}
+    return stops, far, polls, truth, {"arrive": arrive, "reach": reach}
+
+
+def test_a_journey_is_built_from_a_feeder_and_a_reachable_destination():
+    stops, far, polls, truth, _ = journey_fixture()
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)
+    assert len(got) == 1
+    assert got[0]["dest_eva"] == "8000999" and got[0]["dest"] == "Musterstadt"
+    assert [c["id"] for c in got[0]["candidates"]] == ["c1"]
+
+
+def test_the_truth_is_the_arrival_of_the_train_actually_caught():
+    stops, far, polls, truth, when = journey_fixture(cand_arr_truth=7)
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["truth_arrival"] == when["reach"] + 7
+    assert got["caught_id"] == "c1"
+
+
+def test_db_answers_with_the_train_its_own_forecasts_name():
+    """Not the one that was actually caught: DB is scored on what it said."""
+    stops, far, polls, truth, when = journey_fixture(cand_arr_db=4, cand_arr_truth=9)
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["db_arrival"] == when["reach"] + 4
+    assert got["truth_arrival"] == when["reach"] + 9
+
+
+def test_a_connection_missed_in_truth_falls_through_to_the_next_train():
+    """The outcome the catch scorer can only call a failure has an arrival time,
+    and it is the one the passenger actually experiences."""
+    arrive = 12 * 60
+    read_at = se.wall_to_epoch(arrive) - 3600
+    feeder = feeder_stop(arrive)
+    feeder.obs = [(read_at - 60, arrive, None, False)]
+    early = leg(arrive + 7, trip="c1", num="2",
+                obs=[(read_at - 60, None, arrive + 7, False)])
+    late = leg(arrive + 40, trip="c2", num="3",
+               obs=[(read_at - 60, None, arrive + 40, False)])
+    far = {("8000999", se.run_key("c1")): far_stop(arrive + 70, trip="c1", num="2",
+                                                   obs=[(read_at - 60, arrive + 70,
+                                                         None, False)]),
+           ("8000999", se.run_key("c2")): far_stop(arrive + 100, trip="c2", num="3",
+                                                   obs=[(read_at - 60, arrive + 100,
+                                                         None, False)])}
+    truth = {
+        ("8000001", "RE", "1", arrive): {"delay": 20, "dep_delay": 0,
+                                         "cancelled": False},
+        ("dep", "8000001", "RE", "2", arrive + 7): {"delay": 0, "dep_delay": 0,
+                                                    "cancelled": False},
+        ("dep", "8000001", "RE", "3", arrive + 40): {"delay": 0, "dep_delay": 0,
+                                                     "cancelled": False},
+        ("8000999", "RE", "2", arrive + 70): {"delay": 0, "dep_delay": 0,
+                                              "cancelled": False},
+        ("8000999", "RE", "3", arrive + 100): {"delay": 0, "dep_delay": 0,
+                                               "cancelled": False},
+    }
+    stops = {("8000001", feeder.trip): feeder, ("8000001", "c1"): early,
+             ("8000001", "c2"): late}
+    got = se.build_journeys(stops, far, {"8000001": [read_at]}, FAR_POLLS, truth, DEST)[0]
+    assert got["caught_id"] == "c2", "20 minutes late misses the 7-minute change"
+    assert got["truth_arrival"] == arrive + 100
+    assert got["db_id"] == "c1", "DB predicted the feeder on time"
+
+
+def test_a_cancelled_candidate_is_not_boarded():
+    stops, far, polls, truth, when = journey_fixture()
+    key = ("dep", "8000001", "RE", "2", when["arrive"] + se.TRANSFER_MINUTES + 10)
+    truth[key] = {**truth[key], "cancelled": True}
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["caught_id"] is None and got["truth_arrival"] is None
+
+
+def test_the_feeder_is_never_its_own_connection():
+    arrive = 12 * 60
+    read_at = se.wall_to_epoch(arrive) - 3600
+    feeder = feeder_stop(arrive, trip="c1")
+    feeder.obs = [(read_at - 60, arrive, None, False)]
+    feeder.planned_dep = arrive + 2
+    feeder.ppth = ["Musterstadt"]
+    stops = {("8000001", "c1"): feeder}
+    far = {("8000999", se.run_key("c1")): far_stop(arrive + 60)}
+    truth = {("8000001", "RE", "1", arrive): {"delay": 0, "dep_delay": 0,
+                                              "cancelled": False}}
+    assert se.build_journeys(stops, far, {"8000001": [read_at]}, FAR_POLLS, truth, DEST) == []
+
+
+def test_a_destination_outside_the_second_tier_is_not_offered():
+    """There is no forecast to read at a station nobody polls, so a journey
+    ending there could only ever be scored against silence."""
+    stops, far, polls, truth, _ = journey_fixture()
+    assert se.build_journeys(stops, far, polls, FAR_POLLS, truth, {}) == []
+
+
+def test_a_candidate_with_nothing_collected_at_the_far_end_is_dropped():
+    stops, _, polls, truth, _ = journey_fixture()
+    assert se.build_journeys(stops, {}, polls, FAR_POLLS, truth, DEST) == []
+
+
+def test_a_journey_is_read_before_the_feeder_sets_off():
+    """The last moment the answer can still change a decision — the same rule
+    the connection scorer uses, so the two are read from the same instant."""
+    stops, far, polls, truth, _ = journey_fixture()
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["read_at"] <= se.wall_to_epoch(cf.iris_time("2608171200"))
+
+
+def test_a_feeder_we_were_not_yet_polling_for_is_skipped():
+    stops, far, _, truth, _ = journey_fixture()
+    assert se.build_journeys(stops, far, {"8000001": []}, FAR_POLLS, truth, DEST) == []
+
+
+def test_the_candidate_list_is_capped_the_way_the_app_caps_it():
+    """The model is given MAX_CANDIDATES trains; scoring it over more would
+    score something the app never runs."""
+    arrive = 12 * 60
+    read_at = se.wall_to_epoch(arrive) - 3600
+    feeder = feeder_stop(arrive)
+    feeder.obs = [(read_at - 60, arrive, None, False)]
+    stops = {("8000001", feeder.trip): feeder}
+    far, truth = {}, {("8000001", "RE", "1", arrive): {"delay": 0, "dep_delay": 0,
+                                                       "cancelled": False}}
+    for i in range(se.MAX_CANDIDATES + 4):
+        trip = f"c{i}"
+        depart = arrive + se.TRANSFER_MINUTES + 3 + i
+        stops[("8000001", trip)] = leg(depart, trip=trip, num=str(100 + i),
+                                       obs=[(read_at - 60, None, depart, False)])
+        far[("8000999", se.run_key(trip))] = far_stop(
+            depart + 60, trip=trip, num=str(100 + i),
+            obs=[(read_at - 60, depart + 60, None, False)])
+        truth[("dep", "8000001", "RE", str(100 + i), depart)] = {
+            "delay": 0, "dep_delay": 0, "cancelled": False}
+        truth[("8000999", "RE", str(100 + i), depart + 60)] = {
+            "delay": 0, "dep_delay": 0, "cancelled": False}
+    got = se.build_journeys(stops, far, {"8000001": [read_at]}, FAR_POLLS, truth, DEST)[0]
+    assert len(got["candidates"]) == se.MAX_CANDIDATES
+
+
+def test_a_train_leaving_before_the_feeder_is_due_is_still_a_candidate():
+    """A delayed earlier train is sometimes exactly the connection that works,
+    and the app offers it — so the evaluation has to as well."""
+    arrive = 12 * 60
+    read_at = se.wall_to_epoch(arrive) - 3600
+    feeder = feeder_stop(arrive)
+    feeder.obs = [(read_at - 60, arrive, None, False)]
+    early = leg(arrive - 10, trip="c0", num="9",
+                obs=[(read_at - 60, None, arrive - 10, False)])
+    booked = leg(arrive + 15, trip="c1", num="2",
+                 obs=[(read_at - 60, None, arrive + 15, False)])
+    stops = {("8000001", feeder.trip): feeder, ("8000001", "c0"): early,
+             ("8000001", "c1"): booked}
+    far = {("8000999", se.run_key("c0")): far_stop(arrive + 50, trip="c0", num="9",
+                                                   obs=[(read_at - 60, arrive + 50,
+                                                         None, False)]),
+           ("8000999", se.run_key("c1")): far_stop(arrive + 75, trip="c1", num="2",
+                                                   obs=[(read_at - 60, arrive + 75,
+                                                         None, False)])}
+    truth = {("8000001", "RE", "1", arrive): {"delay": 0, "dep_delay": 0,
+                                              "cancelled": False}}
+    for num, dep, arr in (("9", arrive - 10, arrive + 50), ("2", arrive + 15,
+                                                            arrive + 75)):
+        truth[("dep", "8000001", "RE", num, dep)] = {"delay": 0, "dep_delay": 0,
+                                                     "cancelled": False}
+        truth[("8000999", "RE", num, arr)] = {"delay": 0, "dep_delay": 0,
+                                              "cancelled": False}
+    got = se.build_journeys(stops, far, {"8000001": [read_at]}, FAR_POLLS, truth, DEST)[0]
+    assert [c["id"] for c in got["candidates"]] == ["c0", "c1"]
+
+
+def test_neither_forecaster_sees_the_others_information():
+    """The fairness the whole comparison rests on: DB boards the train its own
+    forecasts point at, truth boards the train the realised times point at, and
+    with different delays those are different trains."""
+    got = se.boarded(720, 20, 0, [
+        {"id": "early", "planned_dep": 730, "planned_arr": 790, "live_dep": 0,
+         "truth_dep": 0, "truth_arr": 0, "cancelled": False, "cancelled_live": False,
+         "db_arr": 0},
+        {"id": "later", "planned_dep": 760, "planned_arr": 820, "live_dep": 0,
+         "truth_dep": 0, "truth_arr": 0, "cancelled": False, "cancelled_live": False,
+         "db_arr": 0},
+    ])
+    assert got["db_id"] == "early" and got["caught_id"] == "later"
+
+
+def test_a_journey_db_does_not_believe_in_has_no_db_answer():
+    got = se.boarded(720, 0, 60, [
+        {"id": "only", "planned_dep": 730, "planned_arr": 790, "live_dep": 0,
+         "truth_dep": 0, "truth_arr": 0, "cancelled": False, "cancelled_live": False,
+         "db_arr": 0},
+    ])
+    assert got["db_arrival"] is None and got["truth_arrival"] == 790
+
+
+# --- the two halves of the journey scorer have to agree ----------------------
+#
+# Python decides which train the passenger caught; Kotlin decides what the model
+# predicted. They are scoring the same journey only if they assume the same
+# transfer time and the same candidate cap. Nothing in the output would show a
+# divergence: both halves would keep producing plausible numbers about slightly
+# different journeys.
+
+def kotlin(path: str) -> str:
+    return (TOOLS.parent / "app/src" / path).read_text(encoding="utf-8")
+
+
+def test_the_transfer_time_matches_the_harness() -> None:
+    source = kotlin("test/java/io/github/derweh/bayesianbahn/JourneyHarness.kt")
+    assert f"const val TRANSFER_MINUTES = {se.TRANSFER_MINUTES}" in source
+
+
+def test_the_candidate_cap_matches_the_app() -> None:
+    """Scoring the model over more candidates than the app ever gives it would
+    score something that does not ship."""
+    source = kotlin("main/java/io/github/derweh/bayesianbahn/data/ConnectionPlanner.kt")
+    assert f"const val MAX_CANDIDATES = {se.MAX_CANDIDATES}" in source
+
+
+def test_the_candidate_window_matches_the_app() -> None:
+    source = kotlin("main/java/io/github/derweh/bayesianbahn/data/ConnectionPlanner.kt")
+    assert f"feederPlanned - {se.CANDIDATE_WINDOW_BEFORE} * 60_000" in source
+
+
+def test_the_harness_builds_candidates_with_the_apps_own_code() -> None:
+    """Not a description of it. The Python mirror of the arrival model drifted
+    exactly this way, and kept producing plausible numbers while it did."""
+    source = kotlin("test/java/io/github/derweh/bayesianbahn/JourneyHarness.kt")
+    assert "CandidateBuilder.build(" in source
+    assert "ConnectionModel.propagate(" in source
+
+
+# --- what "no reading" means ------------------------------------------------
+#
+# Found by running the builder over a real collected day rather than by
+# reasoning about it: 60% of candidates had no far-end reading and 52% no
+# departure reading, which would have been read as "DB declines to answer" and
+# dropped. It is not. DB states a stop in four shapes and three of them mean on
+# time — a stop it lists no change for is one of them. Only a station we had not
+# begun polling is genuinely silent, and the poll log is what tells them apart.
+
+
+def test_a_stop_db_lists_no_change_for_is_db_saying_on_time():
+    stops, far, polls, truth, when = journey_fixture()
+    stops[("8000001", "c1")].obs = []                     # nothing at the transfer
+    far[("8000999", se.run_key("c1"))].obs = []           # nothing at the far end
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["candidates"][0]["live_dep"] == 0
+    assert got["candidates"][0]["db_arr"] == 0
+    assert got["db_arrival"] == when["reach"], "DB does answer, and says on time"
+
+
+def test_a_far_end_we_had_not_begun_polling_is_genuinely_silent():
+    """The one case where nothing can be read: no poll at all by then. Scoring
+    DB as if it had said 'on time' there would credit it with a prediction it
+    never made."""
+    stops, far, polls, truth, _ = journey_fixture()
+    read_at = polls["8000001"][0]
+    assert se.build_journeys(stops, far, polls, {"8000999": [read_at + 1]},
+                             truth, DEST) == []
+
+
+def test_an_unjoined_candidate_stops_the_walk_rather_than_being_stepped_over():
+    """Stepping over it hands the passenger a later train than they may have
+    taken, and the error lands in the tail — the part being measured."""
+    got = se.boarded(720, 0, 0, [
+        {"id": "unknown", "planned_dep": 730, "planned_arr": 790, "live_dep": 0,
+         "truth_dep": None, "truth_arr": None, "cancelled": None,
+         "cancelled_live": False, "db_arr": 0},
+        {"id": "later", "planned_dep": 760, "planned_arr": 820, "live_dep": 0,
+         "truth_dep": 0, "truth_arr": 0, "cancelled": False,
+         "cancelled_live": False, "db_arr": 0},
+    ])
+    assert got["truth_arrival"] is None and got["caught_id"] is None
+    assert got["db_id"] == "unknown", "DB's own side resolves regardless"
+
+
+def test_a_candidate_the_archive_never_joined_is_not_read_as_cancelled():
+    """It used to default to cancelled, which skipped straight past it."""
+    stops, far, polls, truth, _ = journey_fixture()
+    del truth[("dep", "8000001", "RE", "2", 12 * 60 + se.TRANSFER_MINUTES + 10)]
+    got = se.build_journeys(stops, far, polls, FAR_POLLS, truth, DEST)[0]
+    assert got["candidates"][0]["cancelled"] is None
+    assert got["truth_arrival"] is None, "unknown, so the journey is not scored"
+
+
+def test_a_boarded_candidate_with_no_recorded_arrival_is_not_scored():
+    got = se.boarded(720, 0, 0, [
+        {"id": "only", "planned_dep": 730, "planned_arr": 790, "live_dep": 0,
+         "truth_dep": 0, "truth_arr": None, "cancelled": False,
+         "cancelled_live": False, "db_arr": 0},
+    ])
+    assert got["truth_arrival"] is None

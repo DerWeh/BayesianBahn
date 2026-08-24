@@ -4,12 +4,8 @@ import io.github.derweh.bayesianbahn.api.IrisClient
 import io.github.derweh.bayesianbahn.api.TimetableStop
 import io.github.derweh.bayesianbahn.model.ConnectionModel
 import io.github.derweh.bayesianbahn.model.DeutschlandTicket
-import io.github.derweh.bayesianbahn.model.EmpiricalDelay
-import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalTime
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 /**
  * Evaluates a connection: feeder train → transfer station → any train towards
@@ -153,76 +149,29 @@ class ConnectionPlanner(
     ): ConnectionModel.Candidate? {
         val departure = stop.departure ?: return null
         val plannedDep = departure.plannedTime ?: return null
-        val live = departure.liveDelayMinutes
-        val cancelledLive = departure.cancelled
-
-        val history = historyRepository.load(stop.label.category, stop.label.number, stop.label.line)
-        val transferHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
-            sh.eva == transfer.eva || StationNames.matches(name, transfer.name)
-        }?.value
-        // Shards carry the eva, so prefer it and fall back to the name only
-        // for entries that predate it.
-        val destinationHistory = history?.stations?.entries?.firstOrNull { (name, sh) ->
-            (destination != null && sh.eva == destination.eva) ||
-                StationNames.matches(name, destinationName)
-        }?.value
-
-        val depHhmm = Instant.ofEpochMilli(plannedDep).atZone(ZONE).format(HHMM)
-        val relevant = transferHistory?.runs.orEmpty().filter {
-            EmpiricalDelay.timeOfDayDistance(it.plannedTimeOfDay, depHhmm) <=
-                EmpiricalDelay.TIME_OF_DAY_WINDOW_MIN
-        }
-        val cancelRate = if (relevant.isEmpty()) 0.0 else {
-            relevant.count { it.cancelled }.toDouble() / relevant.size
-        }
-
-        val arrivalByDate = destinationHistory?.runs.orEmpty()
-            .filter { !it.cancelled && (it.arrivalDelay ?: it.departureDelay) != null }
-            .associateBy { it.date }
-        val joint = relevant.mapNotNull { run ->
-            val dep = (run.departureDelay ?: run.arrivalDelay) ?: return@mapNotNull null
-            if (run.cancelled) return@mapNotNull null
-            val arrRun = arrivalByDate[run.date] ?: return@mapNotNull null
-            val arr = (arrRun.arrivalDelay ?: arrRun.departureDelay) ?: return@mapNotNull null
-            ConnectionModel.JointRun(
-                departureDelay = dep.toDouble(),
-                arrivalDelay = arr.toDouble(),
-                weight = EmpiricalDelay.baseWeight(run.date, today),
-            )
-        }
-        if (joint.size < MIN_JOINT_RUNS && live == null && !cancelledLive) return null
-
-        // Planned arrival at the destination is not part of the IRIS board;
-        // recover it from the most recent historical run's planned time of day.
-        val arrivalTod = arrivalByDate.entries.maxByOrNull { it.key }?.value?.plannedTimeOfDay
-            ?: return null
-        val plannedArr = arrivalMillis(plannedDep, arrivalTod) ?: return null
-
-        return ConnectionModel.Candidate(
+        return CandidateBuilder.build(
+            history = historyRepository.load(
+                stop.label.category, stop.label.number, stop.label.line,
+            ),
             id = stop.id,
             label = "${stop.label.display} → ${stop.destination ?: "?"}",
+            transferEva = transfer.eva,
+            transferName = transfer.name,
+            destinationEva = destination?.eva,
+            destinationName = destinationName,
             plannedDepartureMillis = plannedDep,
-            plannedArrivalMillis = plannedArr,
-            runs = joint,
-            liveDepartureDelay = live,
-            cancelledLive = cancelledLive,
-            cancelRate = cancelRate,
+            liveDepartureDelay = departure.liveDelayMinutes,
+            cancelledLive = departure.cancelled,
+            today = today,
         )
     }
 
     companion object {
         private val ZONE = ZoneId.of("Europe/Berlin")
-        private val HHMM = DateTimeFormatter.ofPattern("HH:mm")
         const val MAX_CANDIDATES = 6
-        const val MIN_JOINT_RUNS = 5
 
-        /** Absolute planned arrival: departure date + arrival time of day (may wrap midnight). */
-        fun arrivalMillis(plannedDepMillis: Long, arrivalHhmm: String): Long? {
-            val tod = runCatching { LocalTime.parse(arrivalHhmm, HHMM) }.getOrNull() ?: return null
-            val dep = Instant.ofEpochMilli(plannedDepMillis).atZone(ZONE)
-            var arr = dep.with(tod)
-            if (arr.isBefore(dep)) arr = arr.plusDays(1)
-            return arr.toInstant().toEpochMilli()
-        }
+        // Moved to CandidateBuilder with the code that uses it, and re-exported
+        // so callers and tests keep one name for one thing.
+        const val MIN_JOINT_RUNS = CandidateBuilder.MIN_JOINT_RUNS
     }
 }
