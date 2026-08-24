@@ -639,3 +639,64 @@ def test_the_local_hour_matches_the_wall_clock_it_is_taken_from():
               .select(R.LOCAL_HOUR.alias("h"))["h"].to_list())
     roundtrip = [dt.datetime.fromtimestamp(wall_to_epoch(m), BERLIN).hour for m in minutes]
     assert direct == roundtrip
+
+
+# --- working days against the weekend ----------------------------------------
+#
+# 2026-08-21 is a Friday and 2026-08-22 a Saturday. polars numbers weekdays from
+# 1 = Monday, so the boundary is off by one from the 0-based convention used
+# elsewhere in this pipeline — and getting it wrong would file Friday, the
+# busiest day in the data, under "weekend" without changing any total.
+
+
+def test_the_week_is_split_at_the_right_day():
+    rows = R.week_split(*days(a_day("2026-08-21", [arrival(crps=1.0)], [connection()]),
+                              a_day("2026-08-22", [arrival(crps=2.0)], [connection()])))
+    assert [(r["part"], r["n"]) for r in rows] == [
+        ("Monday to Friday", 1), ("Saturday and Sunday", 1)]
+
+
+def test_sunday_is_the_weekend_too():
+    """The other end of the boundary: 2026-08-23 is a Sunday, and polars puts
+    it at 7, past both `>= 6` and any 0-based reading of the same rule."""
+    rows = R.week_split(*days(a_day("2026-08-23", [arrival()], [connection()])))
+    assert [r["part"] for r in rows] == ["Saturday and Sunday"]
+
+
+def test_monday_is_a_working_day():
+    rows = R.week_split(*days(a_day("2026-08-17", [arrival()], [connection()])))
+    assert [r["part"] for r in rows] == ["Monday to Friday"]
+
+
+def test_a_week_with_only_one_kind_of_day_yields_one_row():
+    """The section is rendered only when there are two; a single row would
+    invite reading a weekday figure as if it covered the week."""
+    rows = R.week_split(*days(a_day("2026-08-17", [arrival()], [connection()]),
+                              a_day("2026-08-18", [arrival()], [connection()])))
+    assert len(rows) == 1
+
+
+def test_the_split_reports_dbs_own_error_not_the_gap():
+    """The column exists to show how much there is to improve on, so it is DB's
+    absolute error — not a difference, which would be near zero for both."""
+    rows = R.week_split(*days(a_day("2026-08-17", [arrival(db=2, truth=6)],
+                                    [connection()])))
+    assert rows[0]["db"] == pytest.approx(4.0)
+
+
+def test_each_part_is_scored_against_its_own_days_only():
+    """Not a filter applied to an already-pooled gap: the weekend figure has to
+    come from weekend rows, or the quieter half borrows the busier one's."""
+    rows = R.week_split(*days(
+        a_day("2026-08-17", [arrival(crps=1.0, db=2, truth=2)], [connection()]),
+        a_day("2026-08-22", [arrival(crps=5.0, db=2, truth=2)], [connection()])))
+    gaps = {r["part"]: r["live"][0] for r in rows}
+    assert gaps["Monday to Friday"] == pytest.approx(1.0)
+    assert gaps["Saturday and Sunday"] == pytest.approx(5.0)
+
+
+def test_a_part_of_the_week_with_no_missed_connection_says_so():
+    """A Brier gap over an empty set is not zero, and zero would read as a tie."""
+    rows = R.week_split(*days(a_day("2026-08-17", [arrival()],
+                                    [connection(caught=True)])))
+    assert rows[0]["missed_n"] == 0 and rows[0]["missed"] is None

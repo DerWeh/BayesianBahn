@@ -6,6 +6,16 @@ prediction against DB's therefore needs the forecast history captured live —
 this is the only part of the evaluation that cannot be recomputed from data we
 already have, which is why it runs for days and why losing a run hurts.
 
+Two tiers of station are polled. Tier 1 is the twenty pre-registered stations
+the comparison is built on; nothing may be added to it after the fact. Tier 2
+is where the trains leaving those stations end up — `forecast_destinations.csv`,
+derived from the timetable by `build_destinations.py`. A one-change journey
+ends at the far end of the second leg, and IRIS serves forecasts one station at
+a time, so DB's answer for that arrival can only be had by polling there too. A
+tier-2 station is never the *origin* of a scored arrival or connection; the tier
+is written into every poll record so that stays a fact about the data rather
+than about whichever CSV is on disk when it is read back.
+
 What it records, per station, every [CADENCE_MINUTES]:
 
   * `plan`   the planned time and route of each train, once per train and stop.
@@ -68,6 +78,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = Path(__file__).parent / ".forecasts"
+STATIONS = Path(__file__).parent / "forecast_stations.csv"
+DESTINATIONS = Path(__file__).parent / "forecast_destinations.csv"
 IRIS = "https://iris.noncd.db.de/iris-tts/timetable"
 HAFAS = "https://v6.db.transport.rest"
 UA = "BayesianBahn/0.1 (F-Droid; FOSS delay prediction; evaluation harness)"
@@ -125,7 +137,11 @@ def parse_plan(xml: str) -> dict[str, dict]:
             "line": (tl.get("l") if tl is not None else None),
             "par": iris_time(ar.get("pt")) if ar is not None else None,
             "pdp": iris_time(dp.get("pt")) if dp is not None else None,
-            "ppth": ((dp.get("ppth") or "") if dp is not None else "").split("|")[:1] or [],
+            # The whole onward path, not just the next stop: its last entry is
+            # where the train ends up, which is the far end of the second leg
+            # for anyone who changes onto it here.
+            "ppth": [p for p in ((dp.get("ppth") or "") if dp is not None
+                                 else "").split("|") if p],
         }
     return out
 
@@ -189,6 +205,21 @@ class Journal:
         return records, torn
 
 
+def tiers_of(records: list[dict]) -> dict[str, int]:
+    """Which tier each station was polled as, read from the journal itself.
+
+    Not from the station CSVs: those can be edited, and a later edit must not
+    be able to re-label data already collected. A journal written before the
+    second tier existed carries no tier at all, and every station in it was an
+    origin — hence the default.
+    """
+    out: dict[str, int] = {}
+    for record in records:
+        if record["t"] == "poll":
+            out.setdefault(record["eva"], int(record.get("tier", 1)))
+    return out
+
+
 def slot_start(now: float, cadence: int = CADENCE_MINUTES) -> float:
     """The next poll time, aligned to the clock so restarts land in step."""
     minutes = now / 60
@@ -199,15 +230,40 @@ def slot_start(now: float, cadence: int = CADENCE_MINUTES) -> float:
 class Station:
     eva: str
     name: str
+    # 1 = pre-registered origin, 2 = the far end of a change. Only tier 1 may
+    # start a scored connection; tier 2 exists so DB's forecast for the second
+    # leg's arrival can be read, and widening tier 1 after the fact would let
+    # the station set be chosen in hindsight. The journal records the tier per
+    # poll so this stays a property of the data, not of the current CSVs.
+    tier: int = 1
 
 
-def load_stations(path: Path) -> list[Station]:
+def load_stations(path: Path, tier: int = 1) -> list[Station]:
     out = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
         eva, name = line.split(";")[:2]
-        out.append(Station(eva.strip(), name.strip()))
+        out.append(Station(eva.strip(), name.strip(), tier))
+    return out
+
+
+def station_set(stations: Path, destinations: Path | None = None) -> list[Station]:
+    """The pre-registered origins, then the destinations they reach.
+
+    A station can be both — three of the twenty are also termini — and polling
+    it twice a round would double its requests for nothing. Tier 1 wins the
+    collision: the data is identical either way, and the tier decides only
+    whether the station may originate a connection, where the narrower reading
+    is the honest one.
+    """
+    out = load_stations(stations, 1)
+    seen = {s.eva for s in out}
+    if destinations is not None and destinations.exists():
+        for station in load_stations(destinations, 2):
+            if station.eva not in seen:
+                seen.add(station.eva)
+                out.append(station)
     return out
 
 
@@ -298,11 +354,12 @@ class Collector:
             changes = parse_changes(xml)
         except Exception as error:  # network, HTTP, malformed XML
             journal.append({"t": "poll", "at": int(now), "eva": station.eva,
-                            "ok": False, "err": type(error).__name__})
+                            "tier": station.tier, "ok": False,
+                            "err": type(error).__name__})
             return
 
         journal.append({"t": "poll", "at": int(now), "eva": station.eva,
-                        "ok": True, "stops": len(changes)})
+                        "tier": station.tier, "ok": True, "stops": len(changes)})
 
         for trip, change in changes.items():
             key = (station.eva, trip)
@@ -325,7 +382,10 @@ class Collector:
         now = self._now()
         journal = self._journal_for(dt.datetime.fromtimestamp(now).date())
         succeeded = False
-        for station in rng.sample(self.stations, min(HAFAS_SAMPLE, len(self.stations))):
+        # Tier 1 only: this checks the feed the comparison is built on, and
+        # spending the proxy's small budget on the far ends would dilute it.
+        origins = [s for s in self.stations if s.tier == 1] or self.stations
+        for station in rng.sample(origins, min(HAFAS_SAMPLE, len(origins))):
             try:
                 body = self._fetch(
                     f"{HAFAS}/stops/{station.eva}/departures?duration=60&results=10",
@@ -407,20 +467,27 @@ def health(records: list[dict], expected_stations: int, cadence: int = CADENCE_M
     }
 
 
-def status(out: Path, stations_path: Path, now=time.time) -> None:
+def status(out: Path, stations_path: Path, now=time.time,
+           destinations: Path | None = None) -> None:
     days = sorted(out.glob("forecasts-*.jsonl"))
     if not days:
         print(f"nothing collected in {out}")
         return
     try:
-        expected = len(load_stations(stations_path))
+        configured = station_set(stations_path, destinations)
     except OSError:
-        expected = 0
+        configured = []
     for path in days:
         records, torn = Journal.read(path)
         kinds: dict[str, int] = {}
         for record in records:
             kinds[record["t"]] = kinds.get(record["t"], 0) + 1
+        # Against the tiers that day was collected under, not against today's
+        # station files: the days before the second tier existed are complete
+        # with twenty stations, and judging them by 101 would report every one
+        # of them as broken.
+        seen_tiers = set(tiers_of(records).values()) or {1}
+        expected = len([s for s in configured if s.tier in seen_tiers])
         h = health(records, expected)
         span = ""
         if h["first_at"]:
@@ -448,16 +515,18 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["run", "status"])
-    ap.add_argument("--stations", type=Path, default=Path(__file__).parent / "forecast_stations.csv")
+    ap.add_argument("--stations", type=Path, default=STATIONS)
+    ap.add_argument("--destinations", type=Path, default=DESTINATIONS,
+                    help="second-tier stations; the far end of a change")
     ap.add_argument("--out", type=Path, default=OUT)
     ap.add_argument("--minutes", type=int, help="stop after roughly this long")
     args = ap.parse_args()
 
     if args.command == "status":
-        status(args.out, args.stations)
+        status(args.out, args.stations, destinations=args.destinations)
         return
 
-    collector = Collector(load_stations(args.stations), args.out)
+    collector = Collector(station_set(args.stations, args.destinations), args.out)
     # A shutdown must not tear a record: finish the station in flight, then go.
     def stop(_signum, _frame):
         collector.stopping = True

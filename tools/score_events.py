@@ -156,14 +156,25 @@ class Stop:
         return None
 
 
-def read_day(out: Path, day: dt.date) -> tuple[dict[tuple[str, str], Stop], dict[str, list[float]]]:
-    """Stops keyed by (station, trip), plus successful poll times per station."""
+def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
+             ) -> tuple[dict[tuple[str, str], Stop], dict[str, list[float]]]:
+    """Stops keyed by (station, trip), plus successful poll times per station.
+
+    Tier 1 only by default. The comparison's stations were pre-registered, and
+    the second tier is polled solely to supply the far end of a change — letting
+    those stations originate an arrival or a connection would widen the
+    pre-registered set with stations picked after the data was in.
+    """
     records, torn = cf.Journal.read(out / f"forecasts-{day}.jsonl")
     if torn:
         print(f"note: skipped {torn} torn line(s)", file=sys.stderr)
+    tier = cf.tiers_of(records)
+    wanted = {eva for eva, t in tier.items() if t in tiers}
     stops: dict[tuple[str, str], Stop] = {}
     polls: dict[str, list[float]] = {}
     for r in records:
+        if r.get("eva") not in wanted:
+            continue
         if r["t"] == "poll":
             if r.get("ok"):
                 polls.setdefault(r["eva"], []).append(float(r["at"]))

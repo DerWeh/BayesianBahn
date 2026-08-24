@@ -445,3 +445,58 @@ def test_a_train_is_not_a_connection_to_itself(tmp_path: Path) -> None:
              ("dep", "8000001", "RE", "1", PLANNED + 10):
              {"delay": 0, "dep_delay": 0, "cancelled": False}}
     assert se.build_connections(stops, polls, truth) == []
+
+
+# --- the second tier must not become a second set of origins -----------------
+#
+# The collector polls the far ends of changes so DB's forecast for the second
+# leg can be read. Those stations were picked after the data started arriving,
+# from what the timetable happened to serve — the opposite of pre-registered.
+# If they reach `build_events` or `build_connections` the comparison silently
+# becomes a different one, and no number in the report would show it.
+
+
+def tier_journal(tmp_path: Path) -> Path:
+    """One origin and one far end, each with a plan, an observation and a poll."""
+    return write(tmp_path, [
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000001", "tier": 1,
+         "ok": True, "stops": 1},
+        {"t": "poll", "at": EPOCH_1800 - 3600, "eva": "8000041", "tier": 2,
+         "ok": True, "stops": 1},
+        plan_rec(EPOCH_1800 - 3600, trip="t1", eva="8000001"),
+        plan_rec(EPOCH_1800 - 3600, trip="t2", eva="8000041"),
+        obs_rec(EPOCH_1800 - 3600, PLANNED + 4, trip="t1", eva="8000001"),
+        obs_rec(EPOCH_1800 - 3600, PLANNED + 4, trip="t2", eva="8000041"),
+    ])
+
+
+def test_a_far_end_station_is_not_read_as_an_origin(tmp_path: Path) -> None:
+    stops, polls = se.read_day(tier_journal(tmp_path), DAY)
+    assert {eva for eva, _ in stops} == {"8000001"}
+    assert set(polls) == {"8000001"}
+
+
+def test_the_far_end_is_still_there_when_it_is_asked_for(tmp_path: Path) -> None:
+    """Dropped from the comparison, not from the data — scoring a two-leg
+    journey needs exactly these stops."""
+    stops, polls = se.read_day(tier_journal(tmp_path), DAY, tiers=(1, 2))
+    assert {eva for eva, _ in stops} == {"8000001", "8000041"}
+    assert set(polls) == {"8000001", "8000041"}
+
+
+def test_a_journal_written_before_tiers_existed_is_all_origins(tmp_path: Path) -> None:
+    """The first days were collected without the field, and every station in
+    them was pre-registered. Treating a missing tier as anything else would
+    silently empty those days."""
+    path = write(tmp_path, [poll_rec(EPOCH_1800 - 3600),
+                            plan_rec(EPOCH_1800 - 3600),
+                            obs_rec(EPOCH_1800 - 3600, PLANNED + 4)])
+    stops, polls = se.read_day(path, DAY)
+    assert len(stops) == 1 and set(polls) == {"8000001"}
+
+
+def test_a_far_end_cannot_originate_a_connection(tmp_path: Path) -> None:
+    """The tighter guard: `build_connections` pairs any two stops at the same
+    station, so a leaked tier-2 station would invent journeys nobody registered."""
+    stops, polls = se.read_day(tier_journal(tmp_path), DAY)
+    assert all(stop.eva == "8000001" for stop in stops.values())

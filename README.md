@@ -169,11 +169,18 @@ Cross-check with DB's own apps before relying on any of it.
   arrival time for a journey without a change and a catch probability for one
   with a change, and cannot compare the two: it never follows a passenger
   through a transfer to their destination. Answering "is the app better where
-  you have to change?" needs the connecting train's *destination* arrival in
-  the collected forecasts, which `collect_forecasts.py` does not record today.
-  With it, a one-change itinerary could be scored end to end — predicted final
-  arrival against the arrival that happened — in the same units as a direct
-  journey. Tagging arrivals by whether a connection leaves from them is not a
+  you have to change?" needs the connecting train's *destination* arrival, and
+  DB's own forecast for it, which IRIS serves only from that station's feed.
+  *Collection for this is in place since 2026-08-24*: `collect_forecasts.py`
+  now polls a second tier of stations — the termini of the trains leaving the
+  twenty pre-registered ones, derived from the timetable by
+  `build_destinations.py` — and keeps each departure's whole onward path. Tier
+  2 supplies the far end only; it never originates a scored arrival or
+  connection, so the pre-registered set is unchanged. What remains is the
+  scorer: follow the passenger onto whichever train they actually catch and
+  compare the predicted final arrival with the one that happened, in the same
+  units as a direct journey. It can only cover days collected under the second
+  tier. Tagging arrivals by whether a connection leaves from them is not a
   substitute: 96% of them qualify, and the remainder is last trains and
   terminus arrivals rather than direct journeys.
 - On-device [TabICL v2](https://github.com/soda-inria/tabicl) (BSD-3) via ONNX

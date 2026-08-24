@@ -1,0 +1,91 @@
+# Second tier for the forecast comparison: the far end of a change.
+# Derived, not chosen — rebuild with tools/build_destinations.py.
+# Rule: terminus of a train departing a pre-registered station, with
+#   at least 5 departures a day over 260817..260824 (8 days).
+# These stations are polled so DB's forecast for the second leg can be
+# read; they are never used as the origin of a scored connection.
+# eva;name;departures
+8000010;Aschaffenburg Hbf;197
+8000041;Bochum Hbf;223
+8000046;Siegen Hbf;110
+8000049;Braunschweig Hbf;115
+8000068;Darmstadt Hbf;93
+8000073;Singen(Hohentwiel);69
+8000080;Dortmund Hbf;479
+8000087;Solingen Hbf;104
+8000098;Essen Hbf;68
+8000099;Essen-Steele;76
+8000105;Frankfurt(Main)Hbf;297
+8000118;Gelsenkirchen Hbf;219
+8000122;Treuchtlingen;199
+8000134;Trier Hbf;219
+8000142;Hagen Hbf;140
+8000149;Hamm(Westf)Hbf;240
+8000152;Hannover Hbf;151
+8000156;Heidelberg Hbf;385
+8000169;Hildesheim Hbf;134
+8000176;Homburg(Saar)Hbf;68
+8000186;Iserlohn;196
+8000189;Kaiserslautern Hbf;253
+8000206;Koblenz Hbf;327
+8000207;Köln Hbf;63
+8000209;Köln-Mülheim;62
+8000211;Krefeld Hbf;116
+8000237;Lübeck Hbf;208
+8000240;Mainz Hbf;146
+8000241;Mainz-Bischofsheim;50
+8000242;Wesel;61
+8000244;Mannheim Hbf;153
+8000250;Wiesbaden Hbf;121
+8000260;Würzburg Hbf;183
+8000261;München Hbf;223
+8000265;Neckargemünd;104
+8000284;Nürnberg Hbf;72
+8000295;Osterburken;79
+8000310;Remagen;116
+8000316;Rheine;91
+8000323;Saarbrücken Hbf;153
+8000369;Eberbach;51
+8000502;Alsdorf-Annapark;255
+8000514;Altenahr;110
+8001182;Brilon Stadt;41
+8001209;Ahrbrück;116
+8001739;Hamburg Elbgaustraße;864
+8001817;Erbach(Odenw);116
+8001893;Eschweiler-Weisweiler;128
+8002557;Hamburg-Neugraben;1485
+8002721;Heinsberg(Rheinl);133
+8003368;Köln Messe/Deutz;146
+8003553;Langerwehe;92
+8003992;Merzig(Saar);134
+8004094;Mosbach(Baden);64
+8004253;Neubrücke(Nahe);119
+8004267;Hamburg-Harburg Rathaus;165
+8004819;Pinneberg;770
+8004822;Pirmasens Hbf;86
+8005578;Sinsheim(Elsenz) Hbf;251
+8005659;St Wendel;97
+8005741;Stolberg-Altstadt;219
+8005904;Trier Hafenstraße;240
+8006552;Wolfsburg Hbf;421
+8007445;Aglasterhausen;129
+8007868;Lebach-Jabach;139
+8010041;Berlin-Schöneweide;2158
+8010089;Dresden-Neustadt;140
+8011988;Kamenz(Sachs);140
+8089043;Berlin Treptower Park;835
+8089073;Berlin Südkreuz (S);622
+8089107;Berlin Bundesplatz;147
+8089109;Berlin-Halensee;129
+8089111;Berlin Westend;434
+8089118;Berlin Beusselstraße;2106
+8089165;Berlin Charlottenburg (S);168
+8089184;Potsdam Hbf (S);772
+8089188;Ahrensfelde (S);829
+8098349;Stolberg(Rheinl)Hbf Gl.44;192
+8400043;Eygelshoven Markt;210
+8400644;Venlo;97
+8503424;Schaffhausen;263
+8700271;Forbach(F);116
+8800004;Bruxelles Midi;72
+8800116;Hergenrath;121

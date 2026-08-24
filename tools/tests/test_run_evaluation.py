@@ -100,3 +100,35 @@ def test_pixi_exposes_the_driver_as_a_task() -> None:
     assert 'evaluate = "python tools/run_evaluation.py"' in manifest
     # It needs polars and the JDK, so it cannot run in the pipeline environment.
     assert 'evaluate = { features = ["pipeline", "evaluate"] }' in manifest
+
+
+def test_the_truth_filter_covers_both_tiers(tmp_path: Path) -> None:
+    """The archive is trimmed to the stations we might need a real arrival for,
+    and the far end of a change is one of them."""
+    origins = tmp_path / "o.csv"
+    origins.write_text("8000001;Aachen Hbf;387\n", encoding="utf-8")
+    ends = tmp_path / "d.csv"
+    ends.write_text("# derived\n8000041;Bochum Hbf;223\n", encoding="utf-8")
+    assert re_.stations(origins, ends) == "8000001,8000041"
+
+
+def test_a_station_in_both_tiers_is_listed_once(tmp_path: Path) -> None:
+    origins = tmp_path / "o.csv"
+    origins.write_text("8000310;Remagen;122\n", encoding="utf-8")
+    ends = tmp_path / "d.csv"
+    ends.write_text("8000310;Remagen;40\n8000041;Bochum Hbf;223\n", encoding="utf-8")
+    assert re_.stations(origins, ends) == "8000310,8000041"
+
+
+def test_a_missing_tier_file_is_not_an_error(tmp_path: Path) -> None:
+    origins = tmp_path / "o.csv"
+    origins.write_text("8000001;Aachen Hbf;387\n", encoding="utf-8")
+    assert re_.stations(origins, tmp_path / "nope.csv") == "8000001"
+
+
+def test_the_real_two_tier_list_parses() -> None:
+    got = re_.stations(TOOLS / "forecast_stations.csv",
+                       TOOLS / "forecast_destinations.csv")
+    evas = got.split(",")
+    assert len(evas) == len(set(evas)), "the archive filter is a set"
+    assert evas[:20] == re_.stations(TOOLS / "forecast_stations.csv").split(",")

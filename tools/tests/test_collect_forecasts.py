@@ -370,3 +370,131 @@ def test_polls_are_jittered_inside_their_slot(tmp_path: Path) -> None:
 def test_jitter_does_not_move_a_poll_out_of_its_slot() -> None:
     """Health accounting buckets by slot; the offset must stay smaller than one."""
     assert cf.JITTER_SECONDS < cf.CADENCE_MINUTES * 60
+
+
+# --- the second tier: the far end of a change --------------------------------
+#
+# The failure this guards is not a crash. If a destination station leaks into
+# tier 1 it becomes an *origin*, and the comparison quietly stops being the one
+# that was pre-registered — with nothing in the output to say so.
+
+
+def test_the_plan_keeps_the_whole_onward_path() -> None:
+    """The terminus is the far end of the second leg; only the next stop was
+    kept before, which made the two-leg journey unscoreable after the fact."""
+    plan = cf.parse_plan(PLAN)
+    assert plan["trip-1"]["ppth"] == ["Neu-Ulm", "Senden"]
+
+
+def test_a_stop_with_no_onward_path_keeps_an_empty_one() -> None:
+    plan = cf.parse_plan(PLAN)
+    assert plan["trip-2"]["ppth"] == []
+
+
+def write_stations(path: Path, rows: list[tuple[str, str]]) -> Path:
+    path.write_text("# a comment\n"
+                    + "".join(f"{eva};{name};1\n" for eva, name in rows),
+                    encoding="utf-8")
+    return path
+
+
+def test_destinations_are_loaded_as_a_second_tier(tmp_path: Path) -> None:
+    origins = write_stations(tmp_path / "o.csv", [("8000001", "Aachen Hbf")])
+    ends = write_stations(tmp_path / "d.csv", [("8000041", "Bochum Hbf")])
+    got = cf.station_set(origins, ends)
+    assert [(s.eva, s.tier) for s in got] == [("8000001", 1), ("8000041", 2)]
+
+
+def test_a_station_in_both_files_is_polled_once_as_an_origin(tmp_path: Path) -> None:
+    """Three of the twenty origins are also termini. Polling them twice a round
+    would double their requests, and tier 2 must not shadow tier 1."""
+    origins = write_stations(tmp_path / "o.csv", [("8000310", "Remagen")])
+    ends = write_stations(tmp_path / "d.csv",
+                          [("8000310", "Remagen"), ("8000041", "Bochum Hbf")])
+    got = cf.station_set(origins, ends)
+    assert [(s.eva, s.tier) for s in got] == [("8000310", 1), ("8000041", 2)]
+
+
+def test_a_missing_destinations_file_leaves_the_origins_alone(tmp_path: Path) -> None:
+    origins = write_stations(tmp_path / "o.csv", [("8000001", "Aachen Hbf")])
+    got = cf.station_set(origins, tmp_path / "nope.csv")
+    assert [(s.eva, s.tier) for s in got] == [("8000001", 1)]
+
+
+def test_a_poll_records_which_tier_the_station_was(tmp_path: Path) -> None:
+    """Written into the journal, not looked up in the CSV: editing the station
+    files later must not be able to re-label data already collected."""
+    clock = [1781000000.0]
+    got = collector(tmp_path, {"/plan/": PLAN, "/fchg/": FCHG}, clock)
+    got.stations = [cf.Station("8000170", "Ulm Hbf", 2)]
+    got.poll_station(got.stations[0])
+    records, _ = cf.Journal.read(tmp_path / f"forecasts-{got._today()}.jsonl")
+    polls = [r for r in records if r["t"] == "poll"]
+    assert [r["tier"] for r in polls] == [2]
+
+
+def test_a_failed_poll_still_records_its_tier(tmp_path: Path) -> None:
+    clock = [1781000000.0]
+    got = collector(tmp_path, {"/plan/": PLAN}, clock)   # no /fchg/ route
+    got.poll_station(cf.Station("8000170", "Ulm Hbf", 2))
+    records, _ = cf.Journal.read(tmp_path / f"forecasts-{got._today()}.jsonl")
+    poll = next(r for r in records if r["t"] == "poll")
+    assert poll["ok"] is False and poll["tier"] == 2
+
+
+def test_the_hafas_cross_check_stays_on_the_comparisons_own_stations(
+        tmp_path: Path) -> None:
+    """It checks the feed the comparison is built on, and the proxy's budget is
+    small enough that spending it on the far ends would empty it."""
+    clock = [1781000000.0]
+    got = collector(tmp_path, {"/plan/": PLAN, "/fchg/": FCHG,
+                               "/stops/": '{"departures": []}'}, clock)
+    got.stations = [cf.Station("8000170", "Ulm Hbf", 1),
+                    cf.Station("8000041", "Bochum Hbf", 2),
+                    cf.Station("8000049", "Braunschweig Hbf", 2)]
+    got.cross_check_hafas(__import__("random").Random(0))
+    records, _ = cf.Journal.read(tmp_path / f"forecasts-{got._today()}.jsonl")
+    assert {r["eva"] for r in records if r["t"] == "hafas"} == {"8000170"}
+
+
+def test_the_destination_set_is_derived_and_committed() -> None:
+    """It is a function of the timetable, so it must be reproducible from the
+    file alone: a real eva per row, no duplicates, and no origin smuggled in."""
+    ends = cf.load_stations(TOOLS / "forecast_destinations.csv", 2)
+    assert len(ends) > 40, "a second tier this thin would score almost nothing"
+    assert all(s.eva.isdigit() and s.name for s in ends)
+    assert len({s.eva for s in ends}) == len(ends)
+    assert all(s.tier == 2 for s in ends)
+
+
+def test_polling_both_tiers_still_fits_inside_a_slot() -> None:
+    """A round that overruns [CADENCE_MINUTES] drops slots, and the whole
+    comparison rests on having a reading close to the moment being scored."""
+    stations = cf.station_set(TOOLS / "forecast_stations.csv",
+                              TOOLS / "forecast_destinations.csv")
+    # One fchg per station, plus the pause; plan documents are cached after the
+    # first round of each hour. A second per station is a pessimistic request.
+    worst_case = len(stations) * (1.0 + cf.PAUSE_BETWEEN_REQUESTS)
+    assert worst_case < cf.CADENCE_MINUTES * 60 / 2, worst_case
+
+
+def test_the_tier_comes_from_the_journal_not_the_station_files() -> None:
+    records = [{"t": "poll", "at": 1, "eva": "8000041", "tier": 2, "ok": True},
+               {"t": "poll", "at": 2, "eva": "8000041", "tier": 2, "ok": True},
+               {"t": "poll", "at": 1, "eva": "8000001", "ok": True}]
+    assert cf.tiers_of(records) == {"8000041": 2, "8000001": 1}
+
+
+def test_status_judges_a_day_by_the_tiers_it_was_collected_under(
+        tmp_path: Path, capsys) -> None:
+    """The days collected before the second tier existed are complete with
+    twenty stations; measuring them against today's 101 would flag every one."""
+    journal = cf.Journal(tmp_path / "forecasts-2026-08-18.jsonl")
+    for eva in [s.eva for s in cf.load_stations(TOOLS / "forecast_stations.csv")]:
+        journal.append({"t": "poll", "at": 1787000000, "eva": eva, "ok": True,
+                        "stops": 1})
+    journal.close()
+    cf.status(tmp_path, TOOLS / "forecast_stations.csv",
+              now=lambda: 1787000060.0,
+              destinations=TOOLS / "forecast_destinations.csv")
+    assert "stations" not in capsys.readouterr().out.split("rounds")[1]

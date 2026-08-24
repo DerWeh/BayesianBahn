@@ -29,17 +29,27 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT / "tools"
 
 
-def stations(path: Path) -> str:
-    """The pre-registered EVA numbers, comma separated.
+def stations(*paths: Path) -> str:
+    """The EVA numbers to keep ground truth for, comma separated.
 
     In the shell version this was `grep -v '^#' | cut -d';' -f1 | paste -sd,`,
     three tools that do not exist on Windows.
+
+    Both tiers, because this list only trims the archive: the far end of a
+    change needs a recorded arrival too. It does not widen what is scored —
+    events and connections are built from the journal, which marks its own
+    tiers — so adding the second tier leaves every published number unchanged
+    and only makes the truth file a superset.
     """
     evas = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip() and not line.startswith("#"):
-            evas.append(line.split(";")[0].strip())
-    return ",".join(evas)
+    for path in paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip() and not line.startswith("#"):
+                evas.append(line.split(";")[0].strip())
+    # Three of the twenty origins are also termini; the archive filter is a set.
+    return ",".join(dict.fromkeys(evas))
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -116,7 +126,8 @@ def main() -> None:
                     default=ROOT / "docs/evaluation/index.html")
     args = ap.parse_args()
 
-    station_list = stations(TOOLS / "forecast_stations.csv")
+    station_list = stations(TOOLS / "forecast_stations.csv",
+                            TOOLS / "forecast_destinations.csv")
     for day in args.days:
         score_day(day, args.scored_dir, station_list)
 

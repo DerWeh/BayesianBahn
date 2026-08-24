@@ -13,6 +13,17 @@ fixes; expect breaking changes between minors until 1.0).
   including the failures raised while planning a journey, which used to be
   written out in English deep in the planner. Android 13 and newer can set the
   language for this app alone.
+- The forecast collector polls a second tier of stations: where the trains
+  leaving the twenty pre-registered ones end up. A journey with a change ends
+  at the far end of the second leg, IRIS serves forecasts one station at a
+  time, and without a reading there DB's answer for that arrival cannot be had
+  at all — which is why the evaluation could score the parts of a two-leg
+  journey but never the journey. The tier is derived from the timetable rather
+  than chosen (`tools/build_destinations.py`), it is recorded per poll so a
+  later edit to the station files cannot re-label data already collected, and
+  it never originates a scored arrival or connection: the pre-registered set is
+  unchanged. Each departure's whole onward path is now kept as well; only its
+  next stop was, which is what made the far end unrecoverable after the fact.
 
 ### Changed
 - **DB's live number is only used when it reports a delay.** DB states a stop

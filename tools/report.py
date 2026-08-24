@@ -393,6 +393,42 @@ def per_day(days: list[str], live, blind, conn_live, conn_blind) -> list[dict]:
     return out
 
 
+# polars weekdays are 1 = Monday, so Saturday and Sunday are 6 and 7.
+WEEKEND = pl.col("day").str.to_date().dt.weekday() >= 6
+
+
+def week_split(live, blind, conn_live, conn_blind) -> list[dict]:
+    """The same comparison on working days and at the weekend, separately.
+
+    The page has carried a caveat that traffic, staffing and the timetable
+    differ between the two, so a figure drawn from one does not transfer to the
+    other. While the collection was weekdays only that was an assertion; with
+    both kinds of day in it, it can be measured instead — and it is a real
+    split rather than a nominal one, because DB's own mean error is close to
+    half at the weekend. That changes what there is to improve on, which is why
+    the gaps belong side by side rather than pooled.
+    """
+    live, blind = as_frame(live), as_frame(blind)
+    conn_live, conn_blind = as_frame(conn_live), as_frame(conn_blind)
+    out = []
+    for label, want in (("Monday to Friday", False), ("Saturday and Sunday", True)):
+        part_live, part_blind = live.filter(WEEKEND == want), blind.filter(WEEKEND == want)
+        if not part_blind.height:
+            continue
+        missed = only_missed(conn_live.filter(WEEKEND == want))
+        out.append({
+            "part": label,
+            "n": part_blind.height,
+            "db": part_blind.select(
+                (pl.col("db") - pl.col("truth")).abs().mean()).item(),
+            "live": crps_gap(part_live),
+            "blind": crps_gap(part_blind),
+            "missed_n": missed.height,
+            "missed": brier_gap(missed) if missed.height else None,
+        })
+    return out
+
+
 FULL_DAY_HOURS = 20
 
 # The collected stations run almost no service in the small hours: 02:00 held
@@ -865,7 +901,7 @@ def weekday_caveat(days: list[str]) -> str:
 
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
-           gaps=(), daily=(), clock=(), spread=()) -> None:
+           gaps=(), daily=(), clock=(), spread=(), week=()) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -1127,6 +1163,41 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ]))
         doc.append("</section>")
 
+    if len(week) > 1:
+        when = {"Monday to Friday": "from Monday to Friday",
+                "Saturday and Sunday": "at the weekend"}
+        quiet = min(week, key=lambda r: r["db"])
+        busy = max(week, key=lambda r: r["db"])
+        doc.append(f"""
+<section>
+  <h2>Working days and the weekend</h2>
+  <p>The two are different networks to forecast. DB’s own mean error is
+  {num(busy["db"])} minutes {when.get(busy["part"], busy["part"])} against
+  {num(quiet["db"])} minutes {when.get(quiet["part"], quiet["part"])}, so there
+  is substantially less to improve on in the quieter half. Each figure below is
+  BayesianBahn’s score minus DB’s, computed within that part of the week
+  alone.</p>""")
+        doc.append(table(week, [
+            ("part", "Days", lambda r: html.escape(r["part"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("db", "DB’s own error", lambda r: num(r["db"])),
+            ("live", "Arrival, shipped",
+             lambda r: f"{num(r['live'][0], 3)} ({num(r['live'][1], 3)} to "
+                       f"{num(r['live'][2], 3)})"),
+            ("blind", "Arrival, history only",
+             lambda r: f"{num(r['blind'][0], 3)} ({num(r['blind'][1], 3)} to "
+                       f"{num(r['blind'][2], 3)})"),
+            ("missed_n", "Missed connections", lambda r: f"{r['missed_n']:,}"),
+            ("missed", "Missed, shipped",
+             lambda r: "—" if r["missed"] is None else
+                       f"{num(r['missed'][0], 3)} ({num(r['missed'][1], 3)} to "
+                       f"{num(r['missed'][2], 3)})"),
+        ]))
+        doc.append("""
+  <p>An interval that spans zero says the collected days cannot separate the
+  two forecasters in that part of the week, not that they are equal.</p>
+</section>""")
+
     if clock:
         spread = band_spread(clock, SHIPPED_BANDS)
         peak = max(clock, key=lambda r: r["mean"])
@@ -1244,7 +1315,8 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     twenty. Nothing here is weighted to how often people actually travel.</li>
     <li><strong>%s</strong> Traffic, staffing and the timetable itself differ
     between weekdays and weekends, so a figure drawn from one does not transfer
-    to the other — the hour-of-day curve above least of all.</li>
+    to the other — the hour-of-day curve above least of all. Where both kinds of
+    day are present, the two are also shown apart, above.</li>
   </ul>
 </section>
 
@@ -1320,7 +1392,8 @@ def main() -> None:
            {"events": blind.height, "connections": conn_blind.height}, args.out,
            gaps=headline(live, blind, conn_live, conn_blind),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
-           clock=hourly(live), spread=error_spread(live))
+           clock=hourly(live), spread=error_spread(live),
+           week=week_split(live, blind, conn_live, conn_blind))
 
 
 if __name__ == "__main__":
