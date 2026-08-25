@@ -25,10 +25,16 @@ sys.path.insert(0, str(TOOLS))
 import collect_forecasts as cf  # noqa: E402
 import route_bench as rb  # noqa: E402
 
+# Shaped as IRIS actually shapes it, which this fixture did not: the line goes
+# on `ar`/`dp` as `l`, and `tl` carries only the traffic class, the category and
+# the run number. Having `l` on `tl` here is what let the collector read it from
+# the wrong element for a fortnight with every test passing — the fixture agreed
+# with the bug. test_the_plan_fixture_matches_a_real_document holds it to a
+# document IRIS really sent.
 PLAN = """<timetable station="Ulm Hbf" eva="8000170">
-  <s id="trip-1"><tl f="N" t="p" o="80" c="RE" n="4230" l="9"/>
-    <ar pt="2606101210" pp="2"/>
-    <dp pt="2606101212" pp="2" ppth="Neu-Ulm|Senden"/>
+  <s id="trip-1"><tl f="N" t="p" o="80" c="RE" n="4230"/>
+    <ar pt="2606101210" pp="2" l="9"/>
+    <dp pt="2606101212" pp="2" l="9" ppth="Neu-Ulm|Senden"/>
   </s>
   <s id="trip-2"><tl f="N" t="p" o="80" c="ICE" n="599"/>
     <ar pt="2606101230" pp="1"/>
@@ -550,3 +556,53 @@ def test_status_judges_a_day_by_the_tiers_it_was_collected_under(
     journal.close()
     cf.status(tmp_path, TOOLS, now=lambda: 1787000060.0)
     assert "stations" not in capsys.readouterr().out.split("rounds")[1]
+
+
+def test_the_line_is_read_from_where_iris_puts_it() -> None:
+    """`tl` carries the category and the run number; the line is on `ar`/`dp`.
+
+    Reading it off `tl` yields null for every stop, which is what the collector
+    did — and null is indistinguishable from "this train has no line", so the
+    journal looked complete while carrying none. The app's own parser reads it
+    from `ar`/`dp`; this is the mirror catching up.
+    """
+    plan = cf.parse_plan(PLAN)
+    assert plan["trip-1"]["line"] == "9"
+
+
+def test_a_stop_with_no_line_still_parses() -> None:
+    assert cf.parse_plan(PLAN)["trip-2"]["line"] is None
+
+
+def test_the_line_is_taken_from_the_arrival_when_there_is_no_departure() -> None:
+    xml = PLAN.replace('<dp pt="2606101212" pp="2" ppth="Neu-Ulm|Senden"/>', "")
+    assert cf.parse_plan(xml)["trip-1"]["line"] == "9"
+
+
+def test_the_plan_fixture_matches_a_real_document() -> None:
+    """The fixture above is only worth anything if IRIS agrees with it.
+
+    Checked against a cached document when one is on this machine, skipped
+    otherwise: a fixture that has drifted from the source it stands for tests
+    the drift rather than the code, which is exactly what happened here.
+    """
+    cached = sorted((cf.OUT / "plan").glob("*.xml"))
+    if not cached:
+        pytest.skip("no plan documents cached; run the collector first")
+    import xml.etree.ElementTree as ET
+    seen_line_on = set()
+    for path in cached[:200]:
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError:
+            continue
+        for stop in root.findall("s"):
+            for tag in ("tl", "ar", "dp"):
+                element = stop.find(tag)
+                if element is not None and element.get("l") is not None:
+                    seen_line_on.add(tag)
+    assert seen_line_on, "no line attribute anywhere; the fixture claims there is one"
+    assert "tl" not in seen_line_on, (
+        "IRIS put a line on `tl` after all — the fixture and parse_plan both "
+        "assume it never does"
+    )

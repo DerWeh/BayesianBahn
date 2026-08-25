@@ -319,6 +319,7 @@ def load_month(file: Path, station_evas: list[str]) -> pl.DataFrame:
         "eva",
         "train_type",
         "train_number",
+        "line_number",
         "train_line_ride_id",
         "train_line_station_num",
         "arrival_planned_time",
@@ -365,7 +366,8 @@ def load_month(file: Path, station_evas: list[str]) -> pl.DataFrame:
         )
         .filter(~pl.col("is_canceled") & pl.col("delay").is_not_null())
         .select(
-            "eva", "train_type", "train_number", "date", "tod_min", "delay", "prev"
+            "eva", "train_type", "train_number", "line_number",
+            "date", "tod_min", "delay", "prev"
         )
         .collect(engine="streaming")
     )
@@ -394,7 +396,8 @@ def bucket(train_type: str) -> str:
 
 def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
         out: Path | None, only: list[str] | None = None,
-        min_history: int = 10, min_connection_runs: int = 15) -> None:
+        min_history: int = 10, min_connection_runs: int = 15,
+        group_by: str = "number") -> None:
     df = load_connections(data_dir, station_evas)
     max_date = df["date"].max()
     eval_start = max_date - timedelta(weeks=eval_weeks)
@@ -490,9 +493,15 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
     # removed them carries the numbers.
     widest_window = max(v.tod_window for v in variants)
     n_conn = 0
-    for (eva, ttype, tnum), grp in df.group_by(
-        ["eva", "train_type", "train_number"], maintain_order=False
-    ):
+    # Which column identifies "the same train". IRIS numbers every run
+    # separately — 17,396 numbers against 41 lines for the S-Bahn on one month
+    # — so keying by number cuts a line's history into runs of a few dozen,
+    # while keying by line pools the whole day and leans on the time-of-day
+    # window to pick the comparable slot back out.
+    identity = "train_number" if group_by == "number" else "line_number"
+    for (eva, ttype, tnum), grp in df.filter(
+        pl.col(identity).is_not_null() & (pl.col(identity) != "")
+    ).group_by(["eva", "train_type", identity], maintain_order=False):
         grp = grp.sort("date")
         dates = grp["date"].to_list()  # python datetime.date, for day_class
         tod = grp["tod_min"].to_numpy()
@@ -597,6 +606,8 @@ def main() -> None:
     ap.add_argument("--eval-weeks", type=int, default=8)
     ap.add_argument("--min-history", type=int, default=10,
                     help="same-time-of-day runs required before an event is scored")
+    ap.add_argument("--group-by", choices=["number", "line"], default="number",
+                    help="what counts as the same train: its run number or its line")
     ap.add_argument("--min-connection-runs", type=int, default=15,
                     help="runs a connection needs before any of it is scored")
     ap.add_argument("--only", nargs="*",
@@ -604,7 +615,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
     run(args.data_dir, args.stations.split(","), args.eval_weeks, args.out,
-        args.only, args.min_history, args.min_connection_runs)
+        args.only, args.min_history, args.min_connection_runs, args.group_by)
 
 
 if __name__ == "__main__":

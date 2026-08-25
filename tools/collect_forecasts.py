@@ -156,7 +156,14 @@ def parse_plan(xml: str) -> dict[str, dict]:
         out[trip] = {
             "cat": (tl.get("c") if tl is not None else "") or "",
             "num": (tl.get("n") if tl is not None else "") or "",
-            "line": (tl.get("l") if tl is not None else None),
+            # IRIS puts the line on `ar`/`dp`, never on `tl` — `tl` carries the
+            # category and the run number. Reading it off `tl` returned null for
+            # every stop ever collected, which left the journal with no line at
+            # all and the harness unable to try the shard key the app tries
+            # second. It cost no score, because no line-keyed shard exists for
+            # that key to find; it did hide that fact for a fortnight.
+            "line": ((ar.get("l") if ar is not None else None)
+                     or (dp.get("l") if dp is not None else None)),
             "par": iris_time(ar.get("pt")) if ar is not None else None,
             "pdp": iris_time(dp.get("pt")) if dp is not None else None,
             # The whole onward path, not just the next stop: its last entry is
