@@ -171,6 +171,19 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
+- **Line-keyed shards as a fallback.** IRIS gives every run its own number, so
+  a train renumbered at a timetable change has no history and falls back to the
+  class-wide prior: 7.2% of scored arrivals, where the app scores 1.19 against
+  DB's 0.90 — the one slice where DB is clearly ahead. Every one of those
+  trains has a line, and every line has history at that station (median 5,962
+  runs a month). `HistoryRepository.candidateKeys` already asks for a
+  line-keyed shard as its second key; `build_shards.py` has never written one,
+  so the lookup has always missed. The columnar shard format costs about 1.6
+  bytes a run, which puts a (line, station) shard at ~9 KB and a whole line at
+  ~0.3 MB — the same order as the per-train shards already fetched on demand.
+  A *fallback*, not a replacement: measured head to head, line-keying is worse
+  than number-keying wherever the number has history (S-Bahn 1.270 against
+  1.231) and impossible for long distance, which has no line number.
 - Stratify the report by the kind of line, now that the second cohort samples
   it: does the advantage hold on a single-track branch as well as on a
   multi-track corridor, and where long-distance services share the tracks? Each
