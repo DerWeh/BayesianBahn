@@ -86,6 +86,23 @@ class Variant:
     #          Bahn-Vorhersage's delay_diff idea, nonparametrically.
     live_mode: str = "kernel"
     min_effective_n: float = 8.0
+    # Shrinkage towards the pooled distribution of this train's class. The
+    # empirical support is bounded by what has already happened, so a train
+    # whose worst recorded run was twelve minutes late can never predict
+    # twenty — and the forward evaluation found 55% of all CRPS in the 10% of
+    # arrivals above the model's own 90th percentile. Mixing in the population
+    # gives the tail somewhere to be. The weight is N_eff / (N_eff + kappa), so
+    # a thin history leans on the population and a thick one does not; None
+    # disables it, which is the shipped behaviour.
+    shrink_kappa: float | None = None
+    # Scale the support towards its own weighted median, separately on each
+    # side: x -> m + a(x - m). Two knobs because the sides are not the same
+    # question — the forward evaluation loses to DB below the 10th percentile
+    # and wins above the 90th — and one `when` because a change may belong to
+    # the conditional distribution, the unconditional one, or both.
+    sharpen_high: float = 1.0
+    sharpen_low: float = 1.0
+    sharpen_when: str = "always"   # always | conditioned | unconditioned
 
     def day_class(self, d: date) -> int:
         if self.holiday_as_sunday and d in GERMAN_HOLIDAYS:
@@ -113,10 +130,10 @@ def predictive_points(
     hist_prev: np.ndarray,  # delay at previous stop, NaN if unknown
     w: np.ndarray,
     live_prev: float | None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Returns (support, weights) of the predictive distribution."""
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Returns (support, weights, whether the live report was conditioned on)."""
     if live_prev is None or variant.live_bandwidth is None:
-        return hist_delay, w
+        return hist_delay, w, False
 
     if variant.live_mode == "delta":
         # Shift each run's progression residual onto the live report:
@@ -124,7 +141,7 @@ def predictive_points(
         # known previous-stop delay, optionally kernel-sharpened.
         known = ~np.isnan(hist_prev)
         if known.sum() < variant.min_effective_n:
-            return hist_delay, w
+            return hist_delay, w, False
         x = live_prev + (hist_delay[known] - hist_prev[known])
         wk = w[known]
         if variant.live_bandwidth > 0:
@@ -133,7 +150,7 @@ def predictive_points(
                 0.15
                 + np.exp(-0.5 * ((hist_prev[known] - live_prev) / bw) ** 2)
             )
-        return x, wk
+        return x, wk, True
 
     # kernel mode (the app draft)
     bw = max(3.0, variant.live_bandwidth * abs(live_prev))
@@ -149,8 +166,8 @@ def predictive_points(
     sum_w, sum_w2 = cond.sum(), (cond**2).sum()
     eff_n = sum_w * sum_w / sum_w2 if sum_w2 > 0 else 0.0
     if eff_n >= variant.min_effective_n and kernel_mass >= variant.min_effective_n:
-        return hist_delay, cond
-    return hist_delay, w
+        return hist_delay, cond, True
+    return hist_delay, w, False
 
 
 # --------------------------------------------------------------------------- scoring
@@ -344,7 +361,62 @@ def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
 # --------------------------------------------------------------------------- backtest
 
 
-def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | None) -> None:
+def effective_n(w: np.ndarray) -> float:
+    """Kish's effective sample size: how many equally-weighted runs this is worth."""
+    sw, sw2 = float(w.sum()), float((w * w).sum())
+    return sw * sw / sw2 if sw2 > 0 else 0.0
+
+
+def sharpen(variant: Variant, x: np.ndarray, w: np.ndarray,
+            conditioned: bool) -> np.ndarray:
+    """Pull each side of the support towards its own weighted median.
+
+    Separately per side, because the two sides are not the same question: the
+    forward evaluation loses to DB below the model's 10th percentile and wins
+    above its 90th. And `sharpen_when` selects which distribution it applies
+    to, because a change can belong to the conditional one, the unconditional
+    one, or both — and on this data those come out with opposite signs.
+    """
+    if variant.sharpen_high == 1.0 and variant.sharpen_low == 1.0:
+        return x
+    if variant.sharpen_when == "conditioned" and not conditioned:
+        return x
+    if variant.sharpen_when == "unconditioned" and conditioned:
+        return x
+    order = np.argsort(x)
+    cum = np.cumsum(w[order])
+    median = x[order][np.searchsorted(cum, 0.5 * cum[-1])]
+    scale = np.where(x < median, variant.sharpen_low, variant.sharpen_high)
+    return median + scale * (x - median)
+
+
+def shrink_to_pooled(variant: Variant, x: np.ndarray, w: np.ndarray,
+                     pooled: tuple[np.ndarray, np.ndarray] | None):
+    """Mix a train's own runs with its class's pooled distribution.
+
+    The mixing weight is N_eff / (N_eff + kappa): a thin history leans on the
+    population, a thick one barely moves. Both parts are renormalised, so the
+    result is a probability distribution whatever the input weights summed to.
+    """
+    if variant.shrink_kappa is None or pooled is None:
+        return x, w
+    lam = effective_n(w) / (effective_n(w) + variant.shrink_kappa)
+    total = float(w.sum())
+    if total <= 0:
+        return x, w
+    px, pw = pooled
+    return (np.concatenate([x, px]),
+            np.concatenate([w * (lam / total), pw * (1.0 - lam)]))
+
+
+def bucket(train_type: str) -> str:
+    if train_type in LONG_DISTANCE:
+        return "long_distance"
+    return "sbahn" if train_type == "S" else "regional"
+
+
+def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
+        out: Path | None, only: list[str] | None = None) -> None:
     df = load_connections(data_dir, station_evas)
     max_date = df["date"].max()
     eval_start = max_date - timedelta(weeks=eval_weeks)
@@ -385,14 +457,69 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | No
             live_bandwidth=0.3,
             live_mode="delta",
         ),
+        # The shipped model, and the same model shrunk towards its class's
+        # pooled distribution by varying amounts. kappa is in units of
+        # effective runs: at kappa=4 a history worth eight effective runs keeps
+        # two thirds of its own weight.
+        *[
+            Variant(
+                f"shipped_shrink{k:g}",
+                half_life_days=30,
+                weekday_boost=2,
+                live_bandwidth=0.3,
+                live_mode="delta",
+                shrink_kappa=k,
+            )
+            for k in (1.0, 2.0, 4.0, 8.0, 16.0)
+        ],
+        *[
+            Variant(
+                f"sharp_{side}{a:g}_{when[:4]}",
+                half_life_days=30, weekday_boost=2,
+                live_bandwidth=0.3, live_mode="delta",
+                sharpen_high=a if side == "hi" else 1.0,
+                sharpen_low=a if side == "lo" else 1.0,
+                sharpen_when=when,
+            )
+            for side in ("hi", "lo")
+            for a in (0.6, 0.8)
+            for when in ("always", "conditioned", "unconditioned")
+        ],
     ]
+
+    if only:
+        wanted = set(only)
+        missing = wanted - {v.name for v in variants}
+        if missing:
+            raise SystemExit(f"no such variant: {', '.join(sorted(missing))}")
+        variants = [v for v in variants if v.name in wanted]
 
     results: dict[tuple[str, str, str], Scores] = {}
 
-    def bucket(train_type: str) -> str:
-        if train_type in LONG_DISTANCE:
-            return "long_distance"
-        return "sbahn" if train_type == "S" else "regional"
+    # The pooled distribution per class, from runs strictly before the eval
+    # window: a prior the evaluated events cannot have contributed to.
+    train = df.filter(pl.col("date") < eval_start)
+    pooled: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for b in ("long_distance", "sbahn", "regional"):
+        types = train.filter(
+            pl.col("train_type").map_elements(bucket, return_dtype=pl.String) == b
+        )["delay"].drop_nulls().to_numpy()
+        if len(types) == 0:
+            continue
+        # As a weighted histogram over whole minutes: the atoms are what the
+        # scorer consumes, and a few hundred beat a few hundred thousand.
+        lo, hi = -30, 240
+        clipped = np.clip(types, lo, hi)
+        counts = np.bincount((clipped - lo).astype(int), minlength=hi - lo + 1)
+        support = np.arange(lo, hi + 1, dtype=float)
+        keep = counts > 0
+        pooled[b] = (support[keep], counts[keep] / counts.sum())
+    print("pooled prior built from "
+          f"{train.height} runs before {eval_start}: "
+          + ", ".join(f"{b} {len(v[0])} atoms" for b, v in pooled.items()))
+
+    def shrink(variant: Variant, x, w, b: str):
+        return shrink_to_pooled(variant, x, w, pooled.get(b))
 
     n_conn = 0
     for (eva, ttype, tnum), grp in df.group_by(
@@ -431,9 +558,11 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int, out: Path | No
                 qdc = dayclass_cache[variant][i]
                 w0 = base_weights(variant, hage, hdc, qdc)
                 for scenario, lp in scenarios_for(live):
-                    x, w = predictive_points(variant, hx, hprev, w0, lp)
+                    x, w, conditioned = predictive_points(variant, hx, hprev, w0, lp)
                     if w.sum() <= 0:
                         continue
+                    x, w = shrink(variant, x, w, b)
+                    x = sharpen(variant, x, w, conditioned)
                     key = (variant.name, scenario, b)
                     results.setdefault(key, Scores()).add(x, w, y)
                     results.setdefault((variant.name, scenario, "all"), Scores()).add(
@@ -462,9 +591,12 @@ def main() -> None:
     ap.add_argument("--data-dir", type=Path, required=True)
     ap.add_argument("--stations", required=True)
     ap.add_argument("--eval-weeks", type=int, default=8)
+    ap.add_argument("--only", nargs="*",
+                    help="run only these variant names, for a focused experiment")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
-    run(args.data_dir, args.stations.split(","), args.eval_weeks, args.out)
+    run(args.data_dir, args.stations.split(","), args.eval_weeks, args.out,
+        args.only)
 
 
 if __name__ == "__main__":

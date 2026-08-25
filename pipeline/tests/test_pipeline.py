@@ -573,3 +573,105 @@ def test_recent_station_filter_keeps_the_whole_run(tmp_path: Path) -> None:
     df = build_recent.process_day(sorted(raw.glob("hour_*.parquet")), [ULM])
     assert sorted(df["train_line_station_num"]) == [3, 4]
     assert set(df["train_line_ride_id"]) == {"4711-2607061200"}
+
+
+# --- backtest: the knobs the model review used -------------------------------
+#
+# These exist to answer "is the shipped distribution the right shape". Two of
+# the three answers turned out to be no, which is only worth anything if the
+# machinery that produced them is right — an experiment that silently measures
+# something other than what it claims is worse than no experiment. The trap hit
+# during the review: `sharpen` compressed one side while a sibling variant
+# compressed both, so the two were not comparable and the decomposition did not
+# add up.
+
+def _bt():
+    """backtest.py, imported the way the other pipeline modules are.
+
+    Not at module scope: it pulls in numpy and the holiday table, and the
+    fixtures above have no need of either.
+    """
+    import backtest
+    return backtest
+
+
+def test_sharpening_each_side_is_independent() -> None:
+    bt = _bt()
+    import numpy as np
+    x = np.array([-4.0, 0.0, 4.0])
+    w = np.array([1.0, 1.0, 1.0])
+    high = bt.Variant("h", sharpen_high=0.5)
+    low = bt.Variant("l", sharpen_low=0.5)
+    assert list(bt.sharpen(high, x, w, False)) == [-4.0, 0.0, 2.0]
+    assert list(bt.sharpen(low, x, w, False)) == [-2.0, 0.0, 4.0]
+
+
+def test_sharpening_leaves_the_support_alone_by_default() -> None:
+    bt = _bt()
+    import numpy as np
+    x = np.array([-4.0, 0.0, 9.0])
+    assert list(bt.sharpen(bt.Variant("n"), x, np.ones(3), True)) == list(x)
+
+
+def test_sharpening_can_be_limited_to_one_of_the_two_distributions() -> None:
+    """The decomposition the review turned on: applying a change to the
+    conditional distribution, the unconditional one, or both, gives three
+    different answers, and on this data they had opposite signs."""
+    bt = _bt()
+    import numpy as np
+    x, w = np.array([0.0, 10.0]), np.ones(2)
+    only_cond = bt.Variant("c", sharpen_high=0.5, sharpen_when="conditioned")
+    only_uncond = bt.Variant("u", sharpen_high=0.5, sharpen_when="unconditioned")
+    assert list(bt.sharpen(only_cond, x, w, True)) == [0.0, 5.0]
+    assert list(bt.sharpen(only_cond, x, w, False)) == [0.0, 10.0]
+    assert list(bt.sharpen(only_uncond, x, w, False)) == [0.0, 5.0]
+    assert list(bt.sharpen(only_uncond, x, w, True)) == [0.0, 10.0]
+
+
+def test_shrinkage_leans_on_the_population_only_when_history_is_thin() -> None:
+    bt = _bt()
+    import numpy as np
+    pooled = (np.array([100.0]), np.array([1.0]))
+    thin = bt.Variant("t", shrink_kappa=4.0)
+    x, w = np.array([0.0]), np.array([1.0])          # one run: N_eff = 1
+    _, weights = bt.shrink_to_pooled(thin, x, w, pooled)
+    assert weights[-1] == pytest.approx(0.8)          # 1 - 1/(1+4)
+    x, w = np.zeros(16), np.ones(16)                  # sixteen: N_eff = 16
+    _, weights = bt.shrink_to_pooled(thin, x, w, pooled)
+    assert weights[-1] == pytest.approx(0.2)          # 1 - 16/(16+4)
+
+
+def test_shrinkage_returns_a_distribution_whatever_went_in() -> None:
+    bt = _bt()
+    import numpy as np
+    pooled = (np.array([5.0, 6.0]), np.array([0.5, 0.5]))
+    x, w = np.array([0.0, 1.0]), np.array([7.0, 3.0])   # unnormalised
+    _, weights = bt.shrink_to_pooled(bt.Variant("s", shrink_kappa=2.0), x, w, pooled)
+    assert weights.sum() == pytest.approx(1.0)
+
+
+def test_shrinkage_is_off_unless_asked_for() -> None:
+    bt = _bt()
+    import numpy as np
+    x, w = np.array([0.0]), np.array([1.0])
+    got_x, got_w = bt.shrink_to_pooled(bt.Variant("n"), x, w,
+                                       (np.array([9.0]), np.array([1.0])))
+    assert list(got_x) == [0.0] and list(got_w) == [1.0]
+
+
+def test_the_predictive_says_whether_it_used_the_live_report() -> None:
+    """Without the flag a change cannot be aimed at one of the two
+    distributions, and aiming it wrongly is what made the first decomposition
+    disagree with itself."""
+    bt = _bt()
+    import numpy as np
+    variant = bt.Variant("d", live_bandwidth=0.3, live_mode="delta")
+    delay = np.arange(20.0)
+    prev = np.arange(20.0)
+    w = np.ones(20)
+    _, _, used = bt.predictive_points(variant, delay, prev, w, 5.0)
+    assert used is True
+    _, _, used = bt.predictive_points(variant, delay, prev, w, None)
+    assert used is False, "no report, so nothing was conditioned on"
+    _, _, used = bt.predictive_points(variant, delay[:3], prev[:3], w[:3], 5.0)
+    assert used is False, "too few runs with a known previous stop"

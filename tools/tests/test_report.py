@@ -996,3 +996,33 @@ def test_the_journey_table_reports_what_the_model_was_given():
 
 def test_an_empty_journey_table_is_empty_not_a_row_of_zeros():
     assert R.journeys_table([], []) == []
+
+
+# --- the lead-time tables have to cover every event --------------------------
+#
+# A train that terminates at the station has an arrival and no departure, and
+# the anchor was the departure alone: 15,557 of the first seven days' 121,395
+# arrivals silently never reached a lead-time bucket. They are also where DB's
+# live report helps most, so the omission understated it in the one table that
+# is meant to show where it helps.
+
+
+def test_a_terminating_train_still_gets_a_lead_time():
+    rows = [arrival(num="1"), {**arrival(num="2"), "planned_dep": None}]
+    got = R.with_lead(rows)
+    assert got["_lead"].null_count() == 0
+    assert got["_bucket"].null_count() == 0
+
+
+def test_every_event_reaches_a_bucket():
+    rows = [arrival(num=str(i), lead_minutes=lead)
+            for i, lead in enumerate((5.0, 30.0, 200.0))]
+    rows += [{**arrival(num="t"), "planned_dep": None}]
+    assert sum(r["n"] for r in R.arrivals_table(rows, rows)) == len(rows)
+
+
+def test_an_event_with_no_time_at_all_stops_the_run():
+    """Silently dropping it is what this whole block exists to prevent."""
+    rows = [{**arrival(), "planned_dep": None, "planned": None}]
+    with pytest.raises(SystemExit, match="nothing to measure a lead from"):
+        R.with_lead(rows)

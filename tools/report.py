@@ -115,7 +115,20 @@ def with_lead(rows) -> pl.DataFrame:
     if not df.height:
         return df
     anchor = {"planned_arrival": "planned", "planned_departure": "planned_dep"}[ANCHOR]
-    at = pl.col(anchor)
+    # Falling back to the other time rather than dropping the event: a train
+    # that terminates here has an arrival and no departure, and 15,557 of the
+    # first seven days' 121,395 arrivals are such trains. They were absent from
+    # every lead-time table on this page — and they are where DB's live report
+    # helps most, so their absence understated it.
+    other = "planned" if anchor == "planned_dep" else "planned_dep"
+    at = pl.coalesce(pl.col(anchor), pl.col(other))
+    # Before the arithmetic, not after: with both columns null polars infers a
+    # Null dtype and fails inside the conversion with a message about dtypes,
+    # which says nothing about the event that has no time on it.
+    missing = df.select(at.is_null().sum()).item()
+    if missing:
+        raise SystemExit(f"{missing} events have neither a planned arrival nor a "
+                         "planned departure; there is nothing to measure a lead from")
     df = df.with_columns(((wall_to_epoch_expr(at) - pl.col("read_at")) / 60).alias("_lead"))
     lost = df.filter(at.is_not_null() & pl.col("_lead").is_null()).height
     if lost:
