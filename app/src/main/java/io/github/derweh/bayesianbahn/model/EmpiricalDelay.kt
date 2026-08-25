@@ -94,16 +94,41 @@ class EmpiricalDelay private constructor(
     }
 
     companion object {
-        // Half-life chosen by backtest (12-week eval): 30d beat 14/60d on
-        // CRPS, 7d clearly worse — schedules drift (construction sites,
-        // timetable changes), so memory stays moderately short.
+        // Half-life chosen by backtest. Re-measured over eight weeks in August
+        // 2026, the curve is one-sided: 7 days costs 0.071 minutes of CRPS
+        // against this, 14 days 0.024, while 60 days is 0.001 *better* and no
+        // decay at all only 0.008 worse. So the number is not "memory stays
+        // short because schedules drift", as this comment used to claim — it
+        // is "do not make it short". Anything from a month to forever is the
+        // same model; 30 is kept because it is what the published figures were
+        // measured on.
         const val RECENCY_HALF_LIFE_DAYS = 30.0
+
+        // Worth 0.001 minutes of CRPS against not having it, on the same
+        // eight weeks — which is to say nothing. Kept only because removing it
+        // would change every published number for no gain. The weekend effect
+        // it is reaching for is real: the same train is 0.78 minutes less
+        // delayed at the weekend. But the runs that share a day type are a
+        // minority for a weekend query and a majority for a working-day one,
+        // so a single multiplier helps one and hurts the other by about the
+        // same amount, and giving the group a fixed share of the weight
+        // instead helps only where the live report is believed — which is 13%
+        // of predictions, too few to pay for the 87% it costs.
         const val SAME_WEEKDAY_BOOST = 2.0
 
         /** Keeps far-away runs contributing residuals instead of vanishing. */
         const val LIVE_KERNEL_FLOOR = 0.15
 
-        /** Runs whose planned time of day differs more than this are a different connection. */
+        /**
+         * Runs whose planned time of day differs more than this are a different
+         * connection.
+         *
+         * It binds for 8% of predictions — inside one train number the planned
+         * time hardly moves, so nearly every run is in the window already — and
+         * where it does bind, widening it from 5 minutes to 3 hours moves CRPS
+         * by less than 0.003 either way. It is a guard against a line-numbered
+         * S-Bahn pooling its whole day, not a source of information.
+         */
         const val TIME_OF_DAY_WINDOW_MIN = 20
 
         /** Minimum effective sample size for a usable distribution. */

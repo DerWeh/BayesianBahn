@@ -577,13 +577,10 @@ def test_recent_station_filter_keeps_the_whole_run(tmp_path: Path) -> None:
 
 # --- backtest: the knobs the model review used -------------------------------
 #
-# These exist to answer "is the shipped distribution the right shape". Two of
-# the three answers turned out to be no, which is only worth anything if the
-# machinery that produced them is right — an experiment that silently measures
-# something other than what it claims is worse than no experiment. The trap hit
-# during the review: `sharpen` compressed one side while a sibling variant
-# compressed both, so the two were not comparable and the decomposition did not
-# add up.
+# These exist so an experiment about the model measures what it claims to. The
+# trap, hit twice during the review of the conditioning structure: a variant
+# that silently compares something other than the thing named produces a clean
+# table of wrong numbers, and nothing about it looks wrong.
 
 def _bt():
     """backtest.py, imported the way the other pipeline modules are.
@@ -593,70 +590,6 @@ def _bt():
     """
     import backtest
     return backtest
-
-
-def test_sharpening_each_side_is_independent() -> None:
-    bt = _bt()
-    import numpy as np
-    x = np.array([-4.0, 0.0, 4.0])
-    w = np.array([1.0, 1.0, 1.0])
-    high = bt.Variant("h", sharpen_high=0.5)
-    low = bt.Variant("l", sharpen_low=0.5)
-    assert list(bt.sharpen(high, x, w, False)) == [-4.0, 0.0, 2.0]
-    assert list(bt.sharpen(low, x, w, False)) == [-2.0, 0.0, 4.0]
-
-
-def test_sharpening_leaves_the_support_alone_by_default() -> None:
-    bt = _bt()
-    import numpy as np
-    x = np.array([-4.0, 0.0, 9.0])
-    assert list(bt.sharpen(bt.Variant("n"), x, np.ones(3), True)) == list(x)
-
-
-def test_sharpening_can_be_limited_to_one_of_the_two_distributions() -> None:
-    """The decomposition the review turned on: applying a change to the
-    conditional distribution, the unconditional one, or both, gives three
-    different answers, and on this data they had opposite signs."""
-    bt = _bt()
-    import numpy as np
-    x, w = np.array([0.0, 10.0]), np.ones(2)
-    only_cond = bt.Variant("c", sharpen_high=0.5, sharpen_when="conditioned")
-    only_uncond = bt.Variant("u", sharpen_high=0.5, sharpen_when="unconditioned")
-    assert list(bt.sharpen(only_cond, x, w, True)) == [0.0, 5.0]
-    assert list(bt.sharpen(only_cond, x, w, False)) == [0.0, 10.0]
-    assert list(bt.sharpen(only_uncond, x, w, False)) == [0.0, 5.0]
-    assert list(bt.sharpen(only_uncond, x, w, True)) == [0.0, 10.0]
-
-
-def test_shrinkage_leans_on_the_population_only_when_history_is_thin() -> None:
-    bt = _bt()
-    import numpy as np
-    pooled = (np.array([100.0]), np.array([1.0]))
-    thin = bt.Variant("t", shrink_kappa=4.0)
-    x, w = np.array([0.0]), np.array([1.0])          # one run: N_eff = 1
-    _, weights = bt.shrink_to_pooled(thin, x, w, pooled)
-    assert weights[-1] == pytest.approx(0.8)          # 1 - 1/(1+4)
-    x, w = np.zeros(16), np.ones(16)                  # sixteen: N_eff = 16
-    _, weights = bt.shrink_to_pooled(thin, x, w, pooled)
-    assert weights[-1] == pytest.approx(0.2)          # 1 - 16/(16+4)
-
-
-def test_shrinkage_returns_a_distribution_whatever_went_in() -> None:
-    bt = _bt()
-    import numpy as np
-    pooled = (np.array([5.0, 6.0]), np.array([0.5, 0.5]))
-    x, w = np.array([0.0, 1.0]), np.array([7.0, 3.0])   # unnormalised
-    _, weights = bt.shrink_to_pooled(bt.Variant("s", shrink_kappa=2.0), x, w, pooled)
-    assert weights.sum() == pytest.approx(1.0)
-
-
-def test_shrinkage_is_off_unless_asked_for() -> None:
-    bt = _bt()
-    import numpy as np
-    x, w = np.array([0.0]), np.array([1.0])
-    got_x, got_w = bt.shrink_to_pooled(bt.Variant("n"), x, w,
-                                       (np.array([9.0]), np.array([1.0])))
-    assert list(got_x) == [0.0] and list(got_w) == [1.0]
 
 
 def test_the_predictive_says_whether_it_used_the_live_report() -> None:
@@ -675,3 +608,53 @@ def test_the_predictive_says_whether_it_used_the_live_report() -> None:
     assert used is False, "no report, so nothing was conditioned on"
     _, _, used = bt.predictive_points(variant, delay[:3], prev[:3], w[:3], 5.0)
     assert used is False, "too few runs with a known previous stop"
+
+
+def test_the_day_knobs_default_to_the_shipped_weighting() -> None:
+    """A new axis must not move the model until it is asked to. Three variants
+    describing the same thing scored identically in the backtest; this is the
+    cheap version of that check."""
+    bt = _bt()
+    import numpy as np
+    ages = np.array([0, 7, 14])
+    dayclass = np.array([1, 1, 2])
+    shipped = bt.Variant("s", half_life_days=30, weekday_boost=2.0)
+    got = bt.base_weights(shipped, ages, dayclass, 1,
+                          np.array([0, 0, 0]), 0)
+    expected = np.exp(-np.log(2) / 30 * ages) * np.array([2.0, 2.0, 1.0])
+    assert got == pytest.approx(expected)
+
+
+def test_the_day_type_share_gives_the_group_the_weight_it_asks_for() -> None:
+    """A boost cannot express this: the same constant moves a weekend query a
+    long way and a working-day query barely at all, because the matching runs
+    are a minority in one case and a majority in the other."""
+    bt = _bt()
+    import numpy as np
+    ages = np.zeros(4, dtype=int)
+    dayclass = np.array([0, 1, 5, 6])
+    daytype = np.array([0, 0, 5, 5])
+    variant = bt.Variant("s", half_life_days=float("inf"), daytype_share=0.75)
+    got = bt.base_weights(variant, ages, dayclass, 9, daytype, 5)
+    assert got[2:].sum() == pytest.approx(0.75)   # the two matching runs
+    assert got[:2].sum() == pytest.approx(0.25)
+
+
+def test_the_share_stands_down_when_one_side_is_empty() -> None:
+    """A train that never runs at the weekend would otherwise leave a weekend
+    query with nothing to predict from."""
+    bt = _bt()
+    import numpy as np
+    ages = np.zeros(3, dtype=int)
+    variant = bt.Variant("s", half_life_days=float("inf"), daytype_share=0.9)
+    got = bt.base_weights(variant, ages, np.array([0, 1, 2]), 9,
+                          np.array([0, 0, 0]), 5)
+    assert list(got) == [1.0, 1.0, 1.0]
+
+
+def test_time_of_day_distance_wraps_around_midnight() -> None:
+    """The app measures it circularly and the backtest did not, which made the
+    mirror disagree with the model at exactly the hour delays are worst."""
+    source = (Path(__file__).resolve().parents[1] / "backtest.py").read_text(
+        encoding="utf-8")
+    assert "24 * 60 - gap" in source, "the wrap is what makes 23:50 and 00:10 close"

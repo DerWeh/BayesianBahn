@@ -45,9 +45,15 @@ settings.
   (`iris.noncd.db.de`) for the live board — the same source DB's station
   displays use.
 - **Prediction**: a weighted empirical distribution over the train's past runs
-  at your station. Without live data, past final delays are weighted by
-  recency (30-day half-life — short on purpose: construction sites and
-  timetable changes make old runs stale) and a same-weekday boost. When a
+  at your station — the same train, the same platform, weighted by recency
+  (30-day half-life). Two further axes are in the code and neither earns its
+  place: a same-weekday boost, worth 0.001 minutes of CRPS against not having
+  it, and a 20-minute time-of-day window, flat anywhere between 5 minutes and
+  3 hours. The pool is what matters; a train runs at one time of day, so its
+  own identity already carries the hour. Recency matters in one direction
+  only — 60 days is a shade better than 30, no decay at all costs 0.008, and a
+  7-day half-life costs 0.071. See `pipeline/backtest.py` and the model review
+  in the git history for the measurements. When a
   live delay is reported, the *delta* model shifts each run's observed
   last-hop progression (final − previous stop) onto the live report,
   sharpened towards runs that were similarly late. **A report only counts

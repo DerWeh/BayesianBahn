@@ -79,6 +79,29 @@ class Variant:
     half_life_days: float = math.inf  # recency decay
     weekday_boost: float = 1.0  # weight multiplier for same day-of-week
     holiday_as_sunday: bool = False  # fold public holidays into the Sunday class
+    # Boost for a run on the same *kind* of day rather than the same named one.
+    # The two are not the same bet. Same-weekday says Tuesdays resemble
+    # Tuesdays and not Wednesdays; same-daytype says working days resemble each
+    # other and differ from Saturdays and Sundays. With a 30-day half-life the
+    # first has about four runs to work with and the second about twenty, so if
+    # the real structure is working-day-versus-weekend the narrower boost is
+    # spending its weight on a distinction that is not there. The forward
+    # evaluation makes this worth asking: DB's own mean error is 3.14 minutes
+    # Monday to Friday against 1.84 at the weekend.
+    daytype_boost: float = 1.0
+    # The share of the total weight the same-kind runs are to hold, whatever
+    # their number. A multiplicative boost cannot express this: on a weekend
+    # query the matching runs are two sevenths of the history and the boost
+    # moves the mix a long way, while on a working day they are five sevenths
+    # and it barely moves it — so one constant does two different things, and
+    # the backtest shows it helping weekends and hurting working days by about
+    # the same amount. A share does the same thing to both.
+    daytype_share: float | None = None
+    # How far from the query's own planned time a run may be and still count as
+    # the same connection. The app's window is 20 minutes and it binds for only
+    # 8% of events — inside a train number the planned time hardly moves — but
+    # for a line-numbered S-Bahn whose runs span the day it decides everything.
+    tod_window: int = 20
     window_days: int | None = None  # hard cutoff, Bahn-Vorhersage style
     live_bandwidth: float | None = None  # kernel bandwidth factor; None = ignore live
     # "kernel": reweight runs with similar previous-stop delay (app draft).
@@ -86,28 +109,15 @@ class Variant:
     #          Bahn-Vorhersage's delay_diff idea, nonparametrically.
     live_mode: str = "kernel"
     min_effective_n: float = 8.0
-    # Shrinkage towards the pooled distribution of this train's class. The
-    # empirical support is bounded by what has already happened, so a train
-    # whose worst recorded run was twelve minutes late can never predict
-    # twenty — and the forward evaluation found 55% of all CRPS in the 10% of
-    # arrivals above the model's own 90th percentile. Mixing in the population
-    # gives the tail somewhere to be. The weight is N_eff / (N_eff + kappa), so
-    # a thin history leans on the population and a thick one does not; None
-    # disables it, which is the shipped behaviour.
-    shrink_kappa: float | None = None
-    # Scale the support towards its own weighted median, separately on each
-    # side: x -> m + a(x - m). Two knobs because the sides are not the same
-    # question — the forward evaluation loses to DB below the 10th percentile
-    # and wins above the 90th — and one `when` because a change may belong to
-    # the conditional distribution, the unconditional one, or both.
-    sharpen_high: float = 1.0
-    sharpen_low: float = 1.0
-    sharpen_when: str = "always"   # always | conditioned | unconditioned
-
     def day_class(self, d: date) -> int:
         if self.holiday_as_sunday and d in GERMAN_HOLIDAYS:
             return 6
         return d.weekday()
+
+    def daytype_class(self, d: date) -> int:
+        """Working day, Saturday or Sunday — the coarser grouping."""
+        weekday = self.day_class(d)
+        return weekday if weekday >= 5 else 0
 
 
 def base_weights(
@@ -115,12 +125,27 @@ def base_weights(
     hist_dates: np.ndarray,  # days-ago (int)
     hist_dayclass: np.ndarray,
     query_dayclass: int,
+    hist_daytype: np.ndarray | None = None,
+    query_daytype: int | None = None,
 ) -> np.ndarray:
     w = np.ones(len(hist_dates))
     if variant.window_days is not None:
         w *= hist_dates <= variant.window_days
     if math.isfinite(variant.half_life_days):
         w *= np.exp(-math.log(2.0) / variant.half_life_days * hist_dates)
+    if hist_daytype is not None and variant.daytype_share is not None:
+        same = hist_daytype == query_daytype
+        same_mass, other_mass = w[same].sum(), w[~same].sum()
+        # Only when there is something on both sides: with no weekend runs at
+        # all, renormalising would put every weekend query on nothing.
+        if same_mass > 0 and other_mass > 0:
+            share = variant.daytype_share
+            w = np.where(same, w * (share / same_mass),
+                         w * ((1.0 - share) / other_mass))
+    elif hist_daytype is not None and variant.daytype_boost != 1.0:
+        w = np.where(hist_daytype == query_daytype, w * variant.daytype_boost, w)
+    # Applied after, so a run on the same named day gets both: the coarse boost
+    # for being a working day and the fine one for being a Tuesday.
     return np.where(hist_dayclass == query_dayclass, w * variant.weekday_boost, w)
 
 
@@ -361,54 +386,6 @@ def load_connections(data_dir: Path, station_evas: list[str]) -> pl.DataFrame:
 # --------------------------------------------------------------------------- backtest
 
 
-def effective_n(w: np.ndarray) -> float:
-    """Kish's effective sample size: how many equally-weighted runs this is worth."""
-    sw, sw2 = float(w.sum()), float((w * w).sum())
-    return sw * sw / sw2 if sw2 > 0 else 0.0
-
-
-def sharpen(variant: Variant, x: np.ndarray, w: np.ndarray,
-            conditioned: bool) -> np.ndarray:
-    """Pull each side of the support towards its own weighted median.
-
-    Separately per side, because the two sides are not the same question: the
-    forward evaluation loses to DB below the model's 10th percentile and wins
-    above its 90th. And `sharpen_when` selects which distribution it applies
-    to, because a change can belong to the conditional one, the unconditional
-    one, or both — and on this data those come out with opposite signs.
-    """
-    if variant.sharpen_high == 1.0 and variant.sharpen_low == 1.0:
-        return x
-    if variant.sharpen_when == "conditioned" and not conditioned:
-        return x
-    if variant.sharpen_when == "unconditioned" and conditioned:
-        return x
-    order = np.argsort(x)
-    cum = np.cumsum(w[order])
-    median = x[order][np.searchsorted(cum, 0.5 * cum[-1])]
-    scale = np.where(x < median, variant.sharpen_low, variant.sharpen_high)
-    return median + scale * (x - median)
-
-
-def shrink_to_pooled(variant: Variant, x: np.ndarray, w: np.ndarray,
-                     pooled: tuple[np.ndarray, np.ndarray] | None):
-    """Mix a train's own runs with its class's pooled distribution.
-
-    The mixing weight is N_eff / (N_eff + kappa): a thin history leans on the
-    population, a thick one barely moves. Both parts are renormalised, so the
-    result is a probability distribution whatever the input weights summed to.
-    """
-    if variant.shrink_kappa is None or pooled is None:
-        return x, w
-    lam = effective_n(w) / (effective_n(w) + variant.shrink_kappa)
-    total = float(w.sum())
-    if total <= 0:
-        return x, w
-    px, pw = pooled
-    return (np.concatenate([x, px]),
-            np.concatenate([w * (lam / total), pw * (1.0 - lam)]))
-
-
 def bucket(train_type: str) -> str:
     if train_type in LONG_DISTANCE:
         return "long_distance"
@@ -417,7 +394,7 @@ def bucket(train_type: str) -> str:
 
 def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
         out: Path | None, only: list[str] | None = None,
-        min_history: int = 10) -> None:
+        min_history: int = 10, min_connection_runs: int = 15) -> None:
     df = load_connections(data_dir, station_evas)
     max_date = df["date"].max()
     eval_start = max_date - timedelta(weeks=eval_weeks)
@@ -458,33 +435,44 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
             live_bandwidth=0.3,
             live_mode="delta",
         ),
-        # The shipped model, and the same model shrunk towards its class's
-        # pooled distribution by varying amounts. kappa is in units of
-        # effective runs: at kappa=4 a history worth eight effective runs keeps
-        # two thirds of its own weight.
+        # What "a comparable run" should mean on the day axis. The shipped
+        # model boosts the same named weekday; these ask whether the coarser
+        # working-day/Saturday/Sunday grouping is the better bet, and whether
+        # the two are worth having together.
         *[
             Variant(
-                f"shipped_shrink{k:g}",
-                half_life_days=30,
-                weekday_boost=2,
-                live_bandwidth=0.3,
-                live_mode="delta",
-                shrink_kappa=k,
+                f"day_wd{wd:g}_dt{dt_:g}" + ("_hol" if hol else ""),
+                half_life_days=30, weekday_boost=wd, daytype_boost=dt_,
+                holiday_as_sunday=hol,
+                live_bandwidth=0.3, live_mode="delta",
             )
-            for k in (1.0, 2.0, 4.0, 8.0, 16.0)
+            for wd, dt_, hol in (
+                (1.0, 1.0, False),   # neither: recency alone
+                (2.0, 1.0, False),   # the shipped model
+                (4.0, 1.0, False),
+                (1.0, 2.0, False),   # day type alone
+                (1.0, 4.0, False),
+                (1.0, 8.0, False),
+                (2.0, 2.0, False),   # both
+                (1.0, 4.0, True),    # day type, holidays folded into Sunday
+                (2.0, 2.0, True),
+            )
         ],
         *[
             Variant(
-                f"sharp_{side}{a:g}_{when[:4]}",
-                half_life_days=30, weekday_boost=2,
+                f"share{sh:g}",
+                half_life_days=30, weekday_boost=1.0, daytype_share=sh,
                 live_bandwidth=0.3, live_mode="delta",
-                sharpen_high=a if side == "hi" else 1.0,
-                sharpen_low=a if side == "lo" else 1.0,
-                sharpen_when=when,
             )
-            for side in ("hi", "lo")
-            for a in (0.6, 0.8)
-            for when in ("always", "conditioned", "unconditioned")
+            for sh in (0.7, 0.8, 0.9, 0.95, 1.0)
+        ],
+        *[
+            Variant(
+                f"tod{win}",
+                half_life_days=30, weekday_boost=2.0, tod_window=win,
+                live_bandwidth=0.3, live_mode="delta",
+            )
+            for win in (5, 10, 20, 40, 90, 180)
         ],
     ]
 
@@ -497,31 +485,10 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
 
     results: dict[tuple[str, str, str], Scores] = {}
 
-    # The pooled distribution per class, from runs strictly before the eval
-    # window: a prior the evaluated events cannot have contributed to.
-    train = df.filter(pl.col("date") < eval_start)
-    pooled: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for b in ("long_distance", "sbahn", "regional"):
-        types = train.filter(
-            pl.col("train_type").map_elements(bucket, return_dtype=pl.String) == b
-        )["delay"].drop_nulls().to_numpy()
-        if len(types) == 0:
-            continue
-        # As a weighted histogram over whole minutes: the atoms are what the
-        # scorer consumes, and a few hundred beat a few hundred thousand.
-        lo, hi = -30, 240
-        clipped = np.clip(types, lo, hi)
-        counts = np.bincount((clipped - lo).astype(int), minlength=hi - lo + 1)
-        support = np.arange(lo, hi + 1, dtype=float)
-        keep = counts > 0
-        pooled[b] = (support[keep], counts[keep] / counts.sum())
-    print("pooled prior built from "
-          f"{train.height} runs before {eval_start}: "
-          + ", ".join(f"{b} {len(v[0])} atoms" for b, v in pooled.items()))
-
-    def shrink(variant: Variant, x, w, b: str):
-        return shrink_to_pooled(variant, x, w, pooled.get(b))
-
+    # A pooled per-class prior and a median-sharpening knob lived here.
+    # Both were measured on this data and rejected; the commit that
+    # removed them carries the numbers.
+    widest_window = max(v.tod_window for v in variants)
     n_conn = 0
     for (eva, ttype, tnum), grp in df.group_by(
         ["eva", "train_type", "train_number"], maintain_order=False
@@ -542,11 +509,23 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
             continue
         n_conn += 1
         dayclass_cache: dict[Variant, np.ndarray] = {}
+        daytype_cache: dict[Variant, np.ndarray] = {}
         days = np.array([d.toordinal() for d in dates])
 
         eval_mask = days >= eval_start.toordinal()
         for i in np.nonzero(eval_mask)[0]:
-            hist = (days < days[i]) & (np.abs(tod - tod[i]) <= 20)
+            # Circular, as EmpiricalDelay.timeOfDayDistance is: 23:50 and
+            # 00:10 are twenty minutes apart, not twenty-three hours. The
+            # backtest compared them the flat way, which is a divergence from
+            # the app it is meant to mirror.
+            # int32 on purpose: the column arrives narrow enough that
+            # `24 * 60 - gap` overflows it.
+            gap = np.abs(tod.astype(np.int32) - int(tod[i]))
+            dtod = np.minimum(gap, 24 * 60 - gap)
+            hist = (days < days[i]) & (dtod <= widest_window)
+            earlier = dtod[days < days[i]]
+            spread = ("spans_the_day" if earlier.size and earlier.max() > 20
+                      else "one_slot")
             # The floor matters more than it looks: with it at ten, every
             # experiment about thin histories is run on events that do not have
             # one. The app falls back to a class-wide prior below eight
@@ -557,9 +536,15 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
             hx = delays[hist]
             hprev = prevs[hist]
             hage = days[i] - days[hist]
+            hdtod = dtod[hist]
             y = float(delays[i])
             live = None if np.isnan(prevs[i]) else float(prevs[i])
             b = bucket(str(ttype))
+            # Also split by the kind of day being predicted. A boost towards
+            # same-kind runs changes the weighting far more for a weekend query
+            # — where the matching runs are the minority — than for a working
+            # day, and an average over both would hide it.
+            query_daytype = "on_a_weekend" if dates[i].weekday() >= 5 else "on_a_workday"
 
             for variant in variants:
                 if variant not in dayclass_cache:
@@ -568,18 +553,25 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
                     )
                 hdc = dayclass_cache[variant][hist]
                 qdc = dayclass_cache[variant][i]
-                w0 = base_weights(variant, hage, hdc, qdc)
+                if variant not in daytype_cache:
+                    daytype_cache[variant] = np.array(
+                        [variant.daytype_class(d) for d in dates]
+                    )
+                hdt = daytype_cache[variant][hist]
+                w0 = base_weights(variant, hage, hdc, qdc, hdt,
+                                  daytype_cache[variant][i])
+                if variant.tod_window < widest_window:
+                    w0 = w0 * (hdtod <= variant.tod_window)
+                    if w0.sum() <= 0:
+                        continue
                 for scenario, lp in scenarios_for(live):
-                    x, w, conditioned = predictive_points(variant, hx, hprev, w0, lp)
+                    x, w, _conditioned = predictive_points(variant, hx, hprev, w0, lp)
                     if w.sum() <= 0:
                         continue
-                    x, w = shrink(variant, x, w, b)
-                    x = sharpen(variant, x, w, conditioned)
-                    key = (variant.name, scenario, b)
-                    results.setdefault(key, Scores()).add(x, w, y)
-                    results.setdefault((variant.name, scenario, "all"), Scores()).add(
-                        x, w, y
-                    )
+                    for label in (b, "all", query_daytype, spread):
+                        results.setdefault(
+                            (variant.name, scenario, label), Scores()
+                        ).add(x, w, y)
 
     print(f"{n_conn} connections evaluated")
     table = {
