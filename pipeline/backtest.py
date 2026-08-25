@@ -416,7 +416,8 @@ def bucket(train_type: str) -> str:
 
 
 def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
-        out: Path | None, only: list[str] | None = None) -> None:
+        out: Path | None, only: list[str] | None = None,
+        min_history: int = 10) -> None:
     df = load_connections(data_dir, station_evas)
     max_date = df["date"].max()
     eval_start = max_date - timedelta(weeks=eval_weeks)
@@ -531,7 +532,13 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
         delays = grp["delay"].to_numpy()
         prevs = grp["prev"].to_numpy()
         n = len(dates)
-        if n < 15:
+        # Connections with less history than this are skipped outright, which
+        # is why lowering --min-history alone barely changes the event count:
+        # the thin-history regime the app's prior fallback exists for is
+        # excluded here, upstream of it. Answering whether that fallback beats
+        # shrinking a thin history needs this floor lowered too, and then the
+        # walk-forward has very little to walk.
+        if n < min_connection_runs:
             continue
         n_conn += 1
         dayclass_cache: dict[Variant, np.ndarray] = {}
@@ -540,7 +547,12 @@ def run(data_dir: Path, station_evas: list[str], eval_weeks: int,
         eval_mask = days >= eval_start.toordinal()
         for i in np.nonzero(eval_mask)[0]:
             hist = (days < days[i]) & (np.abs(tod - tod[i]) <= 20)
-            if hist.sum() < 10:
+            # The floor matters more than it looks: with it at ten, every
+            # experiment about thin histories is run on events that do not have
+            # one. The app falls back to a class-wide prior below eight
+            # effective runs, and whether that beats shrinking the thin history
+            # towards the same population is only answerable down here.
+            if hist.sum() < min_history:
                 continue
             hx = delays[hist]
             hprev = prevs[hist]
@@ -591,12 +603,16 @@ def main() -> None:
     ap.add_argument("--data-dir", type=Path, required=True)
     ap.add_argument("--stations", required=True)
     ap.add_argument("--eval-weeks", type=int, default=8)
+    ap.add_argument("--min-history", type=int, default=10,
+                    help="same-time-of-day runs required before an event is scored")
+    ap.add_argument("--min-connection-runs", type=int, default=15,
+                    help="runs a connection needs before any of it is scored")
     ap.add_argument("--only", nargs="*",
                     help="run only these variant names, for a focused experiment")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args()
     run(args.data_dir, args.stations.split(","), args.eval_weeks, args.out,
-        args.only)
+        args.only, args.min_history, args.min_connection_runs)
 
 
 if __name__ == "__main__":
