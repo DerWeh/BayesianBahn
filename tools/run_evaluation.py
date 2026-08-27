@@ -110,8 +110,13 @@ def score_day(day: str, scored: Path, station_list: str,
 
     # Shards are cached across days and trimmed inside the harness to runs
     # before the evaluated day, so a fresh download cannot leak the answer.
+    # Only the trains the event files name: the collector polls 281 stations
+    # across two cohorts, the scoring reaches one cohort's origins and the far
+    # ends of their changes, and fetching the difference was 86% of this stage.
     print(f"== {day}: fetching history shards")
-    run(python("tools/fetch_shards.py", "--day", day))
+    run(python("tools/fetch_shards.py", "--day", day, "--events",
+               str(out / "arrivals.jsonl"), str(out / "connections.jsonl"),
+               str(out / "journeys.jsonl")))
 
     for kind in ("arrivals", "connections"):
         for mode in ("live", "blind"):
@@ -124,8 +129,8 @@ def score_day(day: str, scored: Path, station_list: str,
             }
             if mode == "blind":
                 env["HARNESS_BLIND"] = "1"
-            run([gradle_wrapper(), "testDebugUnitTest", "--tests", "*ForecastHarness",
-                 "-q", "--rerun-tasks"], env=env)
+            run([gradle_wrapper(), "testDebugUnitTest", "--tests",
+                 "*ForecastHarness", "-q"], env=env)
 
     # Skipped rather than run empty: a day before the second tier existed has
     # no journeys at all, and a gradle round trip per mode to discover that
@@ -143,8 +148,8 @@ def score_day(day: str, scored: Path, station_list: str,
         }
         if mode == "blind":
             env["HARNESS_BLIND"] = "1"
-        run([gradle_wrapper(), "testDebugUnitTest", "--tests", "*JourneyHarness",
-             "-q", "--rerun-tasks"], env=env)
+        run([gradle_wrapper(), "testDebugUnitTest", "--tests",
+             "*JourneyHarness", "-q"], env=env)
 
 
 def main() -> None:

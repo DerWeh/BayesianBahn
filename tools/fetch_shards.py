@@ -5,8 +5,15 @@ Augsburg and München; the twenty stations this evaluation samples are a
 different, nationwide set with no overlap. A real user searching Aachen gets
 those trains through the app's *on-demand* path instead — one small shard per
 train from the `shards` branch, with the daily `shards-recent` overlay on top.
-This fetches exactly that, for exactly the trains the collected plan records
-name, so the model is evaluated on the data a user would actually have.
+This fetches exactly that, for exactly the trains the scoring reaches, so the
+model is evaluated on the data a user would actually have.
+
+Which trains those are is read from the event files, not from the day's plan
+records. The collector polls 281 stations across two cohorts and two tiers; the
+scoring reaches one cohort's origins and the far ends of their changes. Taking
+the trains from the journal fetched a shard for every train seen anywhere —
+29,600 of them on 2026-08-25, where the scoring needed 4,122. The other 86%
+were half an hour of requests for histories nothing read.
 
 The cutoff is a property of the published data, not of this script: the base
 covers 2026-04..07 and the recent overlay ends the day before the evaluation
@@ -63,8 +70,37 @@ def candidate_keys(category: str, number: str, line: str | None) -> list[str]:
 
 
 def trains_of(day, out: Path) -> set[tuple[str, str, str | None]]:
+    """Every train the day's plan records name — the whole polled network."""
     records, _ = cf.Journal.read(out / f"forecasts-{day}.jsonl")
     return {(r["cat"], r["num"], r.get("line")) for r in records if r["t"] == "plan"}
+
+
+def trains_scored(events: list[Path]) -> set[tuple[str, str, str | None]]:
+    """The trains the event files actually ask the model about.
+
+    Three shapes, because the three event kinds name their trains differently:
+    the feeder is `cat`/`num`/`line` on every one, a connection is the single
+    string `conn` ("RE 4711", no line), and a journey carries its candidates as
+    objects. Missing one of these would quietly starve the model of history for
+    those trains — which reads as "no history" and is not otherwise visible.
+    """
+    trains: set[tuple[str, str, str | None]] = set()
+    for path in events:
+        if not path.exists():
+            continue
+        with path.open(encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                trains.add((event["cat"], event["num"], event.get("line")))
+                if event.get("conn"):
+                    cat, _, num = event["conn"].partition(" ")
+                    trains.add((cat, num, None))
+                for candidate in event.get("candidates") or ():
+                    trains.add((candidate["cat"], candidate["num"],
+                                candidate.get("line")))
+    return trains
 
 
 def fetch(url: str, tries: int = 3) -> bytes | None:
@@ -151,15 +187,25 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--day", required=True)
     ap.add_argument("--journal", type=Path, default=cf.OUT)
+    ap.add_argument("--events", type=Path, nargs="*", default=(),
+                    help="event files to take the train list from; without "
+                         "them every train in the day's journal is fetched")
     ap.add_argument("--out", type=Path, default=Path(__file__).parent / ".shards")
     ap.add_argument("--workers", type=int, default=WORKERS,
                     help=f"concurrent requests (default {WORKERS}; 1 is the old behaviour)")
     args = ap.parse_args()
 
     day = dt.date.fromisoformat(args.day)
-    trains = trains_of(args.day, args.journal)
+    trains = trains_scored(list(args.events)) if args.events else trains_of(
+        args.day, args.journal)
+    if args.events and not trains:
+        raise SystemExit(
+            f"{args.day}: the event files named no trains at all "
+            f"({', '.join(str(p) for p in args.events)}). Fetching nothing "
+            "would score every train as one the model has never seen.")
     keys = sorted({k for cat, num, line in trains for k in candidate_keys(cat, num, line)})
-    print(f"{len(trains)} trains -> {len(keys)} shard keys "
+    source = "scored events" if args.events else "the whole journal"
+    print(f"{len(trains)} trains from {source} -> {len(keys)} shard keys "
           f"({args.workers} at a time)", file=sys.stderr)
 
     counts = {"base": 0, "recent": 0, "missing": 0}

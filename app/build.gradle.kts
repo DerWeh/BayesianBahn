@@ -72,6 +72,17 @@ tasks.withType<Test>().configureEach {
     inputs.dir(layout.projectDirectory.dir("src/main/res"))
         .withPathSensitivity(PathSensitivity.RELATIVE)
         .withPropertyName("resources")
+
+    // The evaluation harnesses are driven entirely by HARNESS_* environment
+    // variables — which day, which events, where the answers go — and Gradle
+    // cannot see those, so a second run with a different day reported
+    // UP-TO-DATE and left the first day's answers in place. The driver worked
+    // around it with --rerun-tasks, which reruns *every* task: the app was
+    // recompiled from scratch before each of the six harness passes per day,
+    // turning a one-second test into a thirty-second one. Declaring the
+    // variables as inputs invalidates the test alone and leaves the build
+    // cached.
+    inputs.properties(providers.environmentVariablesPrefixedBy("HARNESS_").get())
 }
 
 dependencies {
