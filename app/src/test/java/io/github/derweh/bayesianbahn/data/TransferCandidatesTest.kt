@@ -68,14 +68,6 @@ class TransferCandidatesTest {
     }
 
     @Test
-    fun `already tried stations are not offered again`() {
-        val ranked = transferCandidates(
-            listOf(memmingen, illertissen), ulm, turkheim, exclude = setOf("Memmingen"),
-        )
-        assertEquals(listOf("Illertissen"), ranked.map { it.name })
-    }
-
-    @Test
     fun `the destination itself is not a transfer`() {
         assertTrue(transferCandidates(listOf(turkheim), ulm, turkheim).isEmpty())
     }

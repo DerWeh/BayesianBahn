@@ -69,7 +69,7 @@ def station(eva: str, weight: int, lat: float, lon: float = 10.0) -> rb.Station:
 
 @pytest.mark.parametrize("name", [
     "ORIGIN_HOURS", "MAX_TRANSFER_SCAN", "MAX_TRANSFER_RESULTS",
-    "MAX_TRANSFER_ATTEMPTS", "TRANSFERS_PER_FEEDER", "MIN_TRANSFER_WEIGHT",
+    "MAX_TRANSFER_ATTEMPTS", "MIN_TRANSFER_WEIGHT",
     "DETOUR_TOLERANCE", "MAX_DIRECT",
 ])
 def test_constants_mirror_the_planner(name: str) -> None:
@@ -321,7 +321,52 @@ def test_search_counts_the_direct_trains_separately() -> None:
     tt = tt_of(("RE", "9", [("O", None, BASE + 5), ("D", BASE + 50, None)]))
     got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
     assert got == {"direct": 1, "first_hit": None, "attempts": 0,
-                   "first_arrival": None, "feeders": 1}
+                   "first_arrival": None, "feeders": 1, "found": 0, "trains": 0}
+
+
+def test_search_spends_the_budget_on_the_nearest_change_first() -> None:
+    """The early train's changes are admissible but far; the late train's is near.
+
+    This is the whole of the 0.2.1 routing change in one timetable. Departure
+    time is not evidence about whether a change works, and the pre-0.2.1 order
+    spent on it anyway — here it opens two boards before reaching the one that
+    was always the obvious candidate, and at a Hbf it never reaches it at all.
+    """
+    by_eva, origin, dest, _ = ranking_setup()
+    by_eva |= {"FAR1": station("FAR1", 300, 48.7), "FAR2": station("FAR2", 300, 48.8)}
+    tt = tt_of(
+        ("RE", "1", [("O", None, BASE + 1), ("FAR2", BASE + 10, None),
+                     ("FAR1", BASE + 20, None)]),
+        ("RE", "2", [("O", None, BASE + 40), ("NEAR", BASE + 60, None)]),
+        ("RB", "3", [("NEAR", None, BASE + 70), ("D", BASE + 90, None)]),
+    )
+    assert rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)["first_hit"] == 1
+    old = rb.Config(order="feeder", scan=15, per_feeder=2)
+    assert rb.search(tt, origin, dest, BASE, by_eva, old, budget=8)["first_hit"] == 3
+
+
+def test_search_opens_a_transfer_board_once() -> None:
+    """An attempt buys a board, so two trains through one station cost one."""
+    by_eva, origin, dest, _ = ranking_setup()
+    tt = tt_of(
+        ("RE", "1", [("O", None, BASE + 1), ("MID", BASE + 20, None)]),
+        ("RE", "2", [("O", None, BASE + 5), ("MID", BASE + 25, None)]),
+    )
+    got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
+    assert got["attempts"] == 1
+
+
+def test_search_does_not_change_off_the_same_train_twice() -> None:
+    """A second change off one train is the same departure, not a second option."""
+    by_eva, origin, dest, _ = ranking_setup()
+    tt = tt_of(
+        ("RE", "1", [("O", None, BASE + 1), ("NEAR", BASE + 20, None),
+                     ("MID", BASE + 25, None)]),
+        ("RB", "2", [("NEAR", None, BASE + 30), ("D", BASE + 50, None)]),
+        ("RB", "3", [("MID", None, BASE + 40), ("D", BASE + 60, None)]),
+    )
+    got = rb.search(tt, origin, dest, BASE, by_eva, rb.Config(), budget=8)
+    assert got["found"] == 1 and got["attempts"] == 1
 
 
 def test_search_stops_at_the_budget() -> None:

@@ -130,27 +130,37 @@ the app report *fewer* connections than DB does — never wrong ones:
   one change", not "none exists".
 - **A three-hour window** from the requested departure at the origin, and four
   hours at the transfer station.
-- **The transfer search is a heuristic**, not an exhaustive one: stations on a
-  train's route are ranked by distance to the destination and at most eight are
-  evaluated, because each one costs a live board request. Measured with
-  `tools/route_bench.py` against exhaustive ground truth — thousands of journeys
-  over five days of the archive, each with a one-change connection that provably
-  exists inside the windows the app itself searches — recall depends strongly on
-  how busy the origin is:
+- **The transfer search is a heuristic**, not an exhaustive one: the origin's
+  board is read once, every train on it comes with its own route, and the
+  (feeder, transfer station) pairs those routes describe are ranked by distance
+  to the destination. At most eight are evaluated, because each one costs a live
+  board request. Measured with `tools/route_bench.py` against exhaustive ground
+  truth — 4,000 journeys over five days of the archive, each with a one-change
+  connection that provably exists inside the windows the app itself searches —
+  recall still depends on how busy the origin is:
 
-  | origin | typical departures in the 3h window | found at the shipped budget |
-  | --- | --- | --- |
-  | village halt (weight < 40) | 5 | 89% |
-  | small station (40–100) | 9 | 81% |
-  | town (100–250) | 16 | 79% |
-  | hub (250+) | 45 | **55%** |
+  | origin | typical departures in the 3h window | found at the shipped budget | before 0.2.1 |
+  | --- | --- | --- | --- |
+  | village halt (weight < 40) | 6 | 91% | 89% |
+  | small station (40–100) | 10 | 86% | 83% |
+  | town (100–250) | 19 | 79% | 74% |
+  | hub (250+) | 51 | **73%** | 57% |
 
-  The pattern is the budget, not the ranking: eight transfer boards go a long
-  way among five departures and nowhere among forty-five. Quoting one aggregate
-  number hides this, and since most journeys start at the busy end, any average
-  over stations flatters the cases people actually use. Of the misses, three
-  quarters are transfer stations the ranking never reaches; the rest are excluded
-  by the detour or weight filters.
+  Until 0.2.1 the eight attempts were spent feeder by feeder in departure order,
+  two stations each, so at a hub the first four trains out consumed the whole
+  budget while forty others were never looked at — and departure time is not
+  evidence about whether a change works. Ordering the pairs globally costs
+  nothing (the routes are already in the board that was fetched anyway) and
+  spends the same 5.8 attempts a search; it just spends them on the changes
+  nearest the destination, wherever they sit in the board. The itinerary found
+  is also 5 minutes earlier on average, because a change near the destination
+  is usually a change late in the journey.
+
+  Of the remaining misses, 4 points are transfer stations excluded by the detour
+  filter, 2 are admissible but never reached inside the budget, and 1 is a
+  station missing from the bundled list. Quoting one aggregate number would hide
+  the shape of this, and since most journeys start at the busy end, any average
+  over stations flatters the cases people actually use.
 
   An earlier live measurement over 44 journeys reported 98%. That number was
   too kind: its ground truth was built by walking the same station boards the

@@ -35,6 +35,22 @@ fixes; expect breaking changes between minors until 1.0).
   landed a day out on one collected day.
 
 ### Changed
+- **The search for a change no longer spends its budget on the first trains to
+  leave.** A journey with one change costs a live board request per change
+  evaluated, and eight are affordable. Those eight used to be handed out feeder
+  by feeder in departure order, two stations each, so at a station like Ulm Hbf
+  the first four departures used the whole budget while forty other trains were
+  never looked at — and when a train leaves says nothing about whether changing
+  off it works. The origin's board is a single fetch and every train on it
+  arrives with its own route, so all the candidate changes are known before any
+  attempt is spent; they are now ranked together, nearest the destination first,
+  and the budget goes to the best of them wherever they sit in the board. No
+  extra requests: measured over 4,000 archived journeys the mean spend is
+  unchanged at 5.8 attempts. Journeys found rise from 82% to 86% overall and
+  from 57% to 73% at the biggest origins, and the itinerary found arrives 5
+  minutes earlier on average. A station is opened once, and a train that has
+  already yielded an itinerary is not changed off a second time — that is the
+  same departure by another route, not a second option.
 - **Reading a train's delay history is about ten times faster, and drawing its
   histogram far more.** A history shard was decoded by walking a JSON tree and
   asking each field for its number, which is a *string* parse per field per

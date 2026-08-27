@@ -20,14 +20,19 @@ import io.github.derweh.bayesianbahn.model.DeutschlandTicket
  * candidate trains come from the origin's IRIS board for [ORIGIN_HOURS] hours;
  * for trains not reaching the destination, stations on their route are ranked
  * by distance to the destination (see [transferCandidates]) and at most
- * [MAX_TRANSFER_ATTEMPTS] of them are evaluated via [ConnectionPlanner]'s
- * Bayesian propagation.
+ * [MAX_TRANSFER_ATTEMPTS] of the resulting (feeder, transfer) pairs are
+ * evaluated via [ConnectionPlanner]'s Bayesian propagation.
+ *
+ * Which pairs, though, is the whole game. The origin's board is one fetch and
+ * every train on it carries its own route, so the set of pairs is already paid
+ * for before a single attempt is spent — and the budget goes to the best of
+ * them, across all departures at once, rather than to whichever train leaves
+ * first. See [transferPairs].
  *
  * `tools/route_bench.py` measures what that costs, against ground truth that is
  * exhaustive within these same windows: of journeys that provably have a
- * one-change connection, 82% are found — but that average spans 89% from a
- * village halt down to 55% from a big hub, where forty-five departures compete
- * for the same eight attempts. See [MAX_TRANSFER_ATTEMPTS].
+ * one-change connection, 86% are found, spanning 91% from a village halt down
+ * to 73% from a big hub. See [MAX_TRANSFER_ATTEMPTS].
  */
 class JourneyPlanner(
     private val stationRepository: StationRepository,
@@ -142,21 +147,10 @@ class JourneyPlanner(
         for (stop in direct.take(MAX_DIRECT)) {
             directItinerary(stop, from, to)?.let { itineraries += it }
         }
-        var transferBudget = MAX_TRANSFER_ATTEMPTS
-        var found = 0
-        // Many feeders share the same best transfer (e.g. every S-Bahn via
-        // the same hub) — evaluate each transfer station only once so the
-        // budget reaches genuinely different routes.
-        val triedTransfers = mutableSetOf<String>()
-        for (stop in others.take(MAX_TRANSFER_SCAN)) {
-            if (transferBudget <= 0 || found >= MAX_TRANSFER_RESULTS) break
-            val itinerary = transferItinerary(
-                stop, from, to, transferMinutes, deutschlandTicketOnly, triedTransfers,
-            ) { transferBudget-- > 0 }
-            if (itinerary != null) {
-                itineraries += itinerary
-                found++
-            }
+        itineraries += spendTransferBudget(
+            transferPairs(others.take(MAX_TRANSFER_SCAN), from, to),
+        ) { stop, transfer ->
+            transferItinerary(stop, transfer, to, transferMinutes, deutschlandTicketOnly)
         }
         if (itineraries.isEmpty()) {
             return Outcome.Error(
@@ -220,59 +214,81 @@ class JourneyPlanner(
     }
 
     /**
-     * A train not reaching the destination: try changing at the biggest
-     * stations on its route (largest first) until one works. [tryAttempt]
-     * gates each network-heavy evaluation against the shared budget.
+     * Every (feeder, transfer station) pair worth an attempt, best first.
+     *
+     * The shipped order used to be feeder by feeder in departure order, up to
+     * two stations each, which meant the budget was consumed by the earliest
+     * departures whether or not they led anywhere: at a hub the first four
+     * trains out spent all eight attempts while forty others were never looked
+     * at. Departure time is not evidence about whether a change works.
+     *
+     * Nothing here costs a request that the board has not already paid for —
+     * a train's route comes with it, and [RouteStationMatcher.stationsOn]
+     * resolves names against the bundled list before it considers asking IRIS.
+     * So the pairs are free and only the *attempts* are dear, which is the
+     * argument for choosing them globally.
+     *
+     * Ordered by distance from the transfer to the destination, exactly as
+     * [transferCandidates] ranks within one train, with ties going to the
+     * earliest feeder: arriving earlier at the same station can only see more
+     * onward trains, never fewer. Pairs are kept rather than reduced to one per
+     * station, because the caller retires a feeder once it has produced an
+     * itinerary — a station whose earliest feeder has just been retired is
+     * still worth reaching on the next train.
+     *
+     * Measured over five archived days and 4,000 journeys that provably have a
+     * one-change connection, against the same budget: 82% found becomes 86%,
+     * and at origins the size of a Hbf 57% becomes 73%. The itinerary found is
+     * also 5 minutes earlier on average, because a change near the destination
+     * is usually a change late in the journey.
      */
+    private suspend fun transferPairs(
+        feeders: List<TimetableStop>,
+        from: Station,
+        to: Station,
+    ): List<Pair<TimetableStop, Station>> = rankTransferPairs(
+        routes = feeders.map { it to routeStations.stationsOn(it.departure!!.plannedPath) },
+        origin = from,
+        destination = to,
+    )
+
+    /** One attempt: this feeder, this change. Costs a transfer board. */
     private suspend fun transferItinerary(
         stop: TimetableStop,
-        from: Station,
+        transfer: Station,
         to: Station,
         transferMinutes: Int,
         deutschlandTicketOnly: Boolean,
-        triedTransfers: MutableSet<String>,
-        tryAttempt: () -> Boolean,
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
-        val transfers = transferCandidates(
-            path = routeStations.stationsOn(stop.departure!!.plannedPath),
-            origin = from,
-            destination = to,
-            exclude = triedTransfers,
-        ).take(TRANSFERS_PER_FEEDER)
-        for (transfer in transfers) {
-            if (!tryAttempt()) return null
-            triedTransfers += transfer.name
-            val outcome = connectionPlanner.plan(
-                feeder = stop,
-                transferQuery = transfer.name,
-                destinationQuery = to.name,
-                transferMinutes = transferMinutes,
-                deutschlandTicketOnly = deutschlandTicketOnly,
-                boardStartMillis = departure,
-            ) as? ConnectionPlanner.Outcome.Success ?: continue
-            return Itinerary(
-                feeder = stop,
-                departureMillis = departure,
-                transferStation = outcome.transferStation.name,
-                distribution = outcome.result.distribution,
-                referenceArrivalMillis = outcome.result.referenceArrivalMillis,
-                // The first *plannable* connection (departing after the
-                // feeder's planned arrival) — normally-missed earlier trains
-                // are listed in the details but don't define the headline.
-                catchProbability = outcome.result.candidates
-                    .firstOrNull {
-                        !it.candidate.cancelledLive &&
-                            it.candidate.plannedDepartureMillis >=
-                            outcome.feederPlannedArrivalMillis
-                    }?.boardProbability
-                    ?: outcome.result.candidates
-                        .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
-                missProbability = outcome.result.missProbability,
-                connection = outcome,
-            )
-        }
-        return null
+        val outcome = connectionPlanner.plan(
+            feeder = stop,
+            transferQuery = transfer.name,
+            destinationQuery = to.name,
+            transferMinutes = transferMinutes,
+            deutschlandTicketOnly = deutschlandTicketOnly,
+            boardStartMillis = departure,
+        ) as? ConnectionPlanner.Outcome.Success ?: return null
+        return Itinerary(
+            feeder = stop,
+            departureMillis = departure,
+            transferStation = outcome.transferStation.name,
+            distribution = outcome.result.distribution,
+            referenceArrivalMillis = outcome.result.referenceArrivalMillis,
+            // The first *plannable* connection (departing after the feeder's
+            // planned arrival) — normally-missed earlier trains are listed in
+            // the details but don't define the headline.
+            catchProbability = outcome.result.candidates
+                .firstOrNull {
+                    !it.candidate.cancelledLive &&
+                        it.candidate.plannedDepartureMillis >=
+                        outcome.feederPlannedArrivalMillis
+                }?.boardProbability
+                ?: outcome.result.candidates
+                    .firstOrNull { !it.candidate.cancelledLive }?.boardProbability,
+            missProbability = outcome.result.missProbability,
+            connection = outcome,
+        )
     }
 
     companion object {
@@ -281,8 +297,19 @@ class JourneyPlanner(
         /** Hours of the origin's board that are searched for departures. */
         const val ORIGIN_HOURS = 3
 
-        /** Feeders considered; the attempt budget below limits network work. */
-        const val MAX_TRANSFER_SCAN = 15
+        /**
+         * Departures whose routes are read into [transferPairs].
+         *
+         * Reading a route is free — it arrives with the board — so this is not
+         * a cost limit but a guard on the one thing that is not free:
+         * [RouteStationMatcher.stationsOn] falls back to asking IRIS for a
+         * route none of whose stations are in the bundled list, and that
+         * fallback should not scale with the size of a Hbf's board.
+         *
+         * Raising it from 15 to 25 is worth 2 points of recall at the biggest
+         * origins (71% to 73%); lifting it altogether is worth one more.
+         */
+        const val MAX_TRANSFER_SCAN = 25
         const val MAX_TRANSFER_RESULTS = 3
 
         /**
@@ -290,19 +317,17 @@ class JourneyPlanner(
          * is five IRIS requests).
          *
          * Measured with `tools/route_bench.py` against exhaustive ground truth
-         * over five archived days: 66% are found within 4 attempts, 76% within
-         * 6, 82% within 8, 86% within 12, and 89% is the ceiling at any budget.
-         * The curve has no elbow — it just flattens — so this constant trades
-         * recall against requests rather than finding a natural stopping point,
-         * and eight is a compromise, not an optimum.
+         * over five archived days: 77% are found within 4 attempts, 86% within
+         * 8, 90% within 12, and 92% is the ceiling at any budget. The curve has
+         * no elbow — it just flattens — so this constant trades recall against
+         * requests rather than finding a natural stopping point, and eight is a
+         * compromise, not an optimum.
          *
-         * It is also the binding constraint at busy stations, and only there.
-         * Recall runs 89% from a village halt (five departures in the window)
-         * down to 55% from a hub (forty-five), because the budget opens the same
-         * eight transfer boards either way. Raising it helps exactly the
-         * journeys that start where most journeys start, at a cost paid on every
-         * search; scaling it with the size of the origin board would be the
-         * targeted fix.
+         * What changed with [transferPairs] is where those eight go, not how
+         * many there are: at the shipped budget recall went from 82% to 86%
+         * overall and from 57% to 73% at the biggest origins, at the same mean
+         * spend of 5.8 attempts a search. It stays the binding constraint at
+         * busy stations, just much less wastefully.
          *
          * An earlier measurement over 44 live journeys reported 98% at eight
          * attempts. Its ground truth came from walking the same boards this
@@ -311,14 +336,6 @@ class JourneyPlanner(
          */
         const val MAX_TRANSFER_ATTEMPTS = 8
 
-        /**
-         * Two per feeder beat one and three at the shipped budget (77% / 77% /
-         * 74% found): a third candidate is usually a worse station on a route
-         * already shown not to work, and spends budget a fresh feeder would use
-         * better. One per feeder ties at eight attempts but falls behind as the
-         * budget grows (82% vs 88% at sixteen).
-         */
-        const val TRANSFERS_PER_FEEDER = 2
         const val MAX_RESULTS = 5
 
         /** Skip pure village halts; real junctions can be small (Buchloe: 167). */
@@ -332,7 +349,75 @@ class JourneyPlanner(
         const val DETOUR_TOLERANCE = 1.25
 
         /**
-         * Transfer stations worth spending an attempt on, best first.
+         * Merges the per-train rankings into one order across the whole board.
+         *
+         * Ordered by distance from the transfer to the destination, exactly as
+         * [transferCandidates] ranks within one train, with ties going to the
+         * earliest feeder: arriving earlier at the same station can only see
+         * more onward trains, never fewer. A station with no coordinates keeps
+         * its weight ordering and goes last, as it does within a route.
+         *
+         * Pairs are kept rather than reduced to one per station, because
+         * [spendTransferBudget] retires a feeder once it has produced an
+         * itinerary — a station whose earliest feeder has just been retired is
+         * still worth reaching on the next train.
+         */
+        fun rankTransferPairs(
+            routes: List<Pair<TimetableStop, List<Station>>>,
+            origin: Station,
+            destination: Station,
+        ): List<Pair<TimetableStop, Station>> = routes
+            .flatMap { (stop, path) ->
+                transferCandidates(path, origin, destination).map { stop to it }
+            }
+            .sortedWith(
+                compareBy(
+                    { (_, transfer) -> transfer.distanceKm(destination) ?: Double.MAX_VALUE },
+                    { (_, transfer) -> -transfer.weight },
+                    { (stop, _) -> stop.departure?.plannedTime ?: Long.MAX_VALUE },
+                ),
+            )
+
+        /**
+         * Spends [MAX_TRANSFER_ATTEMPTS] on [pairs], best first, and stops at
+         * [MAX_TRANSFER_RESULTS] itineraries.
+         *
+         * Two things are never spent twice. A transfer station is opened once,
+         * because that is what an attempt buys — a board — and a second look at
+         * the same board with a later feeder can only find the same trains from
+         * further behind. And a feeder that has already produced an itinerary
+         * is retired: a second change off the same train is not a second option
+         * to the passenger, it is the same departure reached by another route.
+         *
+         * [evaluate] is the expensive part, and it is called at most
+         * [MAX_TRANSFER_ATTEMPTS] times whatever the size of [pairs].
+         */
+        suspend fun spendTransferBudget(
+            pairs: List<Pair<TimetableStop, Station>>,
+            evaluate: suspend (TimetableStop, Station) -> Itinerary?,
+        ): List<Itinerary> {
+            val found = mutableListOf<Itinerary>()
+            val openedBoards = mutableSetOf<String>()
+            val servedFeeders = mutableSetOf<String>()
+            var budget = MAX_TRANSFER_ATTEMPTS
+            for ((stop, transfer) in pairs) {
+                if (budget <= 0 || found.size >= MAX_TRANSFER_RESULTS) break
+                if (transfer.name in openedBoards || stop.id in servedFeeders) continue
+                openedBoards += transfer.name
+                budget--
+                val itinerary = evaluate(stop, transfer) ?: continue
+                found += itinerary
+                servedFeeders += stop.id
+            }
+            return found
+        }
+
+        /**
+         * Transfer stations on one train's route worth an attempt, best first.
+         *
+         * [transferPairs] merges these per-train rankings into one order across
+         * the whole board; this function decides only what is admissible and
+         * how one route's stations compare.
          *
          * Ranking by station size alone sent Ulm → Türkheim (Bay) through
          * Stuttgart Hbf (weight 1009, and 130 km the wrong way) and then
@@ -348,12 +433,9 @@ class JourneyPlanner(
             path: List<Station>,
             origin: Station,
             destination: Station,
-            exclude: Set<String> = emptySet(),
         ): List<Station> {
             val usable = path.filter {
-                it.eva != destination.eva &&
-                    it.weight >= MIN_TRANSFER_WEIGHT &&
-                    it.name !in exclude
+                it.eva != destination.eva && it.weight >= MIN_TRANSFER_WEIGHT
             }
             val goal = origin.distanceKm(destination)
                 ?: return usable.sortedByDescending { it.weight }

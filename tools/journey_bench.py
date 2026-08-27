@@ -52,7 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CACHE = Path(__file__).parent / ".iris-cache"
 
 # Mirrors JourneyPlanner / ConnectionPlanner.
-MAX_TRANSFER_SCAN = 15
+MAX_TRANSFER_SCAN = 25
 MAX_TRANSFER_RESULTS = 3
 MIN_TRANSFER_WEIGHT = 40
 DETOUR_TOLERANCE = 1.25
@@ -180,36 +180,63 @@ def search(origin, destination, depart, by_name, *, ranking, per_feeder, max_att
     direct = len(deps) - len(others)
 
     goal = km(origin, destination)
-    attempts, hits, tried = 0, [], []
-    for feeder in others[:MAX_TRANSFER_SCAN]:
-        if attempts >= max_attempts:
-            break
+
+    def transfers(feeder, exclude):
         cands = [by_name[core(p)] for p in feeder["path"]
                  if core(p) in by_name
                  and by_name[core(p)]["weight"] >= MIN_TRANSFER_WEIGHT
                  and by_name[core(p)]["eva"] != destination["eva"]
-                 and by_name[core(p)]["name"] not in tried]
-        if ranking == "distance":
-            cands = [c for c in cands if km(c, destination) <= goal * DETOUR_TOLERANCE]
-            cands.sort(key=lambda c: km(c, destination))
-        else:
+                 and by_name[core(p)]["name"] not in exclude]
+        if ranking == "weight":  # pre-0.1.2: no filter, biggest station first
             cands.sort(key=lambda c: -c["weight"])
-        for c in cands[:per_feeder]:
-            if attempts >= max_attempts:
-                break
-            attempts += 1
-            tried.append(c["name"])
-            at = board(c["eva"], when(feeder["dep"]), TRANSFER_HOURS)
-            here = [x for x in at
-                    if x["cat"] == feeder["cat"] and x["num"] == feeder["num"] and x["arr"]]
-            if not here:
-                continue
-            arrival = when(here[0]["arr"])
-            if any(x["dep"] and covers(x["cat"])
-                   and any(is_dest(p) for p in x["path"])
-                   and when(x["dep"]) >= arrival + dt.timedelta(minutes=TRANSFER_MINUTES)
-                   for x in at):
-                hits.append(attempts)
+            return cands
+        cands = [c for c in cands if km(c, destination) <= goal * DETOUR_TOLERANCE]
+        cands.sort(key=lambda c: km(c, destination))
+        return cands
+
+    def ordered():
+        """The (feeder, transfer) pairs to try, best first.
+
+        "global" is what the app does: the origin board is one fetch and every
+        train on it carries its own route, so all the pairs are known before an
+        attempt is spent, and the budget goes to the best of them. The other
+        rankings walk feeder by feeder in departure order, which is how the app
+        used to spend it — kept here to price the difference live.
+        """
+        if ranking == "global":
+            pairs = [(f, c) for f in others[:MAX_TRANSFER_SCAN]
+                     for c in transfers(f, ())]
+            pairs.sort(key=lambda fc: (km(fc[1], destination), when(fc[0]["dep"])))
+            return pairs
+        seen, pairs = [], []
+        for feeder in others[:MAX_TRANSFER_SCAN]:
+            for c in transfers(feeder, seen)[:per_feeder]:
+                seen.append(c["name"])
+                pairs.append((feeder, c))
+        return pairs
+
+    attempts, hits, tried, served = 0, [], [], []
+    for feeder, c in ordered():
+        if attempts >= max_attempts:
+            break
+        # A station costs a board, so it is opened once; a feeder that already
+        # worked is retired, being the same departure by another route.
+        if c["name"] in tried or (feeder["cat"], feeder["num"]) in served:
+            continue
+        attempts += 1
+        tried.append(c["name"])
+        at = board(c["eva"], when(feeder["dep"]), TRANSFER_HOURS)
+        here = [x for x in at
+                if x["cat"] == feeder["cat"] and x["num"] == feeder["num"] and x["arr"]]
+        if not here:
+            continue
+        arrival = when(here[0]["arr"])
+        if any(x["dep"] and covers(x["cat"])
+               and any(is_dest(p) for p in x["path"])
+               and when(x["dep"]) >= arrival + dt.timedelta(minutes=TRANSFER_MINUTES)
+               for x in at):
+            hits.append(attempts)
+            served.append((feeder["cat"], feeder["num"]))
     return {"direct": direct, "hits": hits, "attempts": attempts, "tried": tried}
 
 
@@ -278,7 +305,7 @@ def generate(out: Path, count: int, seed: int) -> None:
 def run(path: Path, max_attempts: int) -> None:
     by_name, by_eva = stations()
     queries = json.loads(path.read_text(encoding="utf-8"))
-    strategies = [("weight", 2), ("distance", 1), ("distance", 2), ("distance", 3)]
+    strategies = [("global", 0), ("weight", 2), ("distance", 2), ("distance", 3)]
     results = {f"{r}/{p}": [] for r, p in strategies}
 
     for i, q in enumerate(queries, 1):
@@ -288,7 +315,7 @@ def run(path: Path, max_attempts: int) -> None:
             results[f"{ranking}/{per_feeder}"].append(search(
                 origin, destination, depart, by_name,
                 ranking=ranking, per_feeder=per_feeder, max_attempts=max_attempts))
-        first = results["distance/2"][-1]["hits"]
+        first = results["global/0"][-1]["hits"]
         print(f"[{i:2}/{len(queries)}] {origin['name'][:22]:22} -> {destination['name'][:22]:22}"
               f"  first_hit={first[0] if first else None}", flush=True)
 

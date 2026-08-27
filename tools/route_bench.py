@@ -56,10 +56,9 @@ SNAPSHOTS = Path(__file__).parent / ".timetable"
 MAX_DIRECT = 3
 ORIGIN_HOURS = 3
 TRANSFER_HOURS = 4
-MAX_TRANSFER_SCAN = 15
+MAX_TRANSFER_SCAN = 25
 MAX_TRANSFER_RESULTS = 3
 MAX_TRANSFER_ATTEMPTS = 8
-TRANSFERS_PER_FEEDER = 2
 MIN_TRANSFER_WEIGHT = 40
 DETOUR_TOLERANCE = 1.25
 TRANSFER_MINUTES = 5
@@ -81,13 +80,33 @@ class Config:
     """The knobs under test. Defaults are what the app ships."""
 
     max_attempts: int = MAX_TRANSFER_ATTEMPTS
-    per_feeder: int = TRANSFERS_PER_FEEDER
+    # Not a shipped constant any more: the global order needs no per-feeder cap
+    # and JourneyPlanner has none. Kept so the sweep can still price one.
+    per_feeder: int = 99
     min_weight: int = MIN_TRANSFER_WEIGHT
     detour: float = DETOUR_TOLERANCE
     scan: int = MAX_TRANSFER_SCAN
     # "distance" ships; "weight" is the pre-0.1.2 behaviour; "hybrid" keeps the
-    # detour filter but orders what survives it by station size.
+    # detour filter but orders what survives it by station size. Under the
+    # global order this only decides what is *admissible* — "weight" skips the
+    # detour filter — because the pairs are re-sorted across the whole board
+    # afterwards. It is a live knob only for order="feeder".
     ranking: str = "distance"
+    # "global" ships: pool every (feeder, transfer) pair the origin board
+    # already describes and spend the budget on the best of them, wherever they
+    # sit in the board. "feeder" is the pre-0.2.1 behaviour — walk the
+    # departures in time order, spending up to `per_feeder` attempts on each
+    # until the budget runs out, so the earliest departures consume it whether
+    # or not they lead anywhere. "rounds" is a measured and rejected variant of
+    # "global" that gives every feeder one attempt before any feeder's second.
+    # All three see exactly the same information: the origin board is one
+    # fetch, and every train on it carries its own route.
+    order: str = "global"
+    # How "global" scores a pair: "dest" is distance from the transfer to the
+    # destination (what the shipped per-feeder ranking uses); "detour" is the
+    # length of the whole dog-leg, origin->transfer->destination, which prefers
+    # a change that lies on the way over one that is merely near the far end.
+    score: str = "dest"
 
 
 # --- the timetable ------------------------------------------------------------
@@ -334,6 +353,71 @@ def candidates(path: tuple, origin: Station, dest: Station, tried: set[str],
     return sorted(near, key=lambda s: km(s, dest))
 
 
+def evaluate(tt: Timetable, f: Stop, via: Station, dest: Station) -> int | None:
+    """One attempt: open the transfer board and look for an onward train.
+
+    Returns the arrival at the destination of the train the passenger would
+    board, or None when this change does not work. This is the unit the budget
+    counts, and the only thing in the search that costs a network request.
+    """
+    at = tt.board(via.eva, f.dep, TRANSFER_HOURS)
+    here = [s for s in at if s.ride == f.ride and s.arr is not None]
+    if not here:
+        return None  # the feeder does not reach it inside the 4h window
+    ready = here[0].arr + TRANSFER_MINUTES
+    # The passenger boards the first connecting train that has not left; its
+    # arrival at the destination is this itinerary's arrival.
+    onward = sorted(
+        (s for s in at
+         if s.dep is not None and s.dep >= ready and covers(s.cat)
+         and s.ride != f.ride
+         and any(eva == dest.eva for eva, _ in s.path)),
+        key=lambda s: s.dep or 0,
+    )
+    if not onward:
+        return None
+    return next(a for eva, a in onward[0].path if eva == dest.eva)
+
+
+def global_pairs(others: list[Stop], origin: Station, dest: Station,
+                 by_eva: dict[str, Station], cfg: Config
+                 ) -> list[tuple[Stop, Station]]:
+    """Every (feeder, transfer) pair the origin board describes, best first.
+
+    The board is a single fetch and every train on it carries its own route, so
+    this list is free — the same information the shipped order walks, read all
+    at once instead of feeder by feeder.
+
+    Ordered by distance to the destination, ties broken on the earliest feeder:
+    an earlier arrival at the same station can only see more onward trains,
+    never fewer. Pairs are kept rather than reduced to one per station, because
+    the caller retires a feeder once it has produced an itinerary — a station
+    whose best feeder has just been retired is still worth reaching on the next
+    train, and collapsing the list here would lose it.
+    """
+    def cost(via: Station) -> float:
+        if cfg.score == "detour":
+            return km(origin, via) + km(via, dest)
+        return km(via, dest)
+
+    pairs = [(cost(via), f.dep or 0, f, via)
+             for f in others[:cfg.scan]
+             for via in candidates(f.path, origin, dest, set(), by_eva, cfg)[:cfg.per_feeder]]
+    pairs.sort(key=lambda k: k[:2])
+    if cfg.order != "rounds":
+        return [(f, via) for _c, _dep, f, via in pairs]
+    # One attempt per feeder before any feeder's second: same best-first order
+    # within each round, but the whole budget can no longer go on one train's
+    # route while a dozen other departures are never opened at all.
+    seen: dict[tuple[str, str], int] = {}
+    numbered = []
+    for cost_, dep, f, via in pairs:
+        seen[f.ride] = seen.get(f.ride, 0) + 1
+        numbered.append((seen[f.ride], cost_, dep, f, via))
+    numbered.sort(key=lambda k: k[:3])
+    return [(f, via) for _r, _c, _dep, f, via in numbered]
+
+
 def search(tt: Timetable, origin: Station, dest: Station, depart: int,
            by_eva: dict[str, Station], cfg: Config, *, budget: int) -> dict:
     """Replays JourneyPlanner; reports the attempt index of the first hit.
@@ -351,40 +435,57 @@ def search(tt: Timetable, origin: Station, dest: Station, depart: int,
     others = [f for f in board if not any(eva == dest.eva for eva, _ in f.path)]
     direct = len(board) - len(others)
 
-    attempts, first_hit, first_arrival, tried = 0, None, None, set()
-    for f in others[:cfg.scan]:
-        if attempts >= budget:
-            break
-        assert f.dep is not None
-        for c in candidates(f.path, origin, dest, tried, by_eva, cfg)[:cfg.per_feeder]:
-            if attempts >= budget:
+    attempts, first_hit, first_arrival, found = 0, None, None, 0
+    # Distinct feeders among the successes: three itineraries on one train are
+    # one option wearing three hats, whatever the recall column says.
+    hit_trains: set[tuple[str, str]] = set()
+
+    def spend(f: Stop, via: Station) -> bool:
+        """Charge one attempt for (f, via); True while the budget holds."""
+        nonlocal attempts, first_hit, first_arrival, found
+        attempts += 1
+        arrival = evaluate(tt, f, via, dest)
+        if arrival is not None:
+            found += 1
+            hit_trains.add(f.ride)
+            if first_hit is None:
+                first_hit, first_arrival = attempts, arrival
+        return attempts < budget
+
+    if cfg.order in ("global", "rounds"):
+        # A feeder that already worked is done, exactly as in the shipped
+        # order: a second change off the same train is not a second option to
+        # the passenger, it is the same departure by another route.
+        done: set[tuple[str, str]] = set()
+        tried: set[str] = set()
+        for f, via in global_pairs(others, origin, dest, by_eva, cfg):
+            if f.ride in done or via.name in tried:
+                continue
+            tried.add(via.name)
+            if not spend(f, via):
                 break
-            attempts += 1
-            tried.add(c.name)
-            at = tt.board(c.eva, f.dep, TRANSFER_HOURS)
-            here = [s for s in at if s.ride == f.ride and s.arr is not None]
-            if not here:
-                continue  # the feeder does not reach it inside the 4h window
-            ready = here[0].arr + TRANSFER_MINUTES
-            # The passenger boards the first connecting train that has not left;
-            # its arrival at the destination is this itinerary's arrival.
-            onward = sorted(
-                (s for s in at
-                 if s.dep is not None and s.dep >= ready and covers(s.cat)
-                 and s.ride != f.ride
-                 and any(eva == dest.eva for eva, _ in s.path)),
-                key=lambda s: s.dep or 0,
-            )
-            if onward:
-                if first_hit is None:
-                    first_hit = attempts
-                    first_arrival = next(a for eva, a in onward[0].path
-                                         if eva == dest.eva)
-                break  # transferItinerary returns on its first success
+            if f.ride in hit_trains:
+                done.add(f.ride)
+            if found >= MAX_TRANSFER_RESULTS:
+                break
+    else:
+        tried: set[str] = set()
+        for f in others[:cfg.scan]:
+            if attempts >= budget or found >= MAX_TRANSFER_RESULTS:
+                break
+            for via in candidates(f.path, origin, dest, tried, by_eva, cfg)[:cfg.per_feeder]:
+                tried.add(via.name)
+                before = found
+                keep_going = spend(f, via)
+                # transferItinerary returns on its first success: the rest of
+                # this feeder's candidates are never tried.
+                if found > before or not keep_going:
+                    break
     # `feeders` is how many departures the origin offered at all: the budget has
     # to reach a working transfer among them, so it is the size of the haystack.
     return {"direct": direct, "first_hit": first_hit, "attempts": attempts,
-            "first_arrival": first_arrival, "feeders": len(board)}
+            "first_arrival": first_arrival, "feeders": len(board),
+            "found": found, "trains": len(hit_trains)}
 
 
 # --- query sets ---------------------------------------------------------------
@@ -531,34 +632,66 @@ def sweep(tt: Timetable, by_eva: dict[str, Station], queries: list[dict],
     print(f"\nparameter sweep on n = {len(queries)} journeys "
           f"(share solved at the shipped budget of {MAX_TRANSFER_ATTEMPTS}, "
           "and at 2x)")
+    # The ranking knobs are only live under the feeder order: the global order
+    # re-sorts the pairs across the whole board afterwards, so "weight" there is
+    # merely "no detour filter" wearing a historical name.
+    feeder = dict(order="feeder", scan=15, per_feeder=2)
     variants = [
-        ("shipped (distance)", Config()),
-        ("weight ranking (pre-0.1.2)", replace(Config(), ranking="weight")),
-        ("hybrid: detour then weight", replace(Config(), ranking="hybrid")),
-        ("hybrid, detour 1.5", replace(Config(), ranking="hybrid", detour=1.5)),
-        ("hybrid, 3 per feeder", replace(Config(), ranking="hybrid", per_feeder=3)),
-        ("hybrid, weight floor 100", replace(Config(), ranking="hybrid", min_weight=100)),
-        ("1 per feeder", replace(Config(), per_feeder=1)),
-        ("3 per feeder", replace(Config(), per_feeder=3)),
+        ("shipped (global order)", Config()),
+        ("feeder order (pre-0.2.1)", replace(Config(), **feeder)),
+        ("feeder order, 1 per feeder", replace(Config(), **{**feeder, "per_feeder": 1})),
+        ("weight ranking (pre-0.1.2)", replace(Config(), **feeder, ranking="weight")),
+        ("hybrid: detour then weight", replace(Config(), **feeder, ranking="hybrid")),
+        ("global, one round each", replace(Config(), order="rounds")),
+        ("global, 2 per feeder", replace(Config(), per_feeder=2)),
+        ("global, scan 15", replace(Config(), scan=15)),
+        ("global, scan 99", replace(Config(), scan=99)),
+        ("dog-leg score", replace(Config(), score="detour")),
         ("no detour filter", replace(Config(), detour=99.0)),
         ("detour 1.5", replace(Config(), detour=1.5)),
         ("detour 1.1", replace(Config(), detour=1.1)),
         ("no weight floor", replace(Config(), min_weight=0)),
         ("weight floor 100", replace(Config(), min_weight=100)),
-        ("scan 25 feeders", replace(Config(), scan=25)),
     ]
-    n = len(queries)
-    print(f"{'variant':<28}{'@8':>6}{'@16':>6}{'mean att':>10}")
+    def solved_at(rows: list[dict], budget_: int) -> float:
+        return sum(1 for r in rows
+                   if r["first_hit"] and r["first_hit"] <= budget_) / len(rows)
+
+    def hub_recall(rows: list[dict]) -> float:
+        hub = [r for r in rows if by_eva[r["query"]["from"]].weight >= 250]
+        return solved_at(hub, MAX_TRANSFER_ATTEMPTS) if hub else float("nan")
+
+    # Recall alone would recommend the wrong thing here, and once did: the
+    # pre-0.1.2 weight ranking scores *above* the shipped order on the @8
+    # column while arriving four minutes later and collapsing at the hubs,
+    # because a change at a big station usually has an onward train even when
+    # the route is absurd. Both of those get a column too.
+    baseline: dict[tuple, dict] = {}
+    print(f"{'variant':<28}{'@8':>6}{'@16':>6}{'hubs':>7}{'mean att':>10}{'arrival':>9}")
     for name, cfg in variants:
         rows = bench(tt, by_eva, queries, cfg, budget=budget, verbose=False)
-        at8 = sum(1 for r in rows
-                  if r["first_hit"] and r["first_hit"] <= MAX_TRANSFER_ATTEMPTS) / n
-        at16 = sum(1 for r in rows
-                   if r["first_hit"] and r["first_hit"] <= 2 * MAX_TRANSFER_ATTEMPTS) / n
         spent = sum(min(r["attempts"], MAX_TRANSFER_ATTEMPTS)
                     if r["first_hit"] is None
-                    else min(r["first_hit"], MAX_TRANSFER_ATTEMPTS) for r in rows) / n
-        print(f"{name:<28}{at8:>6.0%}{at16:>6.0%}{spent:>10.1f}")
+                    else min(r["first_hit"], MAX_TRANSFER_ATTEMPTS) for r in rows) / len(rows)
+        keyed = {(q["from"], q["to"], q["depart"]): r
+                 for r, q in ((r, r["query"]) for r in rows)}
+        if not baseline:
+            baseline = keyed
+            arrival = "—"
+        else:
+            deltas = [
+                r["first_arrival"] - baseline[k]["first_arrival"]
+                for k, r in keyed.items()
+                if r["first_hit"] and r["first_hit"] <= MAX_TRANSFER_ATTEMPTS
+                and baseline[k]["first_hit"]
+                and baseline[k]["first_hit"] <= MAX_TRANSFER_ATTEMPTS
+            ]
+            arrival = f"{sum(deltas) / len(deltas):+.1f}" if deltas else "—"
+        print(f"{name:<28}{solved_at(rows, MAX_TRANSFER_ATTEMPTS):>6.0%}"
+              f"{solved_at(rows, 2 * MAX_TRANSFER_ATTEMPTS):>6.0%}"
+              f"{hub_recall(rows):>7.0%}{spent:>10.1f}{arrival:>9}")
+    print("\nhubs: origins of weight >= 250.  arrival: minutes later than the first "
+          "row\n      reaches the destination, on the journeys both of them solve.")
 
 
 def main() -> None:
