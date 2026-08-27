@@ -511,8 +511,34 @@ def build_connections(stops: dict, polls: dict, truth: dict, *,
 # The app's own window: trains leaving up to half an hour before the feeder is
 # due are candidates too, because a delayed one is sometimes the connection that
 # works. ConnectionPlanner.MAX_CANDIDATES caps how many the model is given.
+#
+# It caps what the *forecasters* are asked about, and nothing else. Truth walks
+# the whole day: a passenger who misses all six waits for the seventh, and the
+# app's answer is then wrong by however long that took. Scoring only the
+# journeys that fit inside the six discards exactly the ones the app got most
+# wrong — on 2026-08-25 that was 30% of them, and 99% of those had a full list
+# spanning a median of 22 minutes with the feeder a median of one minute late,
+# so it was the window running out, not the trains.
 CANDIDATE_WINDOW_BEFORE = 30
 MAX_CANDIDATES = 6
+# ConnectionPlanner.MAX_ALREADY_GONE: how many of the six may be trains that
+# have already left. Without this the six were sometimes all in the past.
+MAX_ALREADY_GONE = 2
+
+
+def pick_candidates(resolved: list[dict], feeder_planned: int) -> list[dict]:
+    """The app's own list, mirroring ConnectionPlanner.pickCandidates.
+
+    Room goes to the trains ahead first; what is left over goes to the most
+    recently missed ones, newest last. Kept in step with the Kotlin by
+    test_the_python_and_kotlin_candidate_rules_agree.
+    """
+    gone = [c for c in resolved if c["planned_dep"] < feeder_planned]
+    ahead = [c for c in resolved if c["planned_dep"] >= feeder_planned]
+    reserved = min(MAX_ALREADY_GONE, len(gone))
+    taken = ahead[:MAX_CANDIDATES - reserved]
+    keep = MAX_CANDIDATES - len(taken)
+    return (gone[-keep:] if keep else []) + taken
 
 
 def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
@@ -579,7 +605,7 @@ def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
 
             for name in sorted(wanted):
                 dest_eva = destinations[name]
-                candidates = []
+                resolved = []
                 for conn in sorted(onward, key=lambda s: s.planned_dep):
                     if conn.trip == feeder.trip or name not in conn.ppth:
                         continue
@@ -594,7 +620,7 @@ def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
                         (dest_eva, conn.cat, conn.num, arrival.planned))
                     departure_truth = truth.get(
                         ("dep", eva, conn.cat, conn.num, conn.planned_dep))
-                    candidates.append({
+                    resolved.append({
                         "id": conn.trip, "cat": conn.cat, "num": conn.num,
                         "line": conn.line,
                         "planned_dep": conn.planned_dep,
@@ -614,10 +640,11 @@ def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
                         "cancelled": (None if departure_truth is None
                                       else departure_truth["cancelled"]),
                     })
-                    if len(candidates) == MAX_CANDIDATES:
-                        break
-                if not candidates:
+                if not resolved:
                     continue
+                # The forecasters answer over the app's own list; truth may walk
+                # past its end.
+                candidates = pick_candidates(resolved, feeder.planned)
                 out.append({
                     "eva": eva, "trip": feeder.trip, "cat": feeder.cat,
                     "num": feeder.num, "line": feeder.line,
@@ -631,14 +658,16 @@ def build_journeys(stops: dict, far: dict, polls: dict, far_polls: dict,
                     "archive_dep": feeder_truth["dep_delay"],
                     "cancelled": False,
                     "candidates": candidates,
+                    "offered": len(resolved),
                     **boarded(feeder.planned, feeder_truth["delay"],
-                              feeder.forecast_at(read_at) or 0, candidates),
+                              feeder.forecast_at(read_at) or 0, candidates,
+                              resolved),
                 })
     return out
 
 
 def boarded(planned_arrival: int, feeder_delay: int, feeder_db: int,
-            candidates: list[dict]) -> dict:
+            candidates: list[dict], every: list[dict] | None = None) -> dict:
     """Which train the passenger caught, and which one DB said they would.
 
     Pure bookkeeping over times that are already fixed — no model — so it lives
@@ -654,9 +683,15 @@ def boarded(planned_arrival: int, feeder_delay: int, feeder_db: int,
     than relative, because the harness rebases them onto whatever reference the
     model ends up using. `None` means that forecaster names no train at all:
     for DB a journey it does not think is possible, for truth a passenger left
-    behind by every candidate we hold. Those are dropped rather than scored —
-    the two forecasters would otherwise be answering different questions — and
-    counted, because a rule that drops the hard cases flatters everyone.
+    behind by every train that ran that day. Those are dropped rather than
+    scored, and counted, because a rule that drops the hard cases flatters
+    everyone.
+
+    `candidates` is what the app would have shown and is what both forecasters
+    answer over. `every` is the whole day's onward list, and only truth reads
+    it: a passenger who misses all six waits for the seventh, and a forecast
+    that never mentioned the seventh is wrong by however long the wait was.
+    Capping truth at six instead excused exactly those journeys.
     """
     def db_choice(ready: int) -> dict | None:
         """DB's own forecasts resolve completely: it names a time for every
@@ -669,26 +704,33 @@ def boarded(planned_arrival: int, feeder_delay: int, feeder_db: int,
                 return candidate
         return None
 
-    def actually_caught(ready: int) -> dict | None:
+    def actually_caught(ready: int) -> tuple[dict | None, int]:
         """The archive does not always join. A candidate we cannot resolve stops
         the walk rather than being stepped over: stepping over it would hand the
         passenger a later train than they may have taken, and the error would
         land in the tail, which is the part being measured."""
-        for candidate in candidates:
+        for rank, candidate in enumerate(every or candidates):
             if candidate["cancelled"] is None or candidate["truth_dep"] is None:
-                return None
+                return None, rank
             if candidate["cancelled"]:
                 continue
             if candidate["planned_dep"] + candidate["truth_dep"] >= ready:
-                return candidate if candidate["truth_arr"] is not None else None
-        return None
+                return (candidate if candidate["truth_arr"] is not None
+                        else None), rank
+        return None, len(every or candidates)
 
-    caught = actually_caught(planned_arrival + feeder_delay + TRANSFER_MINUTES)
+    caught, rank = actually_caught(
+        planned_arrival + feeder_delay + TRANSFER_MINUTES)
     predicted = db_choice(planned_arrival + feeder_db + TRANSFER_MINUTES)
     return {
         "truth_arrival": (None if caught is None
                           else caught["planned_arr"] + caught["truth_arr"]),
         "caught_id": None if caught is None else caught["id"],
+        # Where in the day's list the passenger's train sat, and whether that
+        # was past the end of the list either forecaster was shown. Derived
+        # here because only here are both lists in hand.
+        "caught_rank": rank,
+        "beyond_list": rank >= len(candidates),
         "db_arrival": (None if predicted is None
                        else predicted["planned_arr"] + predicted["db_arr"]),
         "db_id": None if predicted is None else predicted["id"],
@@ -866,9 +908,14 @@ def main() -> None:
                      if t["truth_arrival"] is not None and t["db_arrival"] is not None]
         no_truth = sum(1 for t in trips if t["truth_arrival"] is None)
         no_db = sum(1 for t in trips if t["db_arrival"] is None)
+        # The journeys the old cap silently discarded: the passenger boarded a
+        # train past the end of the list both forecasters were shown, so both
+        # are wrong and both are now charged for it.
+        beyond = sum(1 for t in scoreable
+                     if t["caught_rank"] >= len(t["candidates"]))
         print(f"{len(trips)} journeys, {len(scoreable)} with both answers "
-              f"({no_truth} nobody caught anything, {no_db} DB names no train)",
-              file=sys.stderr)
+              f"({no_truth} nobody caught anything, {no_db} DB names no train, "
+              f"{beyond} boarded past the app's own list)", file=sys.stderr)
         if args.events_out:
             with args.events_out.open("w", encoding="utf-8") as fh:
                 for t in scoreable:

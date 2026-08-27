@@ -789,6 +789,59 @@ def test_neither_forecaster_sees_the_others_information():
     assert got["db_id"] == "early" and got["caught_id"] == "later"
 
 
+def _cand(name, dep, arr, *, cancelled=False):
+    return {"id": name, "planned_dep": dep, "planned_arr": arr, "live_dep": 0,
+            "truth_dep": 0, "truth_arr": 0, "cancelled": cancelled,
+            "cancelled_live": False, "db_arr": 0}
+
+
+def test_truth_boards_a_train_past_the_end_of_the_apps_own_list():
+    """The app shows six trains. A passenger who misses all six waits for the
+    seventh, and the forecast is then wrong by however long that took. Stopping
+    at six instead dropped the journey — which excused exactly the answers that
+    were most wrong."""
+    shown = [_cand(f"c{i}", 700 + i, 760 + i) for i in range(se.MAX_CANDIDATES)]
+    rest = [_cand("rescue", 900, 960)]
+    got = se.boarded(720, 60, 0, shown, shown + rest)
+    assert got["caught_id"] == "rescue"
+    assert got["truth_arrival"] == 960
+    assert got["caught_rank"] == se.MAX_CANDIDATES
+
+
+def test_the_forecasters_still_answer_over_the_apps_own_list():
+    """Truth walking further must not hand DB a train the model never saw —
+    that would make the two forecasters answer different questions."""
+    shown = [_cand(f"c{i}", 700 + i, 760 + i) for i in range(se.MAX_CANDIDATES)]
+    rest = [_cand("rescue", 900, 960)]
+    got = se.boarded(720, 60, 60, shown, shown + rest)
+    assert got["db_arrival"] is None, "DB is not rescued by a train it never saw"
+    assert got["truth_arrival"] == 960
+
+
+def test_the_walk_steps_over_a_cancelled_train_to_the_next_that_ran():
+    """The passenger's own rule: wait for the next train that really runs."""
+    shown = [_cand("c0", 730, 790, cancelled=True)]
+    rest = shown + [_cand("c1", 760, 820, cancelled=True),
+                    _cand("c2", 800, 860)]
+    got = se.boarded(720, 0, 0, shown, rest)
+    assert got["caught_id"] == "c2" and got["caught_rank"] == 2
+
+
+def test_a_passenger_left_behind_by_the_whole_day_is_still_dropped():
+    """Walking the day is not the same as inventing a train. When nothing ran,
+    there is no arrival to score against and the journey is counted, not
+    guessed at."""
+    shown = [_cand("c0", 730, 790, cancelled=True)]
+    got = se.boarded(720, 0, 0, shown, shown)
+    assert got["truth_arrival"] is None and got["caught_id"] is None
+
+
+def test_boarded_without_a_full_list_walks_what_it_was_given():
+    """`every` is optional: the old two-argument call still scores the six."""
+    shown = [_cand("c0", 730, 790)]
+    assert se.boarded(720, 0, 0, shown)["caught_id"] == "c0"
+
+
 def test_a_journey_db_does_not_believe_in_has_no_db_answer():
     got = se.boarded(720, 0, 60, [
         {"id": "only", "planned_dep": 730, "planned_arr": 790, "live_dep": 0,
@@ -824,7 +877,46 @@ def test_the_candidate_cap_matches_the_app() -> None:
 
 def test_the_candidate_window_matches_the_app() -> None:
     source = kotlin("main/java/io/github/derweh/bayesianbahn/data/ConnectionPlanner.kt")
-    assert f"feederPlanned - {se.CANDIDATE_WINDOW_BEFORE} * 60_000" in source
+    assert f"const val LOOK_BACK_MINUTES = {se.CANDIDATE_WINDOW_BEFORE}" in source
+
+
+def test_the_already_gone_cap_matches_the_app() -> None:
+    """The rule that stops six missed trains crowding out every catchable one
+    lives in two languages; a change to one has to reach the other."""
+    source = kotlin("main/java/io/github/derweh/bayesianbahn/data/ConnectionPlanner.kt")
+    assert f"const val MAX_ALREADY_GONE = {se.MAX_ALREADY_GONE}" in source
+
+
+def test_the_apps_list_is_not_all_trains_that_already_left():
+    """The bug this rule exists for: at a station with a service every few
+    minutes, taking the first six by departure time filled the list with trains
+    that had gone before the feeder arrived — six impossible ones and no
+    possible one. On one collected day that was 31% of journeys with a change."""
+    feeder_planned = 600
+    resolved = [{"id": f"gone{i}", "planned_dep": 570 + i * 5} for i in range(6)]
+    resolved += [{"id": f"next{i}", "planned_dep": 605 + i * 10} for i in range(4)]
+    got = se.pick_candidates(resolved, feeder_planned)
+    assert [c["id"] for c in got] == ["gone4", "gone5", "next0", "next1",
+                                      "next2", "next3"]
+
+
+def test_a_just_missed_train_is_still_offered():
+    """It is usually missed, but a delayed one is sometimes the connection that
+    works — which is why the list keeps room for two of them."""
+    resolved = [{"id": "just-missed", "planned_dep": 595},
+                {"id": "next", "planned_dep": 610}]
+    got = se.pick_candidates(resolved, 600)
+    assert [c["id"] for c in got] == ["just-missed", "next"]
+
+
+def test_the_last_trains_of_the_day_still_fill_the_list():
+    """With only one train ahead, showing more of the missed ones beats showing
+    a shorter list."""
+    resolved = [{"id": f"gone{i}", "planned_dep": 580 + i} for i in range(6)]
+    resolved += [{"id": "last", "planned_dep": 640}]
+    got = se.pick_candidates(resolved, 600)
+    assert len(got) == se.MAX_CANDIDATES
+    assert got[-1]["id"] == "last"
 
 
 def test_the_harness_builds_candidates_with_the_apps_own_code() -> None:

@@ -141,6 +141,10 @@ class JourneyHarness {
                         """"planned":${event.int("planned")},""" +
                         """"planned_dep":${event.int("planned_dep")},""" +
                         """"candidates":${candidates.size},""" +
+                        // Whether the passenger's train sat past the end of the
+                        // list either forecaster was offered — the journeys the
+                        // old cap dropped, and the ones the app got most wrong.
+                        """"beyond_list":${event.bool("beyond_list")},""" +
                         // The model reconstructs the planned arrival at the far
                         // end from history; the event builder holds the real
                         // one. Emitting the reference makes any gap between the

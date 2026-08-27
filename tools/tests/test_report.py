@@ -921,13 +921,15 @@ def test_a_version_with_no_tag_at_all_is_not_a_release(tmp_path, monkeypatch):
 
 
 def journey(*, crps=1.0, db=2.0, truth=2.0, q10=-1.0, q90=5.0,
-            lead_minutes=30.0, candidates=4, miss_p=0.05, num="1"):
+            lead_minutes=30.0, candidates=4, miss_p=0.05, num="1",
+            beyond_list=False):
     return {
         "eva": "8000001", "cat": "RE", "num": num, "dest": "Musterstadt",
         "tau": 0, "lead": lead_minutes,
         "planned": 8 * 60 + 5, "planned_dep": 8 * 60,
         "read_at": wall_to_epoch(8 * 60) - lead_minutes * 60,
         "candidates": candidates, "miss_p": miss_p,
+        "beyond_list": beyond_list,
         "db": db, "truth": truth, "crps": crps,
         "cdf_at": 0.5, "cdf_below": 0.4, "q10": q10, "q50": 1.0, "q90": q90,
         "source": "EMPIRICAL", "runs": 9,
@@ -1022,6 +1024,15 @@ def test_the_journey_table_reports_what_the_model_was_given():
     got = R.journeys_table(trips, trips)[0]
     assert got["candidates"] == pytest.approx(4.0)
     assert got["miss_p"] == pytest.approx(0.1)
+
+
+def test_the_table_reports_how_often_truth_walked_past_the_apps_list():
+    """The share the whole section turns on: a passenger who missed every train
+    the app offered. Scoring only the journeys that fit inside the list would
+    drop exactly the answers that were most wrong."""
+    trips = [journey(num="1", beyond_list=True), journey(num="2"),
+             journey(num="3"), journey(num="4")]
+    assert R.journeys_table(trips, trips)[0]["beyond"] == pytest.approx(0.25)
 
 
 def test_an_empty_journey_table_is_empty_not_a_row_of_zeros():

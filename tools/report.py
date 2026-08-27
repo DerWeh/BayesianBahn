@@ -417,6 +417,9 @@ def journeys_table(live, blind) -> list[dict]:
             COVERED.mean().alias("blind_cover"),
             pl.col("candidates").mean().alias("candidates"),
             pl.col("miss_p").mean().alias("miss_p"),
+            # The passenger boarded a train past the end of the list either
+            # forecaster was shown, so both were wrong by the whole wait.
+            pl.col("beyond_list").mean().alias("beyond"),
         ).to_dicts()[0]
         rows.append({
             "bucket": label, "n": part_blind.height, **stats,
@@ -1311,7 +1314,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 
     if journeys:
         totals_j = {k: sum(r[k] * r["n"] for r in journeys) / sum(r["n"] for r in journeys)
-                    for k in ("candidates", "miss_p")}
+                    for k in ("candidates", "miss_p", "beyond")}
         doc.append(f"""
 <section>
   <h2>Journeys with a change, end to end</h2>
@@ -1329,12 +1332,22 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   planned connection and taking a later train — it puts
   {pct(totals_j["miss_p"], 1)} of its weight on catching none of the candidates
   at all. The truth is the arrival of whichever train was actually caught.</p>
+  <p><strong>Truth is not held to that list.</strong> A passenger who misses
+  every train the app offered waits for the next one that runs, and the
+  forecast is then wrong by however long that took — so the walk to the train
+  actually boarded goes on past the end of the list, and both forecasters are
+  charged for the difference. That happens on
+  {pct(totals_j["beyond"], 1)} of the journeys here. Scoring only the ones that
+  fit inside the list would drop exactly the answers that were most wrong: it
+  raised this model's margin over DB by about 0.8 minutes of CRPS while
+  discarding a third of the evidence.</p>
   <p>This is the newest part of the page and rests on the fewest days: the far
   end of a change only began being polled once the second tier existed, so this
   table starts later than every other one here.</p>""")
         doc.append(table(journeys, [
             ("bucket", "Before departure", lambda r: html.escape(r["bucket"])),
             ("n", "Journeys", lambda r: f"{r['n']:,}"),
+            ("beyond", "Boarded past the list", lambda r: pct(r["beyond"])),
             ("db", "DB", lambda r: num(r["db"])),
             ("blind", "History only", lambda r: num(r["blind"])),
             ("live", "As shipped", lambda r: num(r["live"])),
