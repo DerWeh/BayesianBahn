@@ -29,6 +29,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -48,16 +49,29 @@ def partition(day: date) -> str:
 
 
 def _get(url: str, tries: int = 3) -> bytes:
+    """Fetch a URL, retrying anything that is not a definitive answer.
+
+    A raw day is 100-200 MB in four or five files and the CDN does sometimes
+    close a connection mid-body. That surfaces as `http.client.IncompleteRead`,
+    which is an `HTTPException` and *not* an `OSError`, so it used to escape the
+    retry loop and abort a nine-day run on its last day.
+    """
     last: Exception | None = None
     for _ in range(tries):
         try:
             with urllib.request.urlopen(url, timeout=120) as resp:  # noqa: S310
-                return resp.read()
+                body = resp.read()
+                declared = resp.headers.get("Content-Length")
+            if declared is not None and len(body) != int(declared):
+                # A clean close short of Content-Length; urllib only raises for
+                # some of these, so the length is checked rather than trusted.
+                raise http.client.IncompleteRead(body, int(declared) - len(body))
+            return body
         except urllib.error.HTTPError as err:
             if err.code == 404:
                 raise
             last = err
-        except OSError as err:
+        except (OSError, http.client.HTTPException) as err:
             last = err
     raise RuntimeError(f"giving up on {url}: {last}")
 
@@ -134,9 +148,22 @@ def main() -> None:
         raise SystemExit(NOT_PUBLISHED)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    fetched = 0
     for part, name in files:
-        (args.out_dir / name).write_bytes(_get(f"{FILE_URL}/{partition(part)}/{name}"))
-    print(f"{day}: fetched {len(files)} raw files")
+        target = args.out_dir / name
+        # Only a complete file is ever named `.parquet` (see below), so one that
+        # is already there is one a previous attempt finished: a run resumed
+        # after a network failure re-downloads only what is actually missing.
+        if target.exists():
+            continue
+        body = _get(f"{FILE_URL}/{partition(part)}/{name}")
+        # Write beside the target and rename, so an interrupted fetch leaves no
+        # half a parquet file for a later stage to read as if it were the day.
+        staging = target.with_suffix(".part")
+        staging.write_bytes(body)
+        staging.replace(target)
+        fetched += 1
+    print(f"{day}: fetched {fetched} raw files, {len(files) - fetched} already present")
 
 
 if __name__ == "__main__":

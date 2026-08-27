@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import datetime as dt
 import gzip
+import http.client
 import json
 import re
 import sys
+import urllib.error
 import zipfile
 from pathlib import Path
 
@@ -538,6 +540,121 @@ def test_fetch_raw_day_downloads_under_upstream_names(tmp_path, monkeypatch) -> 
     assert names == sorted(n for n in CURRENT_LISTING if "2026-08-07" in n)
     # Unpadded month/day in the partition path, as the archive publishes it.
     assert all("year=2026/month=8/day=7/" in url for url in fetched)
+
+
+class _FakeResponse:
+    """Just enough of an HTTPResponse for `_get`: a body, headers, a context."""
+
+    def __init__(self, body: bytes, declared: int | None = None) -> None:
+        self._body = body
+        length = len(body) if declared is None else declared
+        self.headers = {"Content-Length": str(length)}
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_get_retries_a_truncated_body(monkeypatch) -> None:
+    """A CDN closing mid-body raises IncompleteRead, which is an HTTPException
+    and not an OSError. It escaped the retry loop and aborted a whole run."""
+    attempts: list[str] = []
+
+    def flaky(url: str, timeout: int = 0):
+        attempts.append(url)
+        if len(attempts) < 3:
+            raise http.client.IncompleteRead(b"half", 200)
+        return _FakeResponse(b"whole")
+
+    monkeypatch.setattr(fetch_raw_day.urllib.request, "urlopen", flaky)
+    assert fetch_raw_day._get("https://x/day.parquet") == b"whole"
+    assert len(attempts) == 3
+
+
+def test_get_rejects_a_body_shorter_than_content_length(monkeypatch) -> None:
+    """A clean close short of the declared length is a truncation too, and
+    urllib does not always raise for it — so the length is checked."""
+    calls: list[int] = []
+
+    def short(url: str, timeout: int = 0):
+        calls.append(1)
+        return _FakeResponse(b"half", declared=200)
+
+    monkeypatch.setattr(fetch_raw_day.urllib.request, "urlopen", short)
+    with pytest.raises(RuntimeError, match="giving up"):
+        fetch_raw_day._get("https://x/day.parquet")
+    assert len(calls) == 3  # tried, never accepted the short body
+
+
+def test_get_does_not_retry_a_404(monkeypatch) -> None:
+    """404 is an answer: the file is not there, and asking again cannot help."""
+    calls: list[int] = []
+
+    def missing(url: str, timeout: int = 0):
+        calls.append(1)
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(fetch_raw_day.urllib.request, "urlopen", missing)
+    with pytest.raises(urllib.error.HTTPError):
+        fetch_raw_day._get("https://x/day.parquet")
+    assert len(calls) == 1
+
+
+def test_fetch_raw_day_leaves_no_partial_parquet(tmp_path, monkeypatch) -> None:
+    """An interrupted fetch must not leave something a later stage reads as a
+    day: only a complete file is ever named `.parquet`."""
+    day = dt.date(2026, 8, 7)
+    monkeypatch.setattr(
+        fetch_raw_day, "list_partition",
+        lambda d: CURRENT_LISTING if d == day else [],
+    )
+    seen: list[str] = []
+
+    def get(url: str, tries: int = 3) -> bytes:
+        seen.append(url)
+        if len(seen) == 2:
+            raise RuntimeError("connection reset")
+        return b"payload"
+
+    monkeypatch.setattr(fetch_raw_day, "_get", get)
+    out = tmp_path / "raw"
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", day.isoformat(), "--out-dir", str(out),
+    ])
+    with pytest.raises(RuntimeError):
+        fetch_raw_day.main()
+
+    assert sorted(f.name for f in out.iterdir()) == [CURRENT_LISTING[0]]
+
+
+def test_fetch_raw_day_resumes_without_refetching(tmp_path, monkeypatch) -> None:
+    """A day is 100-200 MB; retrying after a failure re-downloads only what is
+    missing."""
+    day = dt.date(2026, 8, 7)
+    monkeypatch.setattr(
+        fetch_raw_day, "list_partition",
+        lambda d: CURRENT_LISTING if d == day else [],
+    )
+    out = tmp_path / "raw"
+    out.mkdir(parents=True)
+    (out / CURRENT_LISTING[0]).write_bytes(b"already here")
+    asked: list[str] = []
+    monkeypatch.setattr(fetch_raw_day, "_get",
+                        lambda url, tries=3: asked.append(url) or b"payload")
+    monkeypatch.setattr(sys, "argv", [
+        "fetch_raw_day.py", "--date", day.isoformat(), "--out-dir", str(out),
+    ])
+    fetch_raw_day.main()
+
+    wanted = [n for n in CURRENT_LISTING if "2026-08-07" in n]
+    assert len(asked) == len(wanted) - 1
+    assert all(CURRENT_LISTING[0] not in url for url in asked)
+    assert (out / CURRENT_LISTING[0]).read_bytes() == b"already here"
 
 
 def test_recent_reads_date_prefixed_files(tmp_path, monkeypatch) -> None:

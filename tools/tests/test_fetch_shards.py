@@ -12,8 +12,10 @@ overlay is short of data rather than ahead of it, so it passes.
 from __future__ import annotations
 
 import datetime as dt
+import http.client
 import os
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -106,3 +108,57 @@ def test_the_temp_name_is_unique_per_thread(tmp_path, monkeypatch):
 
 def test_fetching_is_concurrent_by_default():
     assert fs.WORKERS > 1
+
+
+class _FakeResponse:
+    """Enough of an HTTPResponse for `fetch`: a body, headers, a context."""
+
+    def __init__(self, body: bytes, declared: int | None = None) -> None:
+        self._body = body
+        self.headers = {"Content-Length":
+                        str(len(body) if declared is None else declared)}
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+
+def test_fetch_retries_a_truncated_shard(monkeypatch):
+    """A transport failure returned as None is indistinguishable from a train
+    with no history, so the train would be scored as one the model never saw."""
+    attempts = []
+
+    def flaky(request, timeout=0):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise http.client.IncompleteRead(b"half", 99)
+        return _FakeResponse(b"gzipped")
+
+    monkeypatch.setattr(fs.urllib.request, "urlopen", flaky)
+    assert fs.fetch("https://x/RE_1.jgz") == b"gzipped"
+    assert len(attempts) == 3
+
+
+def test_fetch_rejects_a_short_body(monkeypatch):
+    """A body shorter than Content-Length is a truncation, not a shard."""
+    monkeypatch.setattr(fs.urllib.request, "urlopen",
+                        lambda request, timeout=0: _FakeResponse(b"half", declared=99))
+    assert fs.fetch("https://x/RE_1.jgz") is None
+
+
+def test_fetch_treats_404_as_no_history_without_retrying(monkeypatch):
+    """404 is the one answer that means the train genuinely has no shard."""
+    calls = []
+
+    def missing(request, timeout=0):
+        calls.append(1)
+        raise urllib.error.HTTPError("https://x/RE_1.jgz", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(fs.urllib.request, "urlopen", missing)
+    assert fs.fetch("https://x/RE_1.jgz") is None
+    assert len(calls) == 1

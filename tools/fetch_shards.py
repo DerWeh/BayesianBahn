@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import json
 import os
 import re
@@ -66,17 +67,32 @@ def trains_of(day, out: Path) -> set[tuple[str, str, str | None]]:
     return {(r["cat"], r["num"], r.get("line")) for r in records if r["t"] == "plan"}
 
 
-def fetch(url: str) -> bytes | None:
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": cf.UA})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.read()
-    except urllib.error.HTTPError as error:
-        if error.code == 404:
-            return None          # a train with no history is a real case
-        raise
-    except Exception:
-        return None
+def fetch(url: str, tries: int = 3) -> bytes | None:
+    """A shard's bytes, or None when the train genuinely has no history.
+
+    Only a 404 means "no history". Everything else is retried, because a
+    transport failure returned as None is indistinguishable from an empty
+    history downstream: the train would silently be scored as one the model has
+    never seen, which moves the numbers without leaving a trace.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": cf.UA})
+    for attempt in range(tries):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read()
+                declared = response.headers.get("Content-Length")
+            if declared is not None and len(body) != int(declared):
+                raise http.client.IncompleteRead(body, int(declared) - len(body))
+            return body
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                return None      # a train with no history is a real case
+            if attempt == tries - 1:
+                raise
+        except (OSError, http.client.HTTPException):
+            if attempt == tries - 1:
+                return None
+    return None
 
 
 def is_fresh(target: Path, tier: str, day: dt.date) -> bool:
