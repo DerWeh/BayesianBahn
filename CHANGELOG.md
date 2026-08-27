@@ -8,6 +8,18 @@ fixes; expect breaking changes between minors until 1.0).
 ## [Unreleased]
 
 ### Fixed
+- **A change at a busy station offered six trains that had already left.** For
+  a journey with one change the app lists up to six connecting trains, and it
+  deliberately includes ones leaving shortly *before* the feeder is due —
+  usually missed, but a delayed one is occasionally exactly the connection that
+  works. It took the first six by departure time, so where a station has a
+  service every few minutes all six were in the past before the feeder even
+  arrived: six impossible trains and no possible one, each honestly reported as
+  unreachable. Nothing inside the app could notice, because every number it
+  showed was right. At most two of the six may now be trains already gone and
+  the rest is filled forward, with the reverse allowance late in the day when
+  there is only one train left ahead. Found by the two-leg evaluation, where it
+  accounted for 31% of the journeys with a change on a single collected day.
 - **A predicted arrival could be a day late.** Where a journey ends, the IRIS
   board gives a departure and nothing beyond it, so the arrival was recovered
   by taking the destination's most recent *time of day* from history and
@@ -21,6 +33,17 @@ fixes; expect breaking changes between minors until 1.0).
   journeys alike — both recovered the arrival the same way. Found by the
   two-leg evaluation on its first end-to-end run, where four candidates in six
   landed a day out on one collected day.
+
+### Changed
+- **The evaluation waits for the next train that really runs.** A journey with
+  a change was scored only if the passenger boarded one of the six trains the
+  app had offered; if they missed all six and took the seventh, the journey was
+  dropped. That excused the answers the app got most wrong — 30% of the two-leg
+  journeys on one collected day — so the walk to the train actually boarded now
+  runs to the end of the day, while both forecasters still answer over the
+  app's own six. The published margin over DB on these journeys falls from
+  3.001 to 2.216 minutes of CRPS as a result, and the page states outright how
+  often the passenger boarded past the list.
 
 ### Added
 - **The evaluation scores a complete two-leg journey**, not only its parts: the

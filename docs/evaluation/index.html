@@ -136,7 +136,7 @@ a { color: var(--series-1); }
   halts. The next day the archive says when each train really arrived, and both
   forecasts are scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>b6786dce8d31</code>, which declares version 0.2.0
+  <code>2fe5ee2726fb</code>, which declares version 0.2.0
   (versionCode 6). That commit is <strong>not a released version</strong>: the app published in the stores does not contain this model unless a later release says so. It is only ever shown history
   from before the day it predicts. It appears twice:
   <strong>as shipped</strong>, which adjusts DB’s live number using past runs
@@ -168,7 +168,7 @@ a { color: var(--series-1); }
   individual predictions. Where the interval crosses zero, the collected days
   are not enough to claim anything, however suggestive the middle number
   looks.</p>
-<div class="scroll"><table><thead><tr><th>Comparison</th><th>Predictions</th><th>Score</th><th>Ours − DB</th><th>95% interval</th><th>Reading</th></tr></thead><tbody><tr><td>Arrival time, as shipped</td><td>164,143</td><td>CRPS, minutes</td><td>-0.559</td><td>-0.588 to -0.529</td><td>BayesianBahn lower</td></tr><tr><td>Arrival time, history only</td><td>164,143</td><td>CRPS, minutes</td><td>-0.346</td><td>-0.381 to -0.308</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, as shipped</td><td>233,262</td><td>Brier</td><td>-0.001</td><td>-0.002 to -0.000</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, history only</td><td>233,262</td><td>Brier</td><td>0.004</td><td>0.003 to 0.006</td><td>DB lower</td></tr><tr><td>Missed connections, as shipped</td><td>10,335</td><td>Brier</td><td>-0.202</td><td>-0.218 to -0.185</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, history only</td><td>10,335</td><td>Brier</td><td>0.043</td><td>0.004 to 0.084</td><td>DB lower</td></tr><tr><td>Journey with a change, as shipped</td><td>6,539</td><td>CRPS, minutes</td><td>-3.001</td><td>-3.298 to -2.713</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, history only</td><td>6,483</td><td>CRPS, minutes</td><td>-2.709</td><td>-3.068 to -2.356</td><td>BayesianBahn lower</td></tr></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Comparison</th><th>Predictions</th><th>Score</th><th>Ours − DB</th><th>95% interval</th><th>Reading</th></tr></thead><tbody><tr><td>Arrival time, as shipped</td><td>164,143</td><td>CRPS, minutes</td><td>-0.559</td><td>-0.588 to -0.529</td><td>BayesianBahn lower</td></tr><tr><td>Arrival time, history only</td><td>164,143</td><td>CRPS, minutes</td><td>-0.346</td><td>-0.381 to -0.308</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, as shipped</td><td>233,262</td><td>Brier</td><td>-0.001</td><td>-0.002 to -0.000</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, history only</td><td>233,262</td><td>Brier</td><td>0.004</td><td>0.003 to 0.006</td><td>DB lower</td></tr><tr><td>Missed connections, as shipped</td><td>10,335</td><td>Brier</td><td>-0.202</td><td>-0.218 to -0.185</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, history only</td><td>10,335</td><td>Brier</td><td>0.043</td><td>0.004 to 0.084</td><td>DB lower</td></tr><tr><td>Journey with a change, as shipped</td><td>10,072</td><td>CRPS, minutes</td><td>-2.216</td><td>-2.430 to -2.014</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, history only</td><td>9,652</td><td>CRPS, minutes</td><td>-2.111</td><td>-2.349 to -1.859</td><td>BayesianBahn lower</td></tr></tbody></table></div>
 </section>
 
 <section>
@@ -293,12 +293,21 @@ a { color: var(--series-1); }
   the arrival of whichever train its own forecasts say the passenger catches;
   ours answers with a distribution over the arrival, which includes missing the
   planned connection and taking a later train — it puts
-  1.6% of its weight on catching none of the candidates
+  1.2% of its weight on catching none of the candidates
   at all. The truth is the arrival of whichever train was actually caught.</p>
+  <p><strong>Truth is not held to that list.</strong> A passenger who misses
+  every train the app offered waits for the next one that runs, and the
+  forecast is then wrong by however long that took — so the walk to the train
+  actually boarded goes on past the end of the list, and both forecasters are
+  charged for the difference. That happens on
+  31.4% of the journeys here. Scoring only the ones that
+  fit inside the list would drop exactly the answers that were most wrong: it
+  raised this model's margin over DB by about 0.8 minutes of CRPS while
+  discarding a third of the evidence.</p>
   <p>This is the newest part of the page and rests on the fewest days: the far
   end of a change only began being polled once the second tier existed, so this
   table starts later than every other one here.</p>
-<div class="scroll"><table><thead><tr><th>Before departure</th><th>Journeys</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>376</td><td>4.52</td><td>4.33</td><td>3.50</td><td>76%</td><td>68%</td></tr><tr><td>10-20m</td><td>1,043</td><td>4.89</td><td>4.24</td><td>4.00</td><td>70%</td><td>65%</td></tr><tr><td>20-45m</td><td>2,238</td><td>9.99</td><td>7.60</td><td>7.13</td><td>70%</td><td>67%</td></tr><tr><td>45-90m</td><td>1,844</td><td>10.52</td><td>7.62</td><td>7.58</td><td>69%</td><td>67%</td></tr><tr><td>1.5-3h</td><td>927</td><td>18.24</td><td>12.19</td><td>12.47</td><td>71%</td><td>68%</td></tr><tr><td>&gt;3h</td><td>55</td><td>25.64</td><td>16.67</td><td>16.67</td><td>67%</td><td>67%</td></tr></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Journeys</th><th>Boarded past the list</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>604</td><td>37%</td><td>4.22</td><td>3.72</td><td>4.51</td><td>79%</td><td>66%</td></tr><tr><td>10-20m</td><td>1,414</td><td>24%</td><td>4.98</td><td>4.15</td><td>5.14</td><td>73%</td><td>65%</td></tr><tr><td>20-45m</td><td>4,520</td><td>48%</td><td>6.93</td><td>5.41</td><td>5.32</td><td>75%</td><td>72%</td></tr><tr><td>45-90m</td><td>2,128</td><td>13%</td><td>10.15</td><td>7.40</td><td>7.35</td><td>70%</td><td>67%</td></tr><tr><td>1.5-3h</td><td>931</td><td>0%</td><td>18.51</td><td>12.42</td><td>12.70</td><td>71%</td><td>67%</td></tr><tr><td>&gt;3h</td><td>55</td><td>0%</td><td>25.64</td><td>16.67</td><td>16.67</td><td>67%</td><td>67%</td></tr></tbody></table></div>
 </section>
 
 <section>
@@ -441,7 +450,7 @@ pixi run -e evaluate evaluate 2026-08-17 2026-08-18 2026-08-19 2026-08-20 2026-0
 
 <footer>
   Generated 2026-08-27 from 2026-08-17, 2026-08-18, 2026-08-19, 2026-08-20, 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, by
-  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit b6786dce8d31ab7a51fc414cdfe954b0e4ff3d02.
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 2fe5ee2726fb34b52dccc6158d9062cd4352a17f.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
   piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>
