@@ -6,6 +6,14 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
+# Build, install and launch the debug build on the attached device or emulator.
+app = "tools/run-app.sh"
+# The pieces, for when only one of them is wanted.
+build-app = "./gradlew :app:assembleDebug"
+install-app = "./gradlew :app:installDebug"
+test-app = "./gradlew :app:testDebugUnitTest"
+lint-app = "./gradlew :app:lintDebug"
+
 # Reproduces fdroiddata's merge-request pipeline for our metadata file.
 fdroid-check = "tools/fdroid-check.sh"
 # Asserts that check still rejects every way the metadata has broken before.

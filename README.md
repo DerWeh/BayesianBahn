@@ -215,8 +215,10 @@ Toolchain is pinned with [pixi](https://pixi.sh); the Android SDK must be
 available via `local.properties` or `ANDROID_HOME`.
 
 ```sh
-pixi run ./gradlew assembleDebug      # build the APK
-pixi run ./gradlew testDebugUnitTest  # run unit tests
+pixi run app                          # build, install and launch on a device
+pixi run build-app                    # just the debug APK
+pixi run test-app                     # unit tests
+pixi run lint-app                     # Android lint
 pixi run -e pipeline test-pipeline    # data-pipeline tests
 ```
 
@@ -254,10 +256,12 @@ until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do sleep 2
 Install and launch:
 
 ```sh
-pixi run ./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell monkey -p io.github.derweh.bayesianbahn -c android.intent.category.LAUNCHER 1
+pixi run app
 ```
+
+That builds, installs and opens it, finding `adb` in the SDK that
+`local.properties` names (`ANDROID_HOME` wins if it is set), so the shell needs
+no exports of its own. Only the emulator setup above does.
 
 To test what F-Droid will publish, install the release APK instead
 (`assembleRelease`, needs `keystore.properties`). Debug and release builds are

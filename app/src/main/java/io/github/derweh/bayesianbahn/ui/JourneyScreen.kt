@@ -55,6 +55,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
 
 private val ZONE = ZoneId.of("Europe/Berlin")
@@ -270,7 +271,6 @@ fun JourneyScreen(viewModel: AppViewModel) {
     }
 }
 
-/** Picked time + date → epoch millis; null hour means now, null day today. */
 /**
  * True when the requested date is past IRIS's ~1-day plan horizon, so the
  * search falls back to the historical timetable and takes much longer.
@@ -278,11 +278,27 @@ fun JourneyScreen(viewModel: AppViewModel) {
 internal fun beyondLivePlan(epochDay: Long?, today: LocalDate = LocalDate.now(ZONE)): Boolean =
     epochDay != null && epochDay > today.toEpochDay() + 1
 
-internal fun departMillis(hour: Int?, minute: Int?, epochDay: Long?): Long {
-    val today = LocalDate.now(ZONE)
-    val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: today
+/**
+ * Picked time + date → epoch millis; a null hour means now, a null day today.
+ *
+ * "Now" on another date is that date at the current time of day, which is what
+ * the button saying "now" reads as. It used to be 06:00 — a time the user had
+ * not asked for and could not see anywhere, so picking Saturday while leaving
+ * the time alone silently searched the small hours and answered with the first
+ * train of the morning.
+ *
+ * Truncated to the minute so that the departure searched from is the one the
+ * button shows, rather than 43 seconds after it.
+ */
+internal fun departMillis(
+    hour: Int?,
+    minute: Int?,
+    epochDay: Long?,
+    now: ZonedDateTime = ZonedDateTime.now(ZONE),
+): Long {
+    val date = epochDay?.let { LocalDate.ofEpochDay(it) } ?: now.toLocalDate()
     val time = hour?.let { LocalTime.of(it, minute ?: 0) }
-        ?: if (date != today) LocalTime.of(6, 0) else LocalTime.now(ZONE)
+        ?: now.toLocalTime().truncatedTo(ChronoUnit.MINUTES)
     return ZonedDateTime.of(date, time, ZONE).toInstant().toEpochMilli()
 }
 

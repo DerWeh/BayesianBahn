@@ -8,6 +8,13 @@ fixes; expect breaking changes between minors until 1.0).
 ## [Unreleased]
 
 ### Fixed
+- **Picking a date without touching the time searched from 06:00.** The
+  departure button said "now", and on today it meant it — but choosing another
+  day quietly replaced it with six in the morning, so a search for Saturday made
+  at lunchtime answered with the first train of the Saturday morning. Nothing in
+  the app showed that time or offered a way to see it. "Now" is now the current
+  time of day on whichever date is picked, which is what the button has been
+  saying all along.
 - **A change at a busy station offered six trains that had already left.** For
   a journey with one change the app lists up to six connecting trains, and it
   deliberately includes ones leaving shortly *before* the feeder is due —
