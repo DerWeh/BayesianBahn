@@ -1034,6 +1034,22 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
                         "published in the stores does not contain this model unless a "
                         "later release says so.")
 
+    # The third kind of answer needs a far-end forecast, which only exists from
+    # the day the second tier was first polled — so the page has to be honest
+    # about which of its two states it is in.
+    if journeys:
+        journey_note = (
+            "A third answer joins them below: the complete two-leg journey — the "
+            "predicted arrival at the far end of a change, against the arrival "
+            "that happened. It is in the same units as a direct journey, so those "
+            "two <em>are</em> comparable with each other.")
+    else:
+        journey_note = (
+            "A complete two-leg journey — the predicted arrival at the far end of "
+            "a change, against the arrival that happened — is <em>not</em> scored "
+            "here, and would need the connecting train’s destination in the "
+            "collected data.")
+
     tiles = [
         ("tile", f"{totals['events']:,}", "arrival predictions scored"),
         ("tile", f"{totals['connections']:,}", "one-change connections scored"),
@@ -1076,9 +1092,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   with one change the answer is the probability of making that change, scored
   against whether it was made. The two use different scores and are not
   comparable with each other; each is compared only with DB’s answer to the same
-  question. A complete two-leg journey — the predicted arrival at the far end of
-  a change, against the arrival that happened — is <em>not</em> scored here, and
-  would need the connecting train’s destination in the collected data.</p>
+  question. {journey_note}</p>
   <div class="tiles">"""]
     for cls, k, v in tiles:
         doc.append(f'<div class="{cls}"><span class="k">{html.escape(k)}</span>'

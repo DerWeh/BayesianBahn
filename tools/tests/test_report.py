@@ -946,6 +946,36 @@ def test_the_journey_section_is_absent_until_there_is_something_in_it(tmp_path):
     assert "Journeys with a change" not in out.read_text(encoding="utf-8")
 
 
+def test_the_intro_does_not_deny_a_section_the_page_contains(tmp_path):
+    """The opening said a two-leg journey is *not* scored here, which was true
+    until it was — and then stood two screens above the table that scores it."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    trips = [journey(num=str(i)) for i in range(4)]
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn, trips, trips),
+             journeys=R.journeys_table(trips, trips))
+    page = out.read_text(encoding="utf-8")
+    assert "Journeys with a change" in page
+    assert "is <em>not</em> scored here" not in page
+
+
+def test_the_intro_still_says_so_while_the_section_is_missing(tmp_path):
+    """And the other way round: with no journeys the caveat has to stay."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn),
+             journeys=R.journeys_table([], []))
+    assert "is <em>not</em> scored here" in out.read_text(encoding="utf-8")
+
+
 def test_the_headline_gains_no_journey_row_until_there_is_one():
     rows = [arrival(num=str(i)) for i in range(4)]
     conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
