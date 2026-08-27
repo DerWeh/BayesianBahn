@@ -4,7 +4,9 @@ import android.content.Context
 import io.github.derweh.bayesianbahn.model.HistoricalRun
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -182,23 +184,77 @@ class HistoryRepository(
             return TrainHistory(base.trainName, base.trainType, stations)
         }
 
+        /**
+         * Decoded straight into typed fields rather than walked as a JSON tree.
+         *
+         * The tree route spent its time in `jsonPrimitive.intOrNull`, which is
+         * a *string* parse per field per run: a median shard holds 900 runs of
+         * five fields, so one train cost several thousand `String.toInt` calls
+         * and the allocations under them. Building the tree itself was never
+         * the expensive part — 88 ms against 1,424 ms for the whole parse over
+         * 600 shards. The decoder reads the integers out of the character
+         * stream once.
+         *
+         * Every field is optional with a default: a station block omits `t`
+         * when all its runs share one planned time, `c` when nothing was
+         * cancelled, and `d`/`p` whenever they would be all-null.
+         */
+        @Serializable
+        private data class ShardDto(
+            val train: String = "?",
+            val type: String = "?",
+            val stations: Map<String, StationDto> = emptyMap(),
+        )
+
+        @Serializable
+        private data class StationDto(
+            val eva: String? = null,
+            /** Distinct planned times, minutes past midnight; `t` indexes it. */
+            val tod: List<Int> = emptyList(),
+            /** Delta-coded epoch days: the first is absolute, the rest are steps. */
+            val days: List<Int> = emptyList(),
+            val t: List<Int>? = null,
+            val a: List<Int?>? = null,
+            val d: List<Int?>? = null,
+            val p: List<Int?>? = null,
+            val c: List<Int>? = null,
+            /** v1: one array per run. No shard has been written this way since
+             *  the columnar format landed, but old caches on disk outlive it. */
+            val runs: List<JsonElement>? = null,
+        )
+
+        private val decoder = Json { ignoreUnknownKeys = true; isLenient = true }
+
         fun parseShard(json: String): TrainHistory? {
-            val root = runCatching { Json.parseToJsonElement(json).jsonObject }.getOrNull()
+            val root = runCatching { decoder.decodeFromString<ShardDto>(json) }.getOrNull()
                 ?: return null
-            val stations = root["stations"]?.jsonObject ?: return null
+            if (root.stations.isEmpty()) {
+                // An empty object is a shard with no stations; anything that
+                // failed to look like one at all is not a shard.
+                if (!json.contains("\"stations\"")) return null
+            }
             return TrainHistory(
-                trainName = root["train"]?.jsonPrimitive?.content ?: "?",
-                trainType = root["type"]?.jsonPrimitive?.content ?: "?",
-                stations = stations.entries.associate { (name, value) ->
-                    val obj = value.jsonObject
-                    name to StationHistory(
-                        eva = obj["eva"]?.jsonPrimitive?.content,
-                        runs = if ("days" in obj) parseColumnarRuns(obj) else {
-                            obj["runs"]?.jsonArray?.mapNotNull { parseRun(it) } ?: emptyList()
-                        },
+                trainName = root.train,
+                trainType = root.type,
+                stations = root.stations.mapValues { (_, station) ->
+                    StationHistory(
+                        eva = station.eva,
+                        runs = if (station.days.isNotEmpty()) columnarRuns(station)
+                        else station.runs?.mapNotNull { parseRun(it) } ?: emptyList(),
                     )
                 },
             )
+        }
+
+        /** "HH:mm" without `String.format`, which cost 259 ms per 750,000 runs. */
+        private fun hhmm(minutes: Int): String {
+            val h = minutes / 60
+            val m = minutes % 60
+            val out = CharArray(5)
+            out[0] = ('0' + h / 10); out[1] = ('0' + h % 10)
+            out[2] = ':'
+            out[3] = ('0' + m / 10); out[4] = ('0' + m % 10)
+            return String(out)
         }
 
         /**
@@ -207,34 +263,22 @@ class HistoryRepository(
          * absent means "same as arrival" — the consumers fall back to the
          * arrival delay either way) and cancelled indices.
          */
-        private fun parseColumnarRuns(
-            obj: kotlinx.serialization.json.JsonObject,
-        ): List<HistoricalRun> {
-            val days = obj["days"]?.jsonArray ?: return emptyList()
-            val tods = obj["tod"]?.jsonArray?.map { it.jsonPrimitive.intOrNull ?: 0 }
-                ?: return emptyList()
-            val t = obj["t"]?.jsonArray
-            val a = obj["a"]?.jsonArray
-            val d = obj["d"]?.jsonArray
-            val p = obj["p"]?.jsonArray
-            val cancelled = obj["c"]?.jsonArray
-                ?.mapNotNullTo(HashSet()) { it.jsonPrimitive.intOrNull } ?: emptySet()
-
-            fun int(arr: kotlinx.serialization.json.JsonArray?, i: Int): Int? =
-                arr?.getOrNull(i)?.jsonPrimitive?.intOrNull
-
+        private fun columnarRuns(station: StationDto): List<HistoricalRun> {
+            if (station.tod.isEmpty()) return emptyList()
+            val cancelled = station.c?.toHashSet()
             var epochDay = 0L
-            return List(days.size) { i ->
-                epochDay += days[i].jsonPrimitive.intOrNull?.toLong() ?: 0L
-                val tod = tods.getOrElse(int(t, i) ?: 0) { 0 }
-                val arr = int(a, i)
+            return List(station.days.size) { i ->
+                epochDay += station.days[i]
+                val arrival = station.a?.getOrNull(i)
                 HistoricalRun(
                     date = LocalDate.ofEpochDay(epochDay),
-                    plannedTimeOfDay = "%02d:%02d".format(tod / 60, tod % 60),
-                    arrivalDelay = arr,
-                    departureDelay = int(d, i) ?: arr,
-                    previousStopDelay = int(p, i),
-                    cancelled = i in cancelled,
+                    plannedTimeOfDay = hhmm(
+                        station.tod.getOrElse(station.t?.getOrNull(i) ?: 0) { 0 },
+                    ),
+                    arrivalDelay = arrival,
+                    departureDelay = station.d?.getOrNull(i) ?: arrival,
+                    previousStopDelay = station.p?.getOrNull(i),
+                    cancelled = cancelled != null && i in cancelled,
                 )
             }
         }

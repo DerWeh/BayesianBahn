@@ -191,7 +191,7 @@ class ForecastHarnessTest {
         // The harness refuses a shard root with no base/, so create it even when
         // the test writes no shards at all.
         File(root, "base").mkdirs()
-        return ForecastHarness.ShardStore(root, capacity)
+        return ForecastHarness.ShardStore(root, capacity = capacity)
     }
 
     @Test

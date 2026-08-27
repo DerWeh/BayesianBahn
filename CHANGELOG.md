@@ -35,6 +35,21 @@ fixes; expect breaking changes between minors until 1.0).
   landed a day out on one collected day.
 
 ### Changed
+- **Reading a train's delay history is about ten times faster, and drawing its
+  histogram far more.** A history shard was decoded by walking a JSON tree and
+  asking each field for its number, which is a *string* parse per field per
+  run — a median shard holds nine hundred runs across ten stations, so opening
+  one train cost several thousand of them. Decoding straight into typed fields
+  cuts parsing 600 shards from 1.4 seconds to 0.14; building the tree had never
+  been the expensive part, at 88 milliseconds of that. Separately, the
+  distribution behind the histogram and the 80% interval answered every
+  question by scanning its whole list of points — one per past run per
+  connecting train, so hundreds to thousands — where it now binary-searches a
+  running total it builds once. Both run on the phone: the first on every shard
+  the app reads, the second on every histogram it draws. The evaluation, which
+  asks for a cumulative probability 661 times per scored journey, went from an
+  hour to six minutes for nine days.
+
 - **The evaluation waits for the next train that really runs.** A journey with
   a change was scored only if the passenger boarded one of the six trains the
   app had offered; if they missed all six and took the seventh, the journey was

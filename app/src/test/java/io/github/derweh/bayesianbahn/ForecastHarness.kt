@@ -62,7 +62,7 @@ class ForecastHarness {
         val day = LocalDate.parse(requireNotNull(System.getenv("HARNESS_DAY")))
         val blind = System.getenv("HARNESS_BLIND") != null
 
-        val histories = ShardStore(shards)
+val histories = ShardStore(shards, day)
         val predictor = Predictor()
         var scored = 0
         var skipped = 0
@@ -77,14 +77,11 @@ class ForecastHarness {
                     skipped++
                     return@forEachLine
                 }
+                // Already trimmed to before `day` by the store, once per shard.
                 val history = histories.load(
                     event.str("cat")!!, event.str("num")!!, event.str("line"),
-                )?.let { asOf(it, day) }
-                history?.let {
-                    // Belt and braces: asOf should have made this impossible.
-                    requireNoRunsOnOrAfter(it, day)
-                    withHistory++
-                }
+                )
+                history?.let { withHistory++ }
 
                 val plannedMillis = wallMinutesToMillis(event.int("planned")!!)
                 val forecast = predictor.forecast(
@@ -163,7 +160,23 @@ class ForecastHarness {
      * so a small window keeps the hit rate while the footprint stays flat
      * however many days are added.
      */
-    internal class ShardStore(private val root: File, capacity: Int = CAPACITY) {
+    internal class ShardStore(
+        private val root: File,
+        /**
+         * Trim each shard to the runs the app would have held the evening
+         * before, once, here.
+         *
+         * [asOf] rebuilds a whole `TrainHistory` — every station, every run —
+         * and the harnesses were calling it on every lookup: once for the
+         * feeder and once for each of six candidates, on every event. A median
+         * shard holds nine hundred runs, so a day of two-leg journeys walked
+         * about forty-five million of them to answer eight thousand questions,
+         * and each walk allocated the lists again. The day is fixed for the
+         * whole run, so the trim belongs beside the parse it follows.
+         */
+        private val day: LocalDate? = null,
+        capacity: Int = CAPACITY,
+    ) {
         /**
          * `LinkedHashMap` in access order is the JDK's LRU. `null` is a real
          * cached value here — a train with no shard at all — so lookups test
@@ -187,6 +200,7 @@ class ForecastHarness {
                 } else {
                     parses++
                     HistoryRepository.mergeHistories(read("base", key), read("recent", key))
+                        ?.let { if (day == null) it else asOf(it, day) }
                         .also { cache[key] = it }
                 }
                 if (found != null) return found

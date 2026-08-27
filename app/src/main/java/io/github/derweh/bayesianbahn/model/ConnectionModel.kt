@@ -1,30 +1,90 @@
 package io.github.derweh.bayesianbahn.model
 
 /** Weighted empirical distribution over arbitrary (value, weight) points. */
+/**
+ * A weighted set of arrival times, as a distribution.
+ *
+ * Both lookups run on a prefix-summed copy rather than by walking the points.
+ * The points are one per historical run per candidate train, so a change with
+ * six candidates carries several hundred to a few thousand of them, and every
+ * scan was the whole list: drawing a histogram asks for a cdf per bucket and
+ * the interval asks for three quantiles, which turned one screen into hundreds
+ * of thousands of comparisons. The evaluation felt it worse still — scoring a
+ * day of two-leg journeys spent 88% of its time here — because CRPS integrates
+ * the cdf over 661 whole minutes for every journey it scores.
+ *
+ * Building the prefix sum costs one pass, which the constructor was already
+ * paying for the sort.
+ *
+ * The total is the last prefix sum rather than a separate pass over the input.
+ * That is not only cheaper: it is what makes `cdf` reach exactly 1 at the top
+ * and `quantile(1.0)` return exactly the last point. Summing the same weights
+ * in a different order gave a total that could sit an ulp away from the running
+ * one, and a quantile landing on a flat stretch of the cdf then picked its
+ * point on the strength of that last bit. Over a day of scored journeys it
+ * moved two medians out of eight thousand — real, and arbitrary either way,
+ * since a discrete distribution genuinely has no single median there.
+ */
 class PointDistribution(points: List<Pair<Double, Double>>) : DelayDistribution {
-    private val points = points.sortedBy { it.first }
-    private val totalWeight = points.sumOf { it.second }
+    private val values: DoubleArray
+    private val cumulative: DoubleArray
+    private val totalWeight: Double
+
+    init {
+        val sorted = points.sortedBy { it.first }
+        values = DoubleArray(sorted.size)
+        cumulative = DoubleArray(sorted.size)
+        var acc = 0.0
+        for (i in sorted.indices) {
+            values[i] = sorted[i].first
+            acc += sorted[i].second
+            cumulative[i] = acc
+        }
+        totalWeight = acc
+    }
+
+    /** Index of the last value <= [x], or -1 when every value is above it. */
+    private fun lastAtOrBelow(x: Double): Int {
+        var lo = 0
+        var hi = values.size - 1
+        var found = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (values[mid] <= x) {
+                found = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return found
+    }
 
     override fun cdf(x: Double): Double {
-        if (points.isEmpty()) return Double.NaN
-        var acc = 0.0
-        for ((value, weight) in points) {
-            if (value > x) break
-            acc += weight
-        }
-        return acc / totalWeight
+        if (values.isEmpty()) return Double.NaN
+        val i = lastAtOrBelow(x)
+        return if (i < 0) 0.0 else cumulative[i] / totalWeight
     }
 
     override fun quantile(p: Double): Double {
         require(p in 0.0..1.0)
-        if (points.isEmpty()) return Double.NaN
+        if (values.isEmpty()) return Double.NaN
         val target = p * totalWeight
-        var acc = 0.0
-        for ((value, weight) in points) {
-            acc += weight
-            if (acc >= target) return value
+        // The first index whose cumulative weight reaches the target, which is
+        // what the linear scan returned: `acc >= target` on the way up.
+        var lo = 0
+        var hi = values.size - 1
+        var found = values.size - 1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (cumulative[mid] >= target) {
+                found = mid
+                hi = mid - 1
+            } else {
+                lo = mid + 1
+            }
         }
-        return points.last().first
+        return values[found]
     }
 }
 

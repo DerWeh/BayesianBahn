@@ -53,7 +53,7 @@ class JourneyHarness {
         val day = LocalDate.parse(requireNotNull(System.getenv("HARNESS_DAY")))
         val blind = System.getenv("HARNESS_BLIND") != null
 
-        val histories = ForecastHarness.ShardStore(shards)
+        val histories = ForecastHarness.ShardStore(shards, day)
         val predictor = Predictor()
         var scored = 0
         var noCandidates = 0
@@ -67,9 +67,10 @@ class JourneyHarness {
                 val dbArrival = event.int("db_arrival")
                 if (truthArrival == null || dbArrival == null) return@forEachLine
 
+                // Already trimmed to before `day` by the store, once per shard.
                 val feederHistory = histories.load(
                     event.str("cat")!!, event.str("num")!!, event.str("line"),
-                )?.let { ForecastHarness.asOf(it, day) }
+                )
                 val feederPlanned = ForecastHarness.wallMinutesToMillis(
                     event.int("planned")!!,
                 )
@@ -90,7 +91,7 @@ class JourneyHarness {
                             history = histories.load(
                                 candidate.str("cat")!!, candidate.str("num")!!,
                                 candidate.str("line"),
-                            )?.let { ForecastHarness.asOf(it, day) },
+                            ),
                             id = candidate.str("id")!!,
                             label = candidate.str("id")!!,
                             transferEva = event.str("eva")!!,
