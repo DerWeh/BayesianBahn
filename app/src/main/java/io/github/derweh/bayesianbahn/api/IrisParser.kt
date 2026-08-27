@@ -89,6 +89,7 @@ class IrisParser(private val newPullParser: () -> XmlPullParser) {
         var dpTime: Long? = null
         var dpPlatform: String? = null
         var dpCancelled = false
+        var messages = mutableListOf<StopMessage>()
 
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -98,6 +99,20 @@ class IrisParser(private val newPullParser: () -> XmlPullParser) {
                         id = parser.getAttributeValue(null, "id")
                         arTime = null; arPlatform = null; arCancelled = false
                         dpTime = null; dpPlatform = null; dpCancelled = false
+                        messages = mutableListOf()
+                    }
+                    // A message hangs on the stop, on its arrival or on its
+                    // departure. Where it hangs is not kept: what the app does
+                    // with it is warn about the train, and all three say that.
+                    "m" -> if (id != null) {
+                        val message = StopMessage(
+                            kind = StopMessage.kindOf(parser.getAttributeValue(null, "t")),
+                            category = parser.getAttributeValue(null, "cat"),
+                            code = parser.getAttributeValue(null, "c"),
+                            priority = parser.getAttributeValue(null, "pr")?.toIntOrNull(),
+                        )
+                        // IRIS repeats one notice on every element it touches.
+                        if (message !in messages) messages += message
                     }
                     "ar" -> {
                         arTime = parseTime(parser.getAttributeValue(null, "ct"))
@@ -113,6 +128,7 @@ class IrisParser(private val newPullParser: () -> XmlPullParser) {
                 XmlPullParser.END_TAG -> if (parser.name == "s" && id != null) {
                     changes[id] = StopChange(
                         id, arTime, arPlatform, arCancelled, dpTime, dpPlatform, dpCancelled,
+                        messages.toList(),
                     )
                     id = null
                 }
@@ -149,6 +165,7 @@ class IrisParser(private val newPullParser: () -> XmlPullParser) {
             stops.map { stop ->
                 val change = changes[stop.id] ?: return@map stop
                 stop.copy(
+                    messages = change.messages,
                     arrival = stop.arrival?.copy(
                         changedTime = change.arrivalChangedTime,
                         changedPlatform = change.arrivalChangedPlatform,

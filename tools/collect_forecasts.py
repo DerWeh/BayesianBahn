@@ -175,11 +175,69 @@ def parse_plan(xml: str) -> dict[str, dict]:
     return out
 
 
+# The message types IRIS uses, from `<m t="...">`. A stop carries them on the
+# stop itself and on its arrival and departure separately, and where a message
+# sits is part of what it says.
+# DB's own word for a route in trouble, as it appears in a HIM notice's `cat`.
+# Not a delay and not a cancellation: the trains keep their times and the
+# journey is impossible anyway. Mirrored by StopMessage.DISRUPTION in the app.
+DISRUPTION = "Störung"
+
+MESSAGE_TYPES = {
+    "h": "him",          # a HIM notice: Störung, Bauarbeiten, Information
+    "c": "cancel",       # why this stop is cancelled
+    "d": "delay",        # why this stop is late
+    "q": "quality",      # a change to the train itself, by code
+    "f": "free",         # free text, by code
+    "r": "reason",
+}
+
+
+def parse_messages(parent, where: str) -> list[dict]:
+    """The `<m>` elements under one element, compactly.
+
+    Kept: what kind of message it is, its category or code, and its priority.
+    Dropped: the id, the validity window and the timestamps — a construction
+    notice valid for three months is attached to every poll of every stop it
+    touches, and storing its dates again each time would cost more than the
+    message is worth. What the evaluation needs is whether DB was saying
+    something about this stop at this moment, and what kind of something.
+    """
+    out = []
+    for m in parent.findall("m"):
+        kind = m.get("t")
+        message = {"w": where, "t": MESSAGE_TYPES.get(kind, kind or "?")}
+        if m.get("cat"):
+            message["cat"] = m.get("cat")
+        if m.get("c"):
+            message["c"] = m.get("c")
+        if m.get("pr"):
+            message["pr"] = m.get("pr")
+        if message not in out:      # the same notice repeats within a stop
+            out.append(message)
+    return out
+
+
+def is_disruption(messages: list[dict]) -> bool:
+    """Whether DB is reporting the route in trouble, not merely late.
+
+    Construction notices are attached to half the stops in Germany and mean
+    nothing about today, so only the disruption category counts.
+    """
+    return any(m.get("t") == "him" and m.get("cat") == DISRUPTION for m in messages)
+
+
 def parse_changes(xml: str) -> dict[str, dict]:
     """Trip id -> DB's current forecast, from an `fchg` document.
 
     `ct` is the changed time and `cs == "c"` the cancellation, exactly as
     IrisParser.parseChanges reads them.
+
+    `msg` is everything else DB says about the stop. A blocked section is not a
+    cancellation: the trains still have times, and DB reports the journey as
+    impossible through a HIM notice instead. Reading only `ct` and `cs` made
+    those evenings look ordinary — the trains ran, in our record, while no
+    passenger could travel.
     """
     out: dict[str, dict] = {}
     for s in ET.fromstring(xml).findall("s"):
@@ -187,11 +245,17 @@ def parse_changes(xml: str) -> dict[str, dict]:
         if not trip:
             continue
         ar, dp = s.find("ar"), s.find("dp")
+        messages = parse_messages(s, "s")
+        if ar is not None:
+            messages += parse_messages(ar, "ar")
+        if dp is not None:
+            messages += parse_messages(dp, "dp")
         out[trip] = {
             "ar": iris_time(ar.get("ct")) if ar is not None else None,
             "dp": iris_time(dp.get("ct")) if dp is not None else None,
             "arc": (ar.get("cs") == "c") if ar is not None else False,
             "dpc": (dp.get("cs") == "c") if dp is not None else False,
+            "msg": messages,
         }
     return out
 
@@ -357,7 +421,7 @@ class Collector:
             if record.get("t") == "obs":
                 self.last[(record["eva"], record["id"])] = {
                     k: record.get(k) for k in ("ar", "dp", "arc", "dpc")
-                }
+                } | {"msg": record.get("msg", [])}
             elif record.get("t") == "plan":
                 self.planned.add((record["eva"], record["id"]))
         return torn

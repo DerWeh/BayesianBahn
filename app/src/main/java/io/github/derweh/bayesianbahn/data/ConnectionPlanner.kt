@@ -32,6 +32,15 @@ class ConnectionPlanner(
             val destinationName: String,
             val feederForecast: Forecast,
             val feederPlannedArrivalMillis: Long,
+            /**
+             * Trains on this connection that DB is reporting trouble on.
+             *
+             * A blocked section is not a cancellation: the trains keep their
+             * times, and every probability computed from those times is
+             * confidently wrong. The prediction is still shown — DB's own apps
+             * show the times too — but not without saying this.
+             */
+            val disrupted: List<String> = emptyList(),
         ) : Outcome
     }
 
@@ -134,7 +143,12 @@ class ConnectionPlanner(
             transferMinutes = transferMinutes,
             candidates = modelCandidates,
         ) ?: return Outcome.Error(UserMessage.NotEnoughHistory(destinationName))
-        return Outcome.Success(result, transfer, destinationName, feederForecast, feederPlanned)
+        val disrupted = (listOf(feeder) + candidates)
+            .filter { it.disrupted }
+            .map { "${it.label.category} ${it.label.number}" }
+            .distinct()
+        return Outcome.Success(result, transfer, destinationName, feederForecast,
+            feederPlanned, disrupted)
     }
 
     /** Joins a candidate's historical delays at the transfer and destination. */

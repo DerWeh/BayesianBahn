@@ -38,6 +38,7 @@
     <string name="itinerary_change_at">Umstieg in %1$s</string>
     <string name="itinerary_catch_probability">"  ·  P(erster Anschluss) %1$d %%"</string>
     <string name="itinerary_direct">Direkt</string>
+    <string name="itinerary_disruption">DB meldet eine Störung bei %1$s. Die Zeiten unten setzen den Fahrplan voraus.</string>
     <string name="itinerary_live_delay">"  ·  jetzt +%1$d Min."</string>
     <string name="itinerary_duration_interval">"~%1$s  ·  80 %% zwischen %2$s und %3$s"</string>
     <string name="itinerary_candidate">%1$s %2$s: %3$s</string>

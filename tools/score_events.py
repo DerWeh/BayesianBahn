@@ -92,6 +92,10 @@ class Stop:
     # for anyone changing onto it.
     ppth: list[str] = field(default_factory=list)
     obs: list[tuple[int, int | None, int | None, bool]] = field(default_factory=list)
+    # (seen at, DB reporting trouble on the route). Its own stream rather than a
+    # fifth column on `obs`: a disruption is not a property of the times, and
+    # keeping it apart means every reader of `obs` stays as it was.
+    notices: list[tuple[float, bool]] = field(default_factory=list)
 
     def forecast_at(self, when: float) -> int | None:
         """DB's predicted delay in minutes as of `when` (epoch seconds).
@@ -126,6 +130,19 @@ class Stop:
         for at, _arrival, _departure, cancelled in self.obs:
             if at <= when:
                 state = cancelled
+        return state
+
+    def disrupted_at(self, when: float) -> bool:
+        """Whether DB was reporting trouble on this train's route as of `when`.
+
+        Separate from `cancelled_at` because it is a separate thing: a blocked
+        section leaves every stop with its timetable intact, so a forecast built
+        from those times can be confident and wrong at once.
+        """
+        state = False
+        for at, disrupted in self.notices:
+            if at <= when:
+                state = disrupted
         return state
 
     def settled(self, last_poll: float | None) -> int | None:
@@ -207,8 +224,11 @@ def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
         arrival = r["ar"] if r["ar"] is not None else stop.planned
         departure = r["dp"] if r["dp"] is not None else stop.planned_dep
         stop.obs.append((float(r["at"]), arrival, departure, bool(r.get("arc"))))
+        if "msg" in r:
+            stop.notices.append((float(r["at"]), cf.is_disruption(r["msg"])))
     for stop in stops.values():
         stop.obs.sort()
+        stop.notices.sort()
     for times in polls.values():
         times.sort()
     return stops, polls
@@ -263,6 +283,10 @@ def build_events(stops: dict, polls: dict, horizons=HORIZONS) -> list[dict]:
                 "db": db if db is not None else 0,
                 "db_explicit": db is not None,
                 "cancelled": stop.cancelled_at(when),
+                # DB reporting the route in trouble while leaving the times
+                # alone. Recorded, not acted on: it is a different failure from
+                # a cancellation and deserves its own count before it is used.
+                "disrupted": stop.disrupted_at(when),
                 "settled": settled,
             })
     return events

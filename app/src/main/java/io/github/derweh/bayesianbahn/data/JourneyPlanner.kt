@@ -59,6 +59,20 @@ class JourneyPlanner(
     ) {
         val medianArrivalMillis: Long
             get() = referenceArrivalMillis + (distribution.quantile(0.5) * 60_000).toLong()
+
+        /**
+         * Trains on this journey DB is reporting trouble on.
+         *
+         * Not the same as a delay or a cancellation. When a section is blocked
+         * the trains keep their times, so every number here is computed from a
+         * timetable that is not going to happen — which is exactly how a
+         * journey can be shown as fine while no passenger can travel it.
+         */
+        val disrupted: List<String>
+            get() = (
+                (if (feeder.disrupted) listOf("${feeder.label.category} ${feeder.label.number}")
+                else emptyList()) + (connection?.disrupted ?: emptyList())
+                ).distinct()
     }
 
     sealed interface Outcome {

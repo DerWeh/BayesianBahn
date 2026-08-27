@@ -37,12 +37,55 @@ data class EventInfo(
 }
 
 /** A train calling at the requested station. */
+/**
+ * Something IRIS says about a stop besides its times.
+ *
+ * A blocked section is not a cancellation: the trains keep their times and DB
+ * reports the trip impossible through a notice like this one instead. Reading
+ * only the times and the cancellation flag made such an evening look ordinary.
+ *
+ * [category] is set on HIM notices — "Störung", "Bauarbeiten", "Information" —
+ * and [code] on the numeric delay and cancellation causes. [priority] is
+ * DB's own ranking, 1 being the most urgent.
+ */
+data class StopMessage(
+    val kind: Kind,
+    val category: String? = null,
+    val code: String? = null,
+    val priority: Int? = null,
+) {
+    enum class Kind { HIM, CANCEL_CAUSE, DELAY_CAUSE, QUALITY, FREE_TEXT, OTHER }
+
+    /** Whether this is DB reporting the route in trouble, not merely late. */
+    val isDisruption: Boolean
+        get() = kind == Kind.HIM && category == DISRUPTION
+
+    companion object {
+        /** DB's own word for it, as it appears in the `cat` attribute. */
+        const val DISRUPTION = "Störung"
+
+        fun kindOf(raw: String?): Kind = when (raw) {
+            "h" -> Kind.HIM
+            "c" -> Kind.CANCEL_CAUSE
+            "d" -> Kind.DELAY_CAUSE
+            "q" -> Kind.QUALITY
+            "f" -> Kind.FREE_TEXT
+            else -> Kind.OTHER
+        }
+    }
+}
+
 data class TimetableStop(
     val id: String,
     val label: TrainLabel,
     val arrival: EventInfo?,
     val departure: EventInfo?,
+    val messages: List<StopMessage> = emptyList(),
 ) {
+    /** DB is reporting trouble on this train's route, times notwithstanding. */
+    val disrupted: Boolean
+        get() = messages.any { it.isDisruption }
+
     val destination: String?
         get() = departure?.plannedPath?.lastOrNull()
     val origin: String?
@@ -58,6 +101,7 @@ data class StopChange(
     val departureChangedTime: Long?,
     val departureChangedPlatform: String?,
     val departureCancelled: Boolean,
+    val messages: List<StopMessage> = emptyList(),
 )
 
 /** One entry of a `station/{query}` document: IRIS's own name for an EVA number. */

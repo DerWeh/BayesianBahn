@@ -1,6 +1,7 @@
 package io.github.derweh.bayesianbahn.api
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,7 +29,8 @@ class IrisParserTest {
     private val changesXml = """
         <timetable station="Augsburg Hbf" eva="8000013">
           <s id="123-2607161833-8" eva="8000013">
-            <ar ct="2607161920" cp="9"/>
+            <m id="r1" t="h" cat="Störung" pr="2" from="2607161800" to="2607162359"/>
+            <ar ct="2607161920" cp="9"><m id="r2" t="d" c="43"/></ar>
             <dp ct="2607161923"/>
           </s>
           <s id="999-unknown-1" eva="8000013">
@@ -82,5 +84,67 @@ class IrisParserTest {
 
         val ice = merged[1]
         assertTrue(ice.arrival!!.cancelled)
+    }
+
+    @Test
+    fun `reads what db says besides the times`() {
+        val change = parser.parseChanges(changesXml).getValue("123-2607161833-8")
+        assertEquals(
+            listOf(
+                StopMessage(StopMessage.Kind.HIM, category = "Störung", priority = 2),
+                StopMessage(StopMessage.Kind.DELAY_CAUSE, code = "43"),
+            ),
+            change.messages,
+        )
+    }
+
+    @Test
+    fun `a blocked route is a disruption even though nothing is cancelled`() {
+        // The failure this exists for: DB reports the trip impossible through a
+        // notice while the stops keep their times, so a reader of `ct` and `cs`
+        // alone sees an ordinary train and predicts an arrival for it.
+        val merged = IrisParser.merge(
+            parser.parsePlan(planXml), parser.parseChanges(changesXml),
+        )
+        assertTrue(merged[0].disrupted)
+        assertFalse(merged[0].arrival!!.cancelled)
+    }
+
+    @Test
+    fun `a train db says nothing about is not disrupted`() {
+        val merged = IrisParser.merge(
+            parser.parsePlan(planXml), parser.parseChanges(changesXml),
+        )
+        assertFalse(merged[1].disrupted)
+    }
+
+    @Test
+    fun `roadworks are not a disruption`() {
+        // Every second stop in Germany carries a construction notice; treating
+        // those as trouble would warn on everything and mean nothing.
+        val xml = """
+            <timetable station="Augsburg Hbf" eva="8000013">
+              <s id="123-2607161833-8" eva="8000013">
+                <m id="r1" t="h" cat="Bauarbeiten" pr="1"/>
+                <ar ct="2607161920"/>
+              </s>
+            </timetable>
+        """.trimIndent()
+        val merged = IrisParser.merge(parser.parsePlan(planXml), parser.parseChanges(xml))
+        assertFalse(merged[0].disrupted)
+    }
+
+    @Test
+    fun `one notice repeated across a stop is kept once`() {
+        val xml = """
+            <timetable station="Augsburg Hbf" eva="8000013">
+              <s id="123-2607161833-8" eva="8000013">
+                <m id="a" t="h" cat="Störung" pr="2"/>
+                <ar ct="2607161920"><m id="b" t="h" cat="Störung" pr="2"/></ar>
+                <dp ct="2607161923"><m id="c" t="h" cat="Störung" pr="2"/></dp>
+              </s>
+            </timetable>
+        """.trimIndent()
+        assertEquals(1, parser.parseChanges(xml).getValue("123-2607161833-8").messages.size)
     }
 }

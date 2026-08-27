@@ -41,9 +41,21 @@ PLAN = """<timetable station="Ulm Hbf" eva="8000170">
   </s>
 </timetable>"""
 
+# Messages sit on the stop and on its arrival and departure separately, and
+# only some carry a category — the HIM notices do, the delay and cancellation
+# causes carry a numeric code instead. Reading only `ct` and `cs` and dropping
+# all of this is what made a blocked section look like an ordinary evening:
+# the trains kept their times and DB reported the journey impossible here.
 FCHG = """<timetable station="Ulm Hbf" eva="8000170">
-  <s id="trip-1"><ar ct="2606101216"/><dp ct="2606101218"/></s>
-  <s id="trip-2"><ar ct="2606101245" cs="c"/></s>
+  <s id="trip-1">
+    <m id="r1" t="h" from="2606030900" to="2609052359" cat="Störung" pr="2"
+       ts="2606101150" ts-tts="26-06-10 11:50:01.000"/>
+    <ar ct="2606101216"><m id="r2" t="d" c="43" ts="2606101210"/></ar>
+    <dp ct="2606101218"/>
+  </s>
+  <s id="trip-2">
+    <ar ct="2606101245" cs="c"><m id="r3" t="c" ts="2606101240"/></ar>
+  </s>
 </timetable>"""
 
 FCHG_LATER = FCHG.replace('ct="2606101216"', 'ct="2606101223"')
@@ -83,6 +95,54 @@ def test_changes_read_the_forecast_and_the_cancellation() -> None:
     assert got["trip-1"]["ar"] == cf.iris_time("2606101216")
     assert got["trip-1"]["arc"] is False
     assert got["trip-2"]["arc"] is True, 'cs="c" is a cancellation'
+
+
+def test_changes_keep_what_db_says_besides_the_times() -> None:
+    """A blocked section is not a cancellation. The trains keep their times and
+    DB says the journey is impossible in a HIM notice instead — so a collector
+    that reads only `ct` and `cs` records the evening as ordinary."""
+    got = cf.parse_changes(FCHG)
+    assert {"w": "s", "t": "him", "cat": "Störung", "pr": "2"} in got["trip-1"]["msg"]
+
+
+def test_a_message_remembers_which_element_it_hung_on() -> None:
+    """A notice on the arrival and the same notice on the departure are
+    different statements; the stop-level one is a third."""
+    got = cf.parse_changes(FCHG)["trip-1"]["msg"]
+    assert [m["w"] for m in got] == ["s", "ar"]
+    assert {"w": "ar", "t": "delay", "c": "43"} in got
+
+
+def test_a_cancellation_cause_is_kept_with_its_cancellation() -> None:
+    got = cf.parse_changes(FCHG)["trip-2"]
+    assert got["arc"] is True
+    assert {"w": "ar", "t": "cancel"} in got["msg"]
+
+
+def test_a_stop_db_says_nothing_about_has_no_messages() -> None:
+    plain = """<timetable station="Ulm Hbf" eva="8000170">
+      <s id="trip-1"><ar ct="2606101216"/></s></timetable>"""
+    assert cf.parse_changes(plain)["trip-1"]["msg"] == []
+
+
+def test_the_same_notice_twice_on_one_stop_is_kept_once() -> None:
+    """IRIS repeats a notice per affected element; the journal should not."""
+    doubled = """<timetable station="Ulm Hbf" eva="8000170">
+      <s id="trip-1">
+        <m id="a" t="h" cat="Störung" pr="2"/>
+        <m id="b" t="h" cat="Störung" pr="2"/>
+        <ar ct="2606101216"/>
+      </s></timetable>"""
+    assert cf.parse_changes(doubled)["trip-1"]["msg"] == [
+        {"w": "s", "t": "him", "cat": "Störung", "pr": "2"},
+    ]
+
+
+def test_an_unknown_message_type_is_kept_not_dropped() -> None:
+    """DB adds types; a type we have no name for is still evidence."""
+    odd = """<timetable station="Ulm Hbf" eva="8000170">
+      <s id="trip-1"><m id="a" t="z" c="7"/><ar ct="2606101216"/></s></timetable>"""
+    assert cf.parse_changes(odd)["trip-1"]["msg"] == [{"w": "s", "t": "z", "c": "7"}]
 
 
 def test_time_convention_matches_the_benchmark() -> None:
@@ -577,6 +637,45 @@ def test_a_stop_with_no_line_still_parses() -> None:
 def test_the_line_is_taken_from_the_arrival_when_there_is_no_departure() -> None:
     xml = PLAN.replace('<dp pt="2606101212" pp="2" ppth="Neu-Ulm|Senden"/>', "")
     assert cf.parse_plan(xml)["trip-1"]["line"] == "9"
+
+
+def test_the_fchg_fixture_matches_a_real_document() -> None:
+    """The same guard as for the plan fixture, and for the same reason.
+
+    Nothing caches an `fchg` document — the collector parses and throws it
+    away — so this reads one out of an archive day if one has been fetched on
+    this machine, and skips otherwise.
+    """
+    raw = sorted(Path("tools/.scored").glob("*/raw/*.parquet"))
+    if not raw:
+        pytest.skip("no archive day fetched; run the evaluation first")
+    pl = pytest.importorskip("polars")
+    import xml.etree.ElementTree as ET
+    frame = pl.read_parquet(raw[0], columns=["api_name", "response_data"]).filter(
+        pl.col("api_name") == "timetables/v1/fchg")
+    if not frame.height:
+        pytest.skip("the archive day holds no fchg documents")
+    on, types = set(), set()
+    for (xml,) in frame.head(50).select("response_data").iter_rows():
+        try:
+            root = ET.fromstring(xml)
+        except ET.ParseError:
+            continue
+        for stop in root.findall("s"):
+            for where in ("s", "ar", "dp"):
+                element = stop if where == "s" else stop.find(where)
+                if element is None:
+                    continue
+                for message in element.findall("m"):
+                    on.add(where)
+                    types.add(message.get("t"))
+    assert on, "no <m> anywhere; the fixture claims IRIS sends them"
+    assert on <= {"s", "ar", "dp"} and "s" in on, (
+        f"messages hang somewhere the parser does not look: {sorted(on)}")
+    unknown = types - set(cf.MESSAGE_TYPES)
+    assert not unknown, (
+        f"IRIS sent message types nothing here names: {sorted(unknown)} — they "
+        "are kept, but MESSAGE_TYPES should learn what they mean")
 
 
 def test_the_plan_fixture_matches_a_real_document() -> None:

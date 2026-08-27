@@ -863,6 +863,32 @@ def kotlin(path: str) -> str:
     return (TOOLS.parent / "app/src" / path).read_text(encoding="utf-8")
 
 
+def test_the_disruption_category_matches_the_app() -> None:
+    """Both sides decide "is this trouble" on DB's own word for it. If they
+    disagreed, the app would warn where the evaluation counted nothing."""
+    source = kotlin("main/java/io/github/derweh/bayesianbahn/api/IrisModels.kt")
+    assert f'const val DISRUPTION = "{cf.DISRUPTION}"' in source
+
+
+def test_a_disruption_is_read_from_the_notices_not_the_times():
+    """A blocked section leaves the times alone, so nothing in `obs` shows it."""
+    stop = se.Stop(eva="8000001", trip="t", cat="RE", num="1", line=None, planned=600)
+    stop.obs = [(100.0, 600, None, False)]
+    stop.notices = [(100.0, False), (200.0, True)]
+    assert stop.disrupted_at(150) is False
+    assert stop.disrupted_at(250) is True
+    assert stop.cancelled_at(250) is False, "a disruption is not a cancellation"
+
+
+def test_a_day_collected_before_messages_existed_reports_no_disruption():
+    """Journals written before the collector read `<m>` carry no `msg` key, and
+    absence there is not evidence of calm."""
+    stop = se.Stop(eva="8000001", trip="t", cat="RE", num="1", line=None, planned=600)
+    stop.obs = [(100.0, 600, None, False)]
+    assert stop.notices == []
+    assert stop.disrupted_at(150) is False
+
+
 def test_the_transfer_time_matches_the_harness() -> None:
     source = kotlin("test/java/io/github/derweh/bayesianbahn/JourneyHarness.kt")
     assert f"const val TRANSFER_MINUTES = {se.TRANSFER_MINUTES}" in source

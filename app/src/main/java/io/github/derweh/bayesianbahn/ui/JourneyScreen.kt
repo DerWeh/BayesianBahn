@@ -354,6 +354,19 @@ private fun ItineraryCard(itinerary: JourneyPlanner.Itinerary) {
         modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Above the times, because it is the reason not to trust them: when
+            // a section is blocked the trains keep their timetable and every
+            // number below is computed from a plan that will not happen.
+            if (itinerary.disrupted.isNotEmpty()) {
+                Text(
+                    stringResource(
+                        R.string.itinerary_disruption,
+                        itinerary.disrupted.joinToString(", "),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "${formatTime(itinerary.departureMillis)} ${itinerary.feeder.label.display}",

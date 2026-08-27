@@ -39,6 +39,11 @@
     <string name="itinerary_change_at">Change at %1$s</string>
     <string name="itinerary_catch_probability">"  ·  P(first connection) %1$d %%"</string>
     <string name="itinerary_direct">Direct</string>
+    <!-- %1$s is a comma-separated list of trains, e.g. "RE 75, RB 57". DB
+         reports a disruption on the route; the trains keep their timetable,
+         so the predicted times below are computed from a plan that may not
+         happen. -->
+    <string name="itinerary_disruption">DB reports a disruption on %1$s. The times below assume the timetable holds.</string>
     <string name="itinerary_live_delay">"  ·  now +%1$d min"</string>
     <string name="itinerary_duration_interval">"~%1$s  ·  80%% between %2$s and %3$s"</string>
     <string name="itinerary_candidate">%1$s %2$s: %3$s</string>
