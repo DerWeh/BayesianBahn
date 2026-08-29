@@ -1,0 +1,8 @@
+Journeys with a change:
+
+• A route is found for 86% of journeys instead of 82%, and for 73% instead of 57% at large stations. The search now weighs every possible change, not just the first trains to leave.
+• Routes arrive 5 minutes earlier on average.
+• Busy stations no longer fill the list with trains that have already left.
+• A warning shows when DB reports a disruption on your route.
+
+Fixed: picking a date searched from 06:00 instead of the time on the button.

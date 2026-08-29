@@ -1,0 +1,8 @@
+Reisen mit Umstieg:
+
+• Für 86 % statt 82 % der Reisen wird eine Verbindung gefunden, an großen Bahnhöfen für 73 % statt 57 %. Die Suche bewertet nun alle möglichen Umstiege, nicht nur die zuerst abfahrenden Züge.
+• Verbindungen kommen im Schnitt 5 Minuten früher an.
+• Keine Listen mehr voller Züge, die längst abgefahren sind.
+• Meldet die DB eine Störung auf der Strecke, wird gewarnt.
+
+Behoben: Bei Datumswahl wurde ab 06:00 gesucht statt ab der angezeigten Zeit.
