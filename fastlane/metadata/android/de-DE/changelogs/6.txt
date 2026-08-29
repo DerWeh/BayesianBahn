@@ -1,10 +1,3 @@
-Der Live-Wert der DB wird nur noch geglaubt, wenn er eine Verspätung
-meldet. Meist gibt die DB nur den Fahrplan wieder, und das ist keine
-Beobachtung: An sieben erfassten Tagen galten 99 % der Züge drei
-Stunden im Voraus als pünktlich — ein Viertel davon kam mehr als zwei
-Minuten zu spät. Die App widerspricht der Bahnsteiganzeige also
-häufiger; der Vorhersagebildschirm erklärt, warum. Gegen die Prognosen
-der DB gemessen, schneidet diese Version bei Ankunftszeiten und
-verpassten Anschlüssen besser ab.
+• Der Live-Zeit der DB wird nur noch geglaubt, wenn sie eine Verspätung meldet. Meist gibt die DB nur den Fahrplan wieder: Drei Stunden im Voraus galten 99 % der Züge als pünktlich, ein Viertel davon kam zu spät. Die App widerspricht der Bahnsteiganzeige daher häufiger — der Vorhersagebildschirm erklärt, warum. An den Prognosen der DB gemessen, ist diese Version bei Ankunftszeiten und verpassten Anschlüssen genauer.
 
-Die Oberfläche ist jetzt auf Deutsch verfügbar.
+• Die Oberfläche ist jetzt auf Deutsch verfügbar.
