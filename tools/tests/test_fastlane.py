@@ -86,3 +86,48 @@ def test_changelog_matches_a_version_code(locale: pathlib.Path) -> None:
         assert int(path.stem) <= current + 1, (
             f"{path.name} is ahead of versionCode {current} in build.gradle.kts"
         )
+
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def png_size(path: pathlib.Path) -> tuple[int, int]:
+    """Width and height out of the IHDR header — no rasteriser needed."""
+    header = path.read_bytes()[:24]
+    assert header[:8] == PNG_MAGIC, f"{path.name} is not a PNG"
+    return int.from_bytes(header[16:20], "big"), int.from_bytes(header[20:24], "big")
+
+
+def shots(locale: pathlib.Path) -> list[pathlib.Path]:
+    return sorted((locale / "images" / "phoneScreenshots").glob("*.png"))
+
+
+@pytest.mark.parametrize("locale", locales(), ids=lambda p: p.name)
+def test_locale_has_its_own_screenshots(locale: pathlib.Path) -> None:
+    """de-DE shipped 0.2.0 with none, so German users were shown English ones.
+
+    F-Droid falls back to the default locale rather than showing nothing, which
+    is why it went unnoticed: the listing looked complete in both languages.
+    """
+    assert shots(locale), f"{locale.name} has no phone screenshots of its own"
+
+
+def test_the_languages_show_the_same_screens() -> None:
+    """One language quietly lagging the other is the failure worth catching."""
+    counts = {p.name: [s.name for s in shots(p)] for p in locales()}
+    assert len(set(map(tuple, counts.values()))) == 1, counts
+
+
+@pytest.mark.parametrize("locale", locales(), ids=lambda p: p.name)
+def test_screenshots_are_named_for_their_order(locale: pathlib.Path) -> None:
+    """F-Droid orders them by filename; a padded 01.png sorts before 1.png."""
+    for path in shots(locale):
+        assert path.stem.isdigit(), f"{path.name} is not a number"
+        assert path.stem == str(int(path.stem)), f"{path.name} is zero-padded"
+
+
+@pytest.mark.parametrize("locale", locales(), ids=lambda p: p.name)
+def test_screenshots_share_one_size(locale: pathlib.Path) -> None:
+    """A set of mixed sizes renders as a ragged strip on the listing page."""
+    sizes = {png_size(p) for p in shots(locale)}
+    assert len(sizes) == 1, f"{locale.name} mixes screenshot sizes: {sizes}"
