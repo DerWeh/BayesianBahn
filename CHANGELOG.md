@@ -84,6 +84,25 @@ fixes; expect breaking changes between minors until 1.0).
   often the passenger boarded past the list.
 
 ### Added
+- **An itinerary now says when DB reports a disruption on it.** DB states
+  trouble in more than one place and the app read only one of them. A blocked
+  section is not a cancellation: the trains keep their times, the cancellation
+  flag stays unset, and the journey is impossible anyway — DB reports it in a
+  notice element that both the app and the collector parsed straight past. One
+  Memmingen document carries 180 of them, 21 marked as a disruption. So an
+  evening where no passenger could travel was recorded as an evening where
+  every train ran to time, and the app would have shown a confident prediction
+  for a trip DB was publishing as impossible. An itinerary whose feeder or
+  connecting train carries one now says so above the times rather than below
+  them, because it is the reason not to trust them; the prediction is still
+  shown, as DB's own apps show the times too, but no longer silently. Only
+  notices categorised as a disruption count — roadworks are attached to half
+  the stops in Germany and say nothing about today, so warning on those would
+  warn on everything. The validity window and timestamps are not stored: a
+  construction notice valid for three months would otherwise ride along on
+  every poll of every stop it touches. The evaluation records the flag per
+  event without acting on it yet — it is a different failure from a
+  cancellation and deserves its own count first.
 - **The evaluation scores a complete two-leg journey**, not only its parts: the
   predicted arrival at the far end of a change against the arrival that
   happened, in the same units as a direct journey, so for the first time the
