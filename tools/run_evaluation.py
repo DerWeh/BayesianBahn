@@ -52,12 +52,26 @@ def stations(*paths: Path) -> str:
     return ",".join(dict.fromkeys(evas))
 
 
-def run(command: list[str], *, env: dict[str, str] | None = None) -> None:
-    """A stage. Failure stops the run — the shell needed `set -e` for this."""
+# `pipeline/fetch_raw_day.py` exits with this when the archive has not
+# published a day, or has published only part of it. It is the one failure that
+# is not the run's fault and not permanent, so it is the one the driver may go
+# on from. Mirrored rather than imported because `pipeline/` is a separate
+# environment; a test asserts the two agree.
+NOT_PUBLISHED = 2
+
+
+def run(command: list[str], *, env: dict[str, str] | None = None,
+        allow: tuple[int, ...] = ()) -> int:
+    """A stage. Failure stops the run — the shell needed `set -e` for this.
+
+    A code in `allow` is handed back instead of raising, for the one caller
+    that has something better to do than give up.
+    """
     print("  $ " + " ".join(command), flush=True)
     result = subprocess.run(command, cwd=ROOT, env={**os.environ, **(env or {})})
-    if result.returncode != 0:
+    if result.returncode != 0 and result.returncode not in allow:
         raise SystemExit(f"stage failed ({result.returncode}): {' '.join(command)}")
+    return result.returncode
 
 
 def python(*args: str) -> list[str]:
@@ -69,7 +83,14 @@ def gradle_wrapper() -> str:
 
 
 def score_day(day: str, scored: Path, station_list: str,
-              cohort: int = 1) -> None:
+              cohort: int = 1) -> bool:
+    """Score one day. False when the archive has not published it yet.
+
+    The archive lags by a morning and has more than once published a day in
+    part. Treating that as a fatal error meant one unready day cancelled every
+    later one in the same command — which is backwards, because the later days
+    are the ones more likely to be ready.
+    """
     out = scored / day
     (out / "raw").mkdir(parents=True, exist_ok=True)
     # Which registered group of origins to score. The cohorts are never pooled:
@@ -85,8 +106,10 @@ def score_day(day: str, scored: Path, station_list: str,
     # changes, so it is the one most worth not repeating.
     if not any(truth_dir.glob("data-*.parquet")):
         print(f"== {day}: fetching the archive")
-        run(python("pipeline/fetch_raw_day.py", "--date", day,
-                   "--out-dir", str(out / "raw")))
+        if run(python("pipeline/fetch_raw_day.py", "--date", day,
+                      "--out-dir", str(out / "raw")),
+               allow=(NOT_PUBLISHED,)) == NOT_PUBLISHED:
+            return False
         truth_dir.mkdir(parents=True, exist_ok=True)
         run(python("pipeline/build_recent.py", "--date", day,
                    "--raw-dir", str(out / "raw"),
@@ -137,7 +160,7 @@ def score_day(day: str, scored: Path, station_list: str,
     # costs minutes across a week.
     if (out / "journeys.jsonl").stat().st_size == 0:
         print(f"== {day}: no two-leg journeys (the far end was not yet polled)")
-        return
+        return True
     for mode in ("live", "blind"):
         print(f"== {day}: scoring journeys ({mode})")
         env = {
@@ -150,6 +173,7 @@ def score_day(day: str, scored: Path, station_list: str,
             env["HARNESS_BLIND"] = "1"
         run([gradle_wrapper(), "testDebugUnitTest", "--tests",
              "*JourneyHarness", "-q"], env=env)
+    return True
 
 
 def main() -> None:
@@ -172,14 +196,26 @@ def main() -> None:
                             TOOLS / "forecast_destinations.csv",
                             TOOLS / "forecast_stations_cohort2.csv",
                             TOOLS / "forecast_destinations_cohort2.csv")
+    scored, skipped = [], []
     for day in args.days:
-        score_day(day, args.scored_dir, station_list, args.cohort)
+        if score_day(day, args.scored_dir, station_list, args.cohort):
+            scored.append(day)
+        else:
+            skipped.append(day)
+
+    if skipped:
+        print("== not published by the archive yet, left out: "
+              + ", ".join(skipped))
+    if not scored:
+        raise SystemExit("no day could be scored; nothing to report on")
 
     if not args.skip_report:
         print("== rendering the report")
         out = args.publish_to if args.publish else args.scored_dir / "report.html"
+        # Only the days that actually scored: naming a skipped one would make
+        # the report read its empty directory and describe a day of no trains.
         run(python("tools/report.py", "--scored-dir", str(args.scored_dir),
-                   "--days", *args.days, "--out", str(out)))
+                   "--days", *scored, "--out", str(out)))
         if args.publish:
             print(f"== wrote {out.relative_to(ROOT)}")
             print("   commit and push it; GitHub Pages serves /docs from the "

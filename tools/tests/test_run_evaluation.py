@@ -9,6 +9,8 @@ here are the ones the shell did implicitly and Python has to do on purpose.
 from __future__ import annotations
 
 import sys
+
+import pytest
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -44,24 +46,36 @@ def test_stages_run_through_the_interpreter_running_the_driver() -> None:
     assert re_.python("tools/report.py")[0] == sys.executable
 
 
-def stub_run(monkeypatch, day: str, scored: Path, *, journeys: str = ""):
+def stub_run(monkeypatch, day: str, scored: Path, *, journeys: str = "",
+             unpublished: tuple[str, ...] = ()):
     """Record the stages, and leave behind the file the driver decides on.
 
     `journeys` is what the event builder would have written: empty means the
     far end was not yet polled that day, which is a real state for every day
     before 2026-08-24 and the one the driver has to skip rather than run.
+
+    `unpublished` names the days whose archive fetch reports NOT_PUBLISHED, so
+    a test can put an unready day in the middle of a run.
     """
     calls: list[list[str]] = []
     envs: list[dict] = []
 
-    def record(cmd, env=None):
+    def record(cmd, env=None, allow=()):
         calls.append(cmd)
         if env:
             envs.append(env)
+        if "pipeline/fetch_raw_day.py" in " ".join(cmd):
+            for d in unpublished:
+                if d in cmd:
+                    assert re_.NOT_PUBLISHED in allow, (
+                        "the fetch stage must be allowed to report a missing day"
+                    )
+                    return re_.NOT_PUBLISHED
         if "journeys" in cmd:
             out = scored / day
             out.mkdir(parents=True, exist_ok=True)
             (out / "journeys.jsonl").write_text(journeys, encoding="utf-8")
+        return 0
 
     monkeypatch.setattr(re_, "run", record)
     return calls, envs
@@ -202,3 +216,69 @@ def test_the_truth_filter_covers_every_cohort() -> None:
     import collect_forecasts as cf
     assert set(got) == {s.eva for s in cf.station_set(TOOLS)}
     assert len(got) == len(set(got))
+
+
+def test_the_skip_code_matches_the_fetcher():
+    """Mirrored across environments, so drift would silently make it fatal."""
+    source = (ROOT / "pipeline" / "fetch_raw_day.py").read_text(encoding="utf-8")
+    line = next(l for l in source.splitlines() if l.startswith("NOT_PUBLISHED"))
+    assert int(line.split("=")[1]) == re_.NOT_PUBLISHED
+
+
+def test_an_unpublished_day_is_skipped_not_scored(tmp_path, monkeypatch):
+    """The archive lags, and a day it has not finished is not an error."""
+    calls, _ = stub_run(monkeypatch, "2026-08-26", tmp_path,
+                        unpublished=("2026-08-26",))
+    assert re_.score_day("2026-08-26", tmp_path, "8000001") is False
+    joined = [" ".join(c) for c in calls]
+    assert any("fetch_raw_day.py" in c for c in joined)
+    assert not any("score_events.py" in c for c in joined), (
+        "nothing may be built from an archive that was never fetched"
+    )
+
+
+def test_a_scored_day_reports_success(tmp_path, monkeypatch):
+    stub_run(monkeypatch, "2026-08-27", tmp_path, journeys='{"a": 1}\n')
+    assert re_.score_day("2026-08-27", tmp_path, "8000001") is True
+
+
+def test_one_unready_day_does_not_cancel_the_others(tmp_path, monkeypatch, capsys):
+    """The bug this guards: 2026-08-26 was incomplete and took 27-30 with it.
+
+    The later days are the more likely to be ready, so aborting the run on the
+    earliest unready one is exactly backwards.
+    """
+    days = ["2026-08-26", "2026-08-27", "2026-08-28"]
+    scored_days = []
+
+    def fake_score_day(day, scored, station_list, cohort=1):
+        if day == "2026-08-26":
+            return False
+        scored_days.append(day)
+        return True
+
+    monkeypatch.setattr(re_, "score_day", fake_score_day)
+    reported: list[list[str]] = []
+    monkeypatch.setattr(re_, "run", lambda cmd, env=None, allow=(): reported.append(cmd) or 0)
+    monkeypatch.setattr(sys, "argv", ["run_evaluation.py", *days,
+                                      "--scored-dir", str(tmp_path)])
+    re_.main()
+
+    assert scored_days == ["2026-08-27", "2026-08-28"]
+    out = capsys.readouterr().out
+    assert "2026-08-26" in out and "not published" in out
+    report = next(c for c in reported if "tools/report.py" in " ".join(c))
+    assert "2026-08-26" not in report, (
+        "a skipped day in --days makes the report describe an empty directory"
+    )
+    assert "2026-08-27" in report and "2026-08-28" in report
+
+
+def test_a_run_with_nothing_scoreable_stops(tmp_path, monkeypatch):
+    """Rendering a report over no days would publish an empty page."""
+    monkeypatch.setattr(re_, "score_day", lambda *a, **k: False)
+    monkeypatch.setattr(sys, "argv", ["run_evaluation.py", "2026-08-26",
+                                      "--scored-dir", str(tmp_path)])
+    with pytest.raises(SystemExit) as excinfo:
+        re_.main()
+    assert "no day could be scored" in str(excinfo.value)

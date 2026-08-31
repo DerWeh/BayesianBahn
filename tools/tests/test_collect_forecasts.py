@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -705,3 +706,38 @@ def test_the_plan_fixture_matches_a_real_document() -> None:
         "IRIS put a line on `tl` after all — the fixture and parse_plan both "
         "assume it never does"
     )
+
+
+def test_error_name_is_bare_for_a_plain_exception():
+    assert cf.error_name(TimeoutError()) == "TimeoutError"
+
+
+def test_error_name_carries_the_http_status():
+    """429, 503 and 404 want opposite responses and must stay distinguishable."""
+    down = urllib.error.HTTPError("http://x", 503, "Service Unavailable", {}, None)
+    throttled = urllib.error.HTTPError("http://x", 429, "Too Many Requests", {}, None)
+    assert cf.error_name(down) == "HTTPError 503"
+    assert cf.error_name(throttled) == "HTTPError 429"
+
+
+def test_a_failed_poll_records_the_status(tmp_path):
+    """The journal is the only record of an outage; it has to say which kind."""
+    journal = cf.Journal(tmp_path / "j.jsonl")
+    error = urllib.error.HTTPError("http://x", 503, "down", {}, None)
+    journal.append({"t": "poll", "at": 1, "eva": "8000001", "tier": 1,
+                    "cohort": 1, "ok": False, "err": cf.error_name(error)})
+    journal.close()
+    records, torn = cf.Journal.read(tmp_path / "j.jsonl")
+    assert torn == 0
+    assert records[0]["err"] == "HTTPError 503"
+
+
+def test_health_still_counts_a_status_carrying_failure():
+    """`health` keys off `ok`, not the message, so the richer text is inert."""
+    records = [
+        {"t": "poll", "at": 0, "eva": "1", "tier": 1, "cohort": 1, "ok": False,
+         "err": "HTTPError 503"},
+        {"t": "poll", "at": 0, "eva": "2", "tier": 1, "cohort": 1, "ok": True,
+         "stops": 3},
+    ]
+    assert cf.health(records, 2)["failed"] == 1

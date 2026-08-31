@@ -131,6 +131,20 @@ HAFAS_SAMPLE = 3
 HAFAS_MAX_BACKOFF = 8
 
 
+def error_name(error: BaseException) -> str:
+    """The exception's name, with an HTTP status attached when it has one.
+
+    `HTTPError` alone cannot be acted on. A 429 says the cadence is too fast
+    and to back off; a 503 says IRIS is down and to wait it out; a 404 says the
+    station is wrong and will never succeed. Those want opposite responses, and
+    an outage that cannot be classified after the fact is one nobody can rule
+    on. 2026-08-30 lost 01:30-03:00 across all 281 stations to 2500 of these,
+    and the journal cannot say which kind it was.
+    """
+    code = getattr(error, "code", None)
+    return f"{type(error).__name__} {code}" if code is not None else type(error).__name__
+
+
 def iris_time(text: str | None) -> int | None:
     """IRIS `YYMMDDHHMM` to epoch minutes, reading it as German wall clock.
 
@@ -464,7 +478,7 @@ class Collector:
         except Exception as error:  # network, HTTP, malformed XML
             journal.append({"t": "poll", "at": int(now), "eva": station.eva,
                             "tier": station.tier, "cohort": station.cohort,
-                            "ok": False, "err": type(error).__name__})
+                            "ok": False, "err": error_name(error)})
             return
 
         journal.append({"t": "poll", "at": int(now), "eva": station.eva,
@@ -503,7 +517,7 @@ class Collector:
                 payload = json.loads(body)
             except Exception as error:
                 journal.append({"t": "hafas", "at": int(now), "eva": station.eva,
-                                "ok": False, "err": type(error).__name__})
+                                "ok": False, "err": error_name(error)})
                 continue
             rows = []
             for row in (payload.get("departures") or [])[:10]:
