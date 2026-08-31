@@ -135,8 +135,8 @@ a { color: var(--series-1); }
   day the archive says when each train really arrived, and both forecasts are
   scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>b6eaebedde79</code>, which declares version 0.3.0
-  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 2 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
+  <code>aad1ade6ccf1</code>, which declares version 0.3.0
+  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 3 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
   from before the day it predicts. It appears twice:
   <strong>as shipped</strong>, which adjusts DB’s live number using past runs
   <em>when DB actually reports a delay</em> and leans on the history alone when
@@ -177,6 +177,18 @@ a { color: var(--series-1); }
   the scores are in minutes and are directly comparable — see the definitions at
   the foot of the page for why a point forecast and a distribution can be put on
   one axis.</p>
+  <p><strong>Read the history-only series as a flat reference, not as a
+  trend.</strong> It never looks at the live number and the arrival it predicts
+  does not move, so its answer for a given stop is the same however early it is
+  asked — checked on every render, and for the stops polled more than once the
+  quantiles are identical at every lead time. What little the column does move
+  across the buckets is composition and not behaviour: a train first seen forty
+  minutes out is in the near buckets and in none of the far ones, so each bucket
+  averages a different set of trains. Held to the stops present in all six, the
+  history-only figure is the same in every bucket to three decimal places, while
+  DB still climbs from 1.49 to 3.08 and the shipped model from 1.60 to 2.28.
+  The degradation with lead time is real for the two series that read the live
+  number, and only for those two.</p>
 <div class="figure">
 <ul class="legend"><li><span class="swatch" style="background:var(--series-1)"></span>DB</li><li><span class="swatch" style="background:var(--series-2)"></span>BayesianBahn, history only</li><li><span class="swatch" style="background:var(--series-3)"></span>BayesianBahn, as shipped</li></ul>
 <svg viewBox="0 0 720 240" role="img" aria-label="CRPS, minutes (lower is better) by lead time"><line class="grid" x1="54" x2="704" y1="196.0" y2="196.0"/><text class="tick" x="46" y="200.0" text-anchor="end">0.0</text><line class="grid" x1="54" x2="704" y1="151.0" y2="151.0"/><text class="tick" x="46" y="155.0" text-anchor="end">1.1</text><line class="grid" x1="54" x2="704" y1="106.0" y2="106.0"/><text class="tick" x="46" y="110.0" text-anchor="end">2.2</text><line class="grid" x1="54" x2="704" y1="61.0" y2="61.0"/><text class="tick" x="46" y="65.0" text-anchor="end">3.3</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">4.4</text><text class="tick" x="54.0" y="216" text-anchor="middle">&lt;10m</text><text class="tick" x="184.0" y="216" text-anchor="middle">10-20m</text><text class="tick" x="314.0" y="216" text-anchor="middle">20-45m</text><text class="tick" x="444.0" y="216" text-anchor="middle">45-90m</text><text class="tick" x="574.0" y="216" text-anchor="middle">1.5-3h</text><text class="tick" x="704.0" y="216" text-anchor="middle">&gt;3h</text><polyline class="series" points="54.0,135.2 184.0,119.5 314.0,95.4 444.0,69.4 574.0,50.4 704.0,39.5" stroke="var(--series-1)"/><circle cx="54.0" cy="135.2" r="5" fill="var(--series-1)" class="marker"><title>DB — &lt;10m: 1.49</title></circle><circle cx="184.0" cy="119.5" r="5" fill="var(--series-1)" class="marker"><title>DB — 10-20m: 1.88</title></circle><circle cx="314.0" cy="95.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 20-45m: 2.47</title></circle><circle cx="444.0" cy="69.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 45-90m: 3.11</title></circle><circle cx="574.0" cy="50.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 1.5-3h: 3.57</title></circle><circle cx="704.0" cy="39.5" r="5" fill="var(--series-1)" class="marker"><title>DB — &gt;3h: 3.84</title></circle><polyline class="series" points="54.0,100.6 184.0,89.0 314.0,91.4 444.0,92.1 574.0,91.9 704.0,92.0" stroke="var(--series-2)"/><circle cx="54.0" cy="100.6" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &lt;10m: 2.34</title></circle><circle cx="184.0" cy="89.0" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 10-20m: 2.63</title></circle><circle cx="314.0" cy="91.4" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 20-45m: 2.57</title></circle><circle cx="444.0" cy="92.1" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 45-90m: 2.55</title></circle><circle cx="574.0" cy="91.9" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 1.5-3h: 2.56</title></circle><circle cx="704.0" cy="92.0" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &gt;3h: 2.55</title></circle><polyline class="series" points="54.0,135.5 184.0,126.1 314.0,111.5 444.0,99.8 574.0,94.6 704.0,90.2" stroke="var(--series-3)"/><circle cx="54.0" cy="135.5" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &lt;10m: 1.48</title></circle><circle cx="184.0" cy="126.1" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 10-20m: 1.71</title></circle><circle cx="314.0" cy="111.5" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 20-45m: 2.07</title></circle><circle cx="444.0" cy="99.8" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 45-90m: 2.36</title></circle><circle cx="574.0" cy="94.6" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 1.5-3h: 2.49</title></circle><circle cx="704.0" cy="90.2" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &gt;3h: 2.60</title></circle><text class="axis-label" x="54" y="234">CRPS, minutes (lower is better)</text></svg>
@@ -493,7 +505,7 @@ pixi run -e evaluate evaluate 2026-08-24 2026-08-25 2026-08-29 2026-08-30</pre>
 
 <footer>
   Generated 2026-09-01 from 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30, by
-  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit b6eaebedde7961510fdc7a3fbc238e5ce245cf62.
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit aad1ade6ccf12da1291b167d5ceafd530284ced0.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
   piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>

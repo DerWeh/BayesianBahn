@@ -1245,3 +1245,42 @@ def test_a_station_outside_the_cohort_gets_no_stratum():
     """A cohort-1 report must not grow a line-kind table it cannot support."""
     rows = [arrival(cat="RE") | {"eva": "9999999"} for _ in range(3)]
     assert R.by_stratum(rows, rows, {"8000025": "high-mixed"}) == []
+
+
+def blind_row(*, num="1", planned=480, q10=-1.0, q50=1.0, q90=5.0, lead=30.0):
+    """A blinded arrival for one stop, as it looks at one polling round."""
+    return {"day": "2026-08-29", "eva": "8000001", "cat": "RE", "num": num,
+            "planned": planned, "planned_dep": planned, "lead": lead,
+            "read_at": wall_to_epoch(planned) - lead * 60,
+            "crps": 1.0, "db": 1, "truth": 1, "q10": q10, "q50": q50, "q90": q90}
+
+
+def test_a_blinded_forecast_that_moves_is_refused():
+    """If the blinded column varied with lead time the live signal is reaching it.
+
+    Every comparison on the page separates a variant that reads DB's live
+    number from one that cannot. Nothing else checks that the second really
+    cannot, and the failure is silent: the numbers stay plausible.
+    """
+    rows = [blind_row(lead=120.0, q50=1.0), blind_row(lead=5.0, q50=4.0)]
+    with pytest.raises(SystemExit, match="changes with lead time"):
+        R.check_blind_is_constant(rows)
+
+
+def test_a_stop_polled_many_times_passes_when_it_does_not_move():
+    rows = [blind_row(lead=lead) for lead in (200.0, 120.0, 30.0, 5.0)]
+    assert R.check_blind_is_constant(rows) == 1
+
+
+def test_the_check_reports_how_many_stops_it_saw():
+    """A run that silently checked nothing must not pass for a thorough one."""
+    rows = [blind_row(num=str(i), planned=480 + i) for i in range(5)]
+    assert R.check_blind_is_constant(rows) == 5
+    assert R.check_blind_is_constant([]) == 0
+
+
+def test_each_quantile_is_watched_not_only_the_median():
+    for field in ("q10", "q50", "q90"):
+        rows = [blind_row(lead=100.0), blind_row(lead=5.0, **{field: 99.0})]
+        with pytest.raises(SystemExit, match="changes with lead time"):
+            R.check_blind_is_constant(rows)
