@@ -1236,7 +1236,11 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         tiles.append(("tile flag", pct(missed["db_right"]),
                       "of missed connections DB called correctly"))
 
-    doc = [f"""<title>Forecasts against DB's own</title>
+    # Two cohorts produce two pages; one title on both makes them
+    # indistinguishable wherever they are listed side by side.
+    page_title = ("Forecasts by kind of line" if strata_rows
+                  else "Forecasts against DB's own")
+    doc = [f"""<title>{page_title}</title>
 <style>{STYLE}</style>
 <div class="wrap">
 <header>

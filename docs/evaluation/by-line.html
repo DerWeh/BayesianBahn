@@ -1,4 +1,4 @@
-<title>Forecasts against DB's own</title>
+<title>Forecasts by kind of line</title>
 <style>
 :root {
   color-scheme: light;
@@ -135,8 +135,8 @@ a { color: var(--series-1); }
   day the archive says when each train really arrived, and both forecasts are
   scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>4193a41dd708</code>, which declares version 0.3.0
-  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 5 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
+  <code>b6eaebedde79</code>, which declares version 0.3.0
+  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 2 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
   from before the day it predicts. It appears twice:
   <strong>as shipped</strong>, which adjusts DB’s live number using past runs
   <em>when DB actually reports a delay</em> and leans on the history alone when
@@ -493,7 +493,7 @@ pixi run -e evaluate evaluate 2026-08-24 2026-08-25 2026-08-29 2026-08-30</pre>
 
 <footer>
   Generated 2026-09-01 from 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30, by
-  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 4193a41dd7082b4301d2512a5dade8fa5348f1d8.
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit b6eaebedde7961510fdc7a3fbc238e5ce245cf62.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
   piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>
