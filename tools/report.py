@@ -349,6 +349,47 @@ def brier_gap(rows) -> tuple[float, float, float]:
                             - (pl.col("db_catch_p") - outcome) ** 2)
 
 
+# What identifies one journey across the two variants. `reference_id` is the
+# feeder run and `dest` the far end: one feeder serves several destinations, so
+# without `dest` the key collides for 2,199 journeys and an inner join fans them
+# out — which showed up as the two paired columns disagreeing on their own row
+# count. Verified unique on both variants over every scored day.
+JOURNEY_KEY = ("day", "eva", "num", "planned", "reference_id", "dest")
+
+
+def paired_journeys(live, blind):
+    """The journeys both variants answered, plus what each answered alone.
+
+    The two variants do not answer the same set, and nothing upstream made them.
+    A candidate with fewer than `CandidateBuilder.MIN_JOINT_RUNS` joint runs can
+    be carried by a live report and cannot be carried without one, so the shipped
+    model answers journeys the blinded one declines. Over the first eleven days
+    that is 2,250 journeys one way and 661 the other, and the two populations do
+    not resemble each other — the ones only the shipped model answers score 6.78
+    against 10.34 for the ones only the blinded model answers.
+
+    Scoring each over its own set and printing the two in one table compares
+    answers to different questions. It made the live number look worth 0.197
+    minutes of CRPS on this table where, over the journeys both answered, it is
+    worth 0.040. The arrival and connection tables need none of this: both
+    variants answer every one of those, and the row counts match exactly.
+
+    The coverage difference is a real property of the shipped model, so it is
+    returned to be stated as a count rather than folded into a score.
+    """
+    live, blind = as_frame(live), as_frame(blind)
+    if not live.height or not blind.height:
+        return live, blind, count(live), count(blind)
+    keys = [k for k in JOURNEY_KEY if k in live.columns and k in blind.columns]
+    if not keys:
+        raise SystemExit("journey rows carry none of " + ", ".join(JOURNEY_KEY)
+                         + "; the two variants cannot be paired")
+    shared = live.select(keys).join(blind.select(keys), on=keys, how="inner").unique()
+    return (live.join(shared, on=keys, how="inner"),
+            blind.join(shared, on=keys, how="inner"),
+            count(live), count(blind))
+
+
 def headline(live, blind, conn_live, conn_blind,
              journey_live=(), journey_blind=()) -> list[dict]:
     """The comparisons against DB, each with the uncertainty that decides it.
@@ -372,11 +413,14 @@ def headline(live, blind, conn_live, conn_blind,
     # Only once the far end is being polled, which is a later start than the
     # rest of this page: a row of zeros would read as a result.
     if count(journey_blind):
+        # Over the journeys both answered, so the two rows may be read against
+        # each other as well as against DB.
+        pj_live, pj_blind, _, _ = paired_journeys(journey_live, journey_blind)
         rows += [
             ("Journey with a change, as shipped", "CRPS, minutes",
-             count(journey_live), crps_gap(journey_live)),
+             count(pj_live), crps_gap(pj_live)),
             ("Journey with a change, history only", "CRPS, minutes",
-             count(journey_blind), crps_gap(journey_blind)),
+             count(pj_blind), crps_gap(pj_blind)),
         ]
     out = []
     for what, unit, n, (point, lo, hi) in rows:
@@ -402,7 +446,11 @@ def journeys_table(live, blind) -> list[dict]:
     time for the same reason the arrivals are — it is the axis a passenger can
     act on.
     """
-    live, blind = with_lead(as_frame(live)), with_lead(as_frame(blind))
+    # Paired first: the two variants do not answer the same journeys, and
+    # measuring each over its own set puts answers to different questions side
+    # by side in one row. See paired_journeys.
+    live, blind, _, _ = paired_journeys(live, blind)
+    live, blind = with_lead(live), with_lead(blind)
     if not blind.height:
         return []
     rows = []
@@ -1011,7 +1059,8 @@ def weekday_caveat(days: list[str]) -> str:
 
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
-           gaps=(), daily=(), clock=(), spread=(), week=(), journeys=()) -> None:
+           gaps=(), daily=(), clock=(), spread=(), week=(), journeys=(),
+           journey_coverage=None) -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -1315,6 +1364,25 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
     if journeys:
         totals_j = {k: sum(r[k] * r["n"] for r in journeys) / sum(r["n"] for r in journeys)
                     for k in ("candidates", "miss_p", "beyond")}
+        # The two variants do not answer the same journeys, so this table is
+        # measured over the ones both answered. The difference is a real
+        # property of the shipped model and is stated rather than absorbed.
+        coverage_note = ""
+        if journey_coverage:
+            live_n, blind_n, shared_n = journey_coverage
+            if live_n != blind_n or shared_n != live_n:
+                coverage_note = f"""
+  <p><strong>The table is measured over the journeys both variants
+  answered.</strong> They do not answer the same set: a connecting train with
+  too little shared history can be carried by a live report and cannot be
+  carried without one, so the shipped model answers
+  {live_n:,} journeys against the blinded model's
+  {blind_n:,}, and {shared_n:,} are answered by both.
+  Measuring each over its own set would put answers to different questions in
+  one row — it made the live number look worth four times what it is worth on
+  the journeys both answered. Answering more journeys is a real advantage of
+  the shipped model, but it is a difference in coverage and is counted here
+  rather than folded into a score.</p>"""
         doc.append(f"""
 <section>
   <h2>Journeys with a change, end to end</h2>
@@ -1343,7 +1411,7 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   discarding a third of the evidence.</p>
   <p>This is the newest part of the page and rests on the fewest days: the far
   end of a change only began being polled once the second tier existed, so this
-  table starts later than every other one here.</p>""")
+  table starts later than every other one here.</p>{coverage_note}""")
         doc.append(table(journeys, [
             ("bucket", "Before departure", lambda r: html.escape(r["bucket"])),
             ("n", "Journeys", lambda r: f"{r['n']:,}"),
@@ -1588,6 +1656,8 @@ def main() -> None:
            gaps=headline(live, blind, conn_live, conn_blind,
                          journey_live, journey_blind),
            journeys=journeys_table(journey_live, journey_blind),
+           journey_coverage=(count(journey_live), count(journey_blind),
+                             count(paired_journeys(journey_live, journey_blind)[0])),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
            clock=hourly(live), spread=error_spread(live),
            week=week_split(live, blind, conn_live, conn_blind))

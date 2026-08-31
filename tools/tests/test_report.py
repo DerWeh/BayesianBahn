@@ -21,6 +21,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+ROOT = Path(__file__).resolve().parents[2]
+
 import report as R  # noqa: E402
 from score_events import wall_to_epoch  # noqa: E402
 
@@ -1067,3 +1069,100 @@ def test_an_event_with_no_time_at_all_stops_the_run():
     rows = [{**arrival(), "planned_dep": None, "planned": None}]
     with pytest.raises(SystemExit, match="nothing to measure a lead from"):
         R.with_lead(rows)
+
+
+def journey_row(**over):
+    """One scored two-leg journey, with the fields the pairing keys on."""
+    row = {"day": "2026-08-24", "eva": "8000001", "cat": "RE", "num": "100",
+           "planned": 29800000,
+           "reference_id": "ref-1", "planned_dep": 29800000, "read_at": 1787000000.0,
+           "lead": 30.0, "crps": 1.0, "db": 5.0, "truth": 5.0, "q10": 0.0, "q90": 9.0,
+           "candidates": 5.0, "miss_p": 0.0, "beyond_list": False}
+    row.update(over)
+    return row
+
+
+def test_journeys_are_paired_before_they_are_compared():
+    """The two variants do not answer the same journeys.
+
+    A connecting train with too little shared history can be carried by a live
+    report and not without one, so the shipped model answers journeys the
+    blinded one declines. Measuring each over its own set puts answers to
+    different questions in one row.
+    """
+    shared = [journey_row(reference_id=f"s{i}", crps=1.0) for i in range(4)]
+    live = shared + [journey_row(reference_id="live-only", crps=99.0)]
+    blind = shared + [journey_row(reference_id="blind-only", crps=0.01)]
+    pl_, pb_, n_live, n_blind = R.paired_journeys(live, blind)
+    assert (n_live, n_blind) == (5, 5)
+    assert pl_.height == pb_.height == 4
+    assert "live-only" not in pl_["reference_id"].to_list()
+    assert "blind-only" not in pb_["reference_id"].to_list()
+
+
+def test_the_unpaired_rows_never_reach_a_score():
+    """The regression: an outlier only one variant answered moved its column."""
+    shared = [journey_row(reference_id=f"s{i}", crps=1.0, db=5.0, truth=5.0)
+              for i in range(20)]
+    live = shared + [journey_row(reference_id="only", crps=500.0, db=5.0, truth=5.0)]
+    rows = R.journeys_table(live, shared)
+    assert rows, "the table should still be produced"
+    assert rows[0]["live"] == pytest.approx(1.0), (
+        "a journey the blinded variant never answered must not move the "
+        "shipped column"
+    )
+    assert rows[0]["n"] == 20
+
+
+def test_the_headline_journey_rows_use_the_shared_set():
+    shared = [journey_row(reference_id=f"s{i}") for i in range(6)]
+    live = shared + [journey_row(reference_id="only", crps=99.0)]
+    arrivals = [arrival() for _ in range(3)]
+    # One missed, or only_missed() hands brier_gap an empty frame.
+    conns = [connection() for _ in range(3)] + [connection(caught=False)]
+    gaps = R.headline(arrivals, arrivals, conns, conns,
+                      journey_live=live, journey_blind=shared)
+    journey_rows = [g for g in gaps if "Journey with a change" in g["what"]]
+    assert len(journey_rows) == 2
+    assert {g["n"] for g in journey_rows} == {6}, (
+        "both journey rows must be counted over the journeys both answered"
+    )
+
+
+def test_arrivals_are_left_alone():
+    """Arrivals and connections are already paired; pairing them again would
+    silently drop rows if a key were ever missing from those files."""
+    src = (ROOT / "tools" / "report.py").read_text(encoding="utf-8")
+    body = src[src.index("def arrivals_table"):src.index("def connections_table")]
+    assert "paired_journeys" not in body
+
+
+def test_pairing_needs_a_key_it_can_use():
+    """Silently pairing on nothing would return an empty table, not an error."""
+    rows = [{"crps": 1.0, "db": 1.0, "truth": 1.0}]
+    with pytest.raises(SystemExit, match="cannot be paired"):
+        R.paired_journeys(rows, rows)
+
+
+def test_pairing_returns_the_same_number_of_rows_on_both_sides():
+    """A key that is not unique fans the inner join out instead of pairing.
+
+    `reference_id` names the feeder run, and one feeder serves several
+    destinations, so without `dest` 2,199 journeys collided and the two paired
+    columns came back with different row counts — which is the visible symptom
+    of comparing something other than one journey against itself.
+    """
+    live = [journey_row(reference_id="feeder", dest="A"),
+            journey_row(reference_id="feeder", dest="B"),
+            journey_row(reference_id="feeder", dest="C")]
+    blind = [journey_row(reference_id="feeder", dest="A"),
+             journey_row(reference_id="feeder", dest="B")]
+    pl_, pb_, _, _ = R.paired_journeys(live, blind)
+    assert pl_.height == pb_.height == 2
+    assert sorted(pl_["dest"].to_list()) == ["A", "B"]
+
+
+def test_the_journey_key_distinguishes_the_far_end():
+    """Without `dest` the key is not a journey, it is a feeder."""
+    assert "dest" in R.JOURNEY_KEY
+    assert "reference_id" in R.JOURNEY_KEY
