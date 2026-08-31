@@ -131,13 +131,12 @@ a { color: var(--series-1); }
 
 <section>
   <h2>What was measured</h2>
-  <p>Every ten minutes, DB’s own forecast was recorded for twenty stations chosen
-  in advance across the whole network — six major hubs down to three village
-  halts. The next day the archive says when each train really arrived, and both
-  forecasts are scored against that.</p>
+  <p>Every ten minutes, DB’s own forecast was recorded for twenty stations chosen in advance across the whole network — six major hubs down to three village halts. The next
+  day the archive says when each train really arrived, and both forecasts are
+  scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>01626abfd725</code>, which declares version 0.3.0
-  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 2 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
+  <code>4193a41dd708</code>, which declares version 0.3.0
+  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 5 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
   from before the day it predicts. It appears twice:
   <strong>as shipped</strong>, which adjusts DB’s live number using past runs
   <em>when DB actually reports a delay</em> and leans on the history alone when
@@ -322,6 +321,28 @@ a { color: var(--series-1); }
 </section>
 
 <section>
+  <h2>Which kinds of train, and which kinds of line</h2>
+  <p>Everything above pools every train at every sampled station. The model
+  does not treat them alike: it carries a separate prior per class of train —
+  a mean of 4.0 minutes for long distance against 1.0 for an S-Bahn — so the
+  classes are the axis those constants were chosen on, and splitting by them
+  is the only way to see whether each one earns its value. Lower is better;
+  the gap is BayesianBahn's score minus DB's, with the interval that decides
+  it.</p>
+<div class="scroll"><table><thead><tr><th>Kind of train</th><th>Predictions</th><th>DB</th><th>History only</th><th>As shipped</th><th>Ours - DB</th><th>95% interval</th><th>80% range</th></tr></thead><tbody><tr><td>Long distance</td><td>1,753</td><td>6.61</td><td>6.95</td><td>6.06</td><td>-0.557</td><td>-1.257 to 0.196</td><td>80%</td></tr><tr><td>Regional</td><td>70,789</td><td>3.63</td><td>3.03</td><td>2.75</td><td>-0.878</td><td>-0.939 to -0.820</td><td>79%</td></tr><tr><td>Bus (regional prior)</td><td>33,826</td><td>4.64</td><td>4.59</td><td>4.16</td><td>-0.480</td><td>-0.549 to -0.415</td><td>79%</td></tr><tr><td>S-Bahn</td><td>91,877</td><td>1.37</td><td>1.15</td><td>1.09</td><td>-0.280</td><td>-0.309 to -0.254</td><td>90%</td></tr></tbody></table></div>
+
+  <p>A category that is neither long distance nor one of the named regional
+  ones still falls through to the regional prior, because that is what
+  <code>TrainClass.fromCategory</code> does with anything beginning with a
+  letter. Replacement buses reach it that way, and they are a third of every
+  regional prediction here. They are not trains — they do not share the
+  tracks and are not held by the same signals — and they score about half a
+  minute worse than the regional trains they were pooled with, so they are
+  given their own row. The model is unchanged: the row name says which prior
+  they were scored under.</p>
+</section>
+
+<section>
   <h2>Working days and the weekend</h2>
   <p>The two are different networks to forecast. DB’s own mean error is
   3.15 minutes from Monday to Friday against
@@ -461,7 +482,7 @@ pixi run -e evaluate evaluate 2026-08-17 2026-08-18 2026-08-19 2026-08-20 2026-0
 
 <footer>
   Generated 2026-09-01 from 2026-08-17, 2026-08-18, 2026-08-19, 2026-08-20, 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30, by
-  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 01626abfd7251bbb1222507821e9eb36b582b2dd.
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 4193a41dd7082b4301d2512a5dade8fa5348f1d8.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
   piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>

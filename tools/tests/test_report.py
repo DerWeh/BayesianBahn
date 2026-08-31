@@ -1166,3 +1166,82 @@ def test_the_journey_key_distinguishes_the_far_end():
     """Without `dest` the key is not a journey, it is a feeder."""
     assert "dest" in R.JOURNEY_KEY
     assert "reference_id" in R.JOURNEY_KEY
+
+
+DELAY_MODEL = (ROOT / "app" / "src" / "main" / "java" / "io" / "github"
+               / "derweh" / "bayesianbahn" / "model" / "DelayModel.kt")
+
+
+def kotlin_sets() -> list[set[str]]:
+    """Every setOf(...) inside TrainClass, in source order.
+
+    The first is LONG_DISTANCE_CATEGORIES, the second the inline regional list.
+    Matched to the closing paren rather than the first one, because the branch
+    between them contains `category.uppercase()`.
+    """
+    src = DELAY_MODEL.read_text(encoding="utf-8")
+    start = src.index("enum class TrainClass")
+    body = src[start:src.index("fun fromCategory", start)
+               + src[src.index("fun fromCategory", start):].index("\n        }")]
+    out = []
+    for m in re.finditer(r"setOf\(", body):
+        depth, i = 1, m.end()
+        while depth:
+            depth += {"(": 1, ")": -1}.get(body[i], 0)
+            i += 1
+        out.append(set(re.findall(r'"([A-Za-z]+)"', body[m.end():i - 1])))
+    return out
+
+
+def test_the_train_classes_still_match_the_shipping_model():
+    """A mirror that stops matching still produces a plausible-looking table.
+
+    The model keeps a different prior per class, so this grouping is the axis
+    those constants were chosen on. If DelayModel.kt gains a category and this
+    does not, the table silently scores it under the wrong prior's heading.
+    """
+    long_distance, regional = kotlin_sets()[:2]
+    assert long_distance == set(R.LONG_DISTANCE_CATEGORIES)
+    assert regional == {c.upper() for c in R.REGIONAL_CATEGORIES}
+
+
+def test_anything_lettered_falls_through_to_regional():
+    """Mirrors the final branch: a letter-initial category is REGIONAL."""
+    for cat in ("NX", "ENO", "vlx", "HLB", "Bus"):
+        assert R.train_class(cat) == "Regional", cat
+    assert R.train_class("") == "Other"
+    assert R.train_class(None) == "Other"
+    assert R.train_class("7") == "Other"
+
+
+def test_the_bus_split_is_the_report_only():
+    """The model gives a bus the regional prior; only the table separates them.
+
+    Splitting in train_class would make the mirror lie about the model.
+    """
+    assert R.train_class("Bus") == "Regional"
+    assert R.report_class("Bus") == "Bus (regional prior)"
+    assert R.report_class("RE") == "Regional"
+    assert "regional prior" in R.report_class("Bus"), (
+        "the row must name the prior the bus was actually scored under"
+    )
+
+
+def test_a_class_with_no_rows_is_left_out_rather_than_zeroed():
+    rows = R.by_train_class([arrival(cat="S")], [arrival(cat="S")])
+    assert [r["label"] for r in rows] == ["S-Bahn"]
+
+
+def test_strata_are_read_from_the_cohort_file(tmp_path):
+    f = tmp_path / "c.csv"
+    f.write_text("# a comment\neva;name;calls;peak_segment;long_distance_share;degree;stratum\n"
+                 "8000025;Bamberg;334;95;0.084;13;high-mixed\n"
+                 "8000110;Freudenstadt Hbf;135;41;0.000;4;low-regional\n",
+                 encoding="utf-8")
+    assert R.read_strata(f) == {"8000025": "high-mixed", "8000110": "low-regional"}
+
+
+def test_a_station_outside_the_cohort_gets_no_stratum():
+    """A cohort-1 report must not grow a line-kind table it cannot support."""
+    rows = [arrival(cat="RE") | {"eva": "9999999"} for _ in range(3)]
+    assert R.by_stratum(rows, rows, {"8000025": "high-mixed"}) == []

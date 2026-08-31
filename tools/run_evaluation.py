@@ -100,6 +100,12 @@ def score_day(day: str, scored: Path, station_list: str,
     suffix = [] if cohort == 1 else ["--cohort", str(cohort)]
     ends = TOOLS / ("forecast_destinations.csv" if cohort == 1
                     else f"forecast_destinations_cohort{cohort}.csv")
+    # score_events.py defaults --stations to the first cohort's file, and it is
+    # what load_truth is keyed on. Passing --cohort without it built every
+    # cohort-2 connection against cohort-1 truth, found none, and wrote an empty
+    # file — 18,213 connections a day reported as zero, with no error anywhere.
+    origins = TOOLS / ("forecast_stations.csv" if cohort == 1
+                       else f"forecast_stations_cohort{cohort}.csv")
     truth_dir = out / "truthdir"
 
     # The archive fetch is the slow, network-bound stage and its output never
@@ -119,15 +125,18 @@ def score_day(day: str, scored: Path, station_list: str,
     print(f"== {day}: building events")
     run(python("tools/score_events.py", "events", "--day", day, "--truth", "archive",
                "--data-dir", str(truth_dir), *suffix,
+               "--stations", str(origins),
                "--events-out", str(out / "arrivals.jsonl")))
     run(python("tools/score_events.py", "connections", "--day", day,
                "--data-dir", str(truth_dir), *suffix,
+               "--stations", str(origins),
                "--events-out", str(out / "connections.jsonl")))
     # Two-leg journeys need a forecast at the far end, which only exists from
     # the day the second tier started being polled. Before that the builder
     # produces nothing, which is the honest outcome and not an error.
     run(python("tools/score_events.py", "journeys", "--day", day,
                "--data-dir", str(truth_dir), *suffix,
+               "--stations", str(origins),
                "--destinations", str(ends),
                "--events-out", str(out / "journeys.jsonl")))
 
@@ -180,7 +189,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("days", nargs="+", help="YYYY-MM-DD, one per collected day")
-    ap.add_argument("--scored-dir", type=Path, default=TOOLS / ".scored")
+    # Resolved, not taken as given: the harness runs under gradle, whose working
+    # directory is app/, so a relative path here lands somewhere nobody meant.
+    # The default is absolute and hid this until the first --scored-dir was
+    # passed by hand, and then it surfaced as the JVM failing to create a file.
+    ap.add_argument("--scored-dir", type=Path, default=TOOLS / ".scored",
+                    help="where the scored events and the report are written")
     ap.add_argument("--skip-report", action="store_true")
     ap.add_argument("--cohort", type=int, default=1,
                     help="which registered group of origins to score")
@@ -191,6 +205,7 @@ def main() -> None:
     ap.add_argument("--publish-to", type=Path,
                     default=ROOT / "docs/evaluation/index.html")
     args = ap.parse_args()
+    args.scored_dir = args.scored_dir.resolve()
 
     station_list = stations(TOOLS / "forecast_stations.csv",
                             TOOLS / "forecast_destinations.csv",

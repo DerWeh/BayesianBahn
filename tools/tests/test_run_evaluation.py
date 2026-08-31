@@ -282,3 +282,50 @@ def test_a_run_with_nothing_scoreable_stops(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as excinfo:
         re_.main()
     assert "no day could be scored" in str(excinfo.value)
+
+
+def test_the_scored_dir_is_made_absolute(tmp_path, monkeypatch):
+    """The harness runs under gradle, whose cwd is app/, not the repo root.
+
+    A relative --scored-dir therefore had the JVM write beside app/, where it
+    failed outright with FileNotFoundException. The default is absolute, which
+    is why this only appeared the first time one was passed by hand.
+    """
+    monkeypatch.setattr(re_, "score_day", lambda *a, **k: True)
+    seen = {}
+    monkeypatch.setattr(re_, "run", lambda cmd, env=None, allow=(): seen.setdefault("cmd", cmd) or 0)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "rel").mkdir()
+    monkeypatch.setattr(sys, "argv", ["run_evaluation.py", "2026-08-24",
+                                      "--scored-dir", "rel"])
+    re_.main()
+    passed = seen["cmd"][seen["cmd"].index("--scored-dir") + 1]
+    assert Path(passed).is_absolute(), f"{passed} is relative"
+
+
+def test_every_builder_gets_the_cohort_its_own_stations(tmp_path, monkeypatch):
+    """score_events defaults --stations to cohort 1, and load_truth keys on it.
+
+    Passing --cohort 2 without it built every cohort-2 connection against
+    cohort-1 truth, matched none, and wrote an empty file. 18,213 connections
+    on a single day were reported as zero, and nothing failed.
+    """
+    calls, _ = stub_run(monkeypatch, "2026-08-30", tmp_path, journeys='{"a":1}\n')
+    re_.score_day("2026-08-30", tmp_path, "8000001", cohort=2)
+    builders = [c for c in calls if "tools/score_events.py" in " ".join(c)]
+    assert len(builders) == 3, "events, connections and journeys"
+    for cmd in builders:
+        joined = " ".join(cmd)
+        assert "--stations" in cmd, f"no --stations in {joined}"
+        stations = cmd[cmd.index("--stations") + 1]
+        assert stations.endswith("forecast_stations_cohort2.csv"), stations
+        assert "--cohort" in cmd and cmd[cmd.index("--cohort") + 1] == "2"
+
+
+def test_the_first_cohort_still_gets_its_own_file(tmp_path, monkeypatch):
+    calls, _ = stub_run(monkeypatch, "2026-08-30", tmp_path, journeys='{"a":1}\n')
+    re_.score_day("2026-08-30", tmp_path, "8000001")
+    for cmd in (c for c in calls if "tools/score_events.py" in " ".join(c)):
+        stations = cmd[cmd.index("--stations") + 1]
+        assert stations.endswith("forecast_stations.csv"), stations
+        assert "--cohort" not in cmd

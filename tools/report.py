@@ -390,6 +390,127 @@ def paired_journeys(live, blind):
             count(live), count(blind))
 
 
+# TrainClass.fromCategory in DelayModel.kt, mirrored. The model keeps a
+# *different prior* per class — mu0 4.0 for long distance against 1.0 for
+# S-Bahn — so this is not a cosmetic grouping: it is the axis those constants
+# were chosen on, and the only way to see whether each one earns its value.
+# A test parses the Kotlin and fails if the two drift, because a mirror that
+# quietly stops matching still produces a plausible-looking table.
+LONG_DISTANCE_CATEGORIES = frozenset({
+    "ICE", "IC", "EC", "ECE", "RJ", "RJX", "NJ", "EN", "FLX", "TGV", "D", "IR", "WB",
+})
+REGIONAL_CATEGORIES = frozenset({"RE", "RB", "IRE", "MEX", "TER", "BRB", "AG"})
+CLASS_ORDER = ("Long distance", "Regional", "Bus (regional prior)", "S-Bahn",
+               "Other")
+
+
+def train_class(category: str | None) -> str:
+    """Which prior the model reaches for. Mirrors TrainClass.fromCategory."""
+    if not category or not category.strip():
+        return "Other"
+    upper = category.upper()
+    if upper in LONG_DISTANCE_CATEGORIES:
+        return "Long distance"
+    if upper == "S":
+        return "S-Bahn"
+    if upper in REGIONAL_CATEGORIES or category[0].isalpha():
+        return "Regional"
+    return "Other"
+
+
+def report_class(category: str | None) -> str:
+    """The class for the table, which splits buses out of the model's grouping.
+
+    `train_class` is a faithful mirror and puts a replacement bus in REGIONAL,
+    because anything beginning with a letter falls through to it. That is what
+    the model does and the mirror must keep saying so. It is also a third of
+    every regional prediction here, and buses are not trains: they do not share
+    the tracks, they are not held by the same signals, and they score 4.16
+    against 2.75 for the regional trains they sit beside. Folded together the
+    row says neither number. Split here and only here — the model is unchanged
+    and the column header says which prior they were scored under.
+    """
+    kind = train_class(category)
+    if kind == "Regional" and (category or "").strip().lower() == "bus":
+        return "Bus (regional prior)"
+    return kind
+
+
+def grouped(live, blind, column: str, order) -> list[dict]:
+    """One row per group: DB, both variants, the gap that decides it.
+
+    Blind carries the shared columns because it is the smaller frame wherever
+    the two differ; `live` is read only for its own two numbers.
+    """
+    live, blind = as_frame(live), as_frame(blind)
+    if not blind.height or column not in blind.columns:
+        return []
+    rows = []
+    for label in order:
+        part_b = blind.filter(pl.col(column) == label)
+        part_l = live.filter(pl.col(column) == label)
+        if not part_b.height or not part_l.height:
+            continue
+        point, lo, hi = crps_gap(part_l)
+        stats = part_b.select(
+            (pl.col("db") - pl.col("truth")).abs().mean().alias("db"),
+            pl.col("crps").mean().alias("blind"),
+            COVERED.mean().alias("blind_cover"),
+        ).to_dicts()[0]
+        rows.append({
+            "label": label, "n": part_b.height, **stats,
+            **part_l.select(pl.col("crps").mean().alias("live"),
+                            COVERED.mean().alias("live_cover")).to_dicts()[0],
+            "gap": point, "lo": lo, "hi": hi,
+            "verdict": "BayesianBahn lower" if hi < 0 else
+                       ("DB lower" if lo > 0 else "not separated"),
+        })
+    return rows
+
+
+def by_train_class(live, blind) -> list[dict]:
+    """How the advantage splits across the kinds of train the model priors on."""
+    add = pl.col("cat").map_elements(report_class, return_dtype=pl.String).alias("_class")
+    live, blind = as_frame(live), as_frame(blind)
+    if not blind.height or "cat" not in blind.columns:
+        return []
+    return grouped(live.with_columns(add), blind.with_columns(add),
+                   "_class", CLASS_ORDER)
+
+
+def read_strata(path: Path) -> dict[str, str]:
+    """eva -> stratum, from a cohort file that carries one.
+
+    The second cohort was sampled on this axis — busiest-segment traffic and
+    whether long-distance services call — so it is the only set where the cells
+    are filled by design rather than by whatever the sample happened to catch.
+    """
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("eva;"):
+            continue
+        parts = line.split(";")
+        if len(parts) >= 7:
+            out[parts[0]] = parts[6]
+    return out
+
+
+STRATUM_ORDER = ("low-regional", "low-mixed", "mid-regional", "mid-mixed",
+                 "high-regional", "high-mixed")
+
+
+def by_stratum(live, blind, strata: dict[str, str]) -> list[dict]:
+    """How the advantage splits by the kind of line the station sits on."""
+    live, blind = as_frame(live), as_frame(blind)
+    if not blind.height or not strata or "eva" not in blind.columns:
+        return []
+    add = pl.col("eva").cast(pl.String).replace_strict(
+        strata, default=None).alias("_stratum")
+    return grouped(live.with_columns(add), blind.with_columns(add),
+                   "_stratum", STRATUM_ORDER)
+
+
 def headline(live, blind, conn_live, conn_blind,
              journey_live=(), journey_blind=()) -> list[dict]:
     """The comparisons against DB, each with the uncertainty that decides it.
@@ -1060,7 +1181,9 @@ def weekday_caveat(days: list[str]) -> str:
 
 def render(days, arrivals, connections, split, totals, out: Path, *,
            gaps=(), daily=(), clock=(), spread=(), week=(), journeys=(),
-           journey_coverage=None) -> None:
+           journey_coverage=None, classes=(), strata_rows=(),
+           sampled="twenty stations chosen in advance across the whole network"
+                   " — six major hubs down to three village halts") -> None:
     span = ", ".join(days)
     cross = next((r["bucket"] for r in arrivals if r["blind"] < r["db"]), None)
     missed = next((r for r in split if "missed" in r["outcome"]), None)
@@ -1126,10 +1249,9 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
 
 <section>
   <h2>What was measured</h2>
-  <p>Every ten minutes, DB’s own forecast was recorded for twenty stations chosen
-  in advance across the whole network — six major hubs down to three village
-  halts. The next day the archive says when each train really arrived, and both
-  forecasts are scored against that.</p>
+  <p>Every ten minutes, DB’s own forecast was recorded for {sampled}. The next
+  day the archive says when each train really arrived, and both forecasts are
+  scored against that.</p>
   <p>The model is the app’s own prediction code at commit
   <code>{prov["short"]}</code>, which declares version {prov["version"]}
   (versionCode {prov["code"]}). {release_note} It is only ever shown history
@@ -1424,6 +1546,62 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
         ]))
         doc.append("</section>")
 
+    if classes or strata_rows:
+        doc.append("""
+<section>
+  <h2>Which kinds of train, and which kinds of line</h2>
+  <p>Everything above pools every train at every sampled station. The model
+  does not treat them alike: it carries a separate prior per class of train —
+  a mean of 4.0 minutes for long distance against 1.0 for an S-Bahn — so the
+  classes are the axis those constants were chosen on, and splitting by them
+  is the only way to see whether each one earns its value. Lower is better;
+  the gap is BayesianBahn's score minus DB's, with the interval that decides
+  it.</p>""")
+    if classes:
+        doc.append(table(classes, [
+            ("label", "Kind of train", lambda r: html.escape(r["label"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("db", "DB", lambda r: num(r["db"])),
+            ("blind", "History only", lambda r: num(r["blind"])),
+            ("live", "As shipped", lambda r: num(r["live"])),
+            ("gap", "Ours - DB", lambda r: num(r["gap"], 3)),
+            ("lo", "95% interval", lambda r: f"{num(r['lo'], 3)} to {num(r['hi'], 3)}"),
+            ("live_cover", "80% range", lambda r: pct(r["live_cover"])),
+        ]))
+        doc.append("""
+  <p>A category that is neither long distance nor one of the named regional
+  ones still falls through to the regional prior, because that is what
+  <code>TrainClass.fromCategory</code> does with anything beginning with a
+  letter. Replacement buses reach it that way, and they are a third of every
+  regional prediction here. They are not trains — they do not share the
+  tracks and are not held by the same signals — and they score about half a
+  minute worse than the regional trains they were pooled with, so they are
+  given their own row. The model is unchanged: the row name says which prior
+  they were scored under.</p>""")
+    if strata_rows:
+        doc.append("""
+  <h3>By the kind of line the station sits on</h3>
+  <p>The second cohort was sampled on this axis and no other: every station
+  with at least twenty calls a day was split by its busiest segment's traffic
+  and by whether long-distance services call there, then sampled equally per
+  cell. Equal allocation is what makes the cells comparable with each other,
+  and it is also why this is not a picture of the network as travelled — a
+  single-track branch carries as much weight here as a main corridor.
+  <em>regional</em> is a cell where no long-distance service calls;
+  <em>mixed</em> is one where long distance shares the tracks.</p>""")
+        doc.append(table(strata_rows, [
+            ("label", "Kind of line", lambda r: html.escape(r["label"])),
+            ("n", "Predictions", lambda r: f"{r['n']:,}"),
+            ("db", "DB", lambda r: num(r["db"])),
+            ("blind", "History only", lambda r: num(r["blind"])),
+            ("live", "As shipped", lambda r: num(r["live"])),
+            ("gap", "Ours - DB", lambda r: num(r["gap"], 3)),
+            ("lo", "95% interval", lambda r: f"{num(r['lo'], 3)} to {num(r['hi'], 3)}"),
+            ("live_cover", "80% range", lambda r: pct(r["live_cover"])),
+        ]))
+    if classes or strata_rows:
+        doc.append("</section>")
+
     if len(week) > 1:
         when = {"Monday to Friday": "from Monday to Friday",
                 "Saturday and Sunday": "at the weekend"}
@@ -1623,6 +1801,11 @@ def main() -> None:
     ap.add_argument("--scored-dir", type=Path, required=True)
     ap.add_argument("--days", nargs="+", required=True)
     ap.add_argument("--out", type=Path, required=True)
+    # Only a cohort file that carries a stratum column produces the line-kind
+    # table; a set sampled on another axis has nothing to say on this one.
+    ap.add_argument("--stations", type=Path,
+                    default=Path(__file__).parent / "forecast_stations_cohort2.csv",
+                    help="station file whose stratum column labels the lines")
     args = ap.parse_args()
 
     def collect(name: str) -> pl.DataFrame:
@@ -1649,6 +1832,12 @@ def main() -> None:
     if not blind.height:
         raise SystemExit(f"no scored arrivals under {args.scored_dir} for {args.days}")
 
+    # Empty unless the scored origins are the cohort this file describes, which
+    # is what keeps the line-kind table off a report that cannot support it.
+    strata = read_strata(args.stations) if args.stations.exists() else {}
+    strata_rows = by_stratum(live, blind, strata)
+    seen = set(live["eva"].cast(pl.String).unique()) if "eva" in live.columns else set()
+
     render(args.days, arrivals_table(live, blind),
            connections_table(conn_live, conn_blind),
            outcome_split(conn_live, conn_blind),
@@ -1658,6 +1847,20 @@ def main() -> None:
            journeys=journeys_table(journey_live, journey_blind),
            journey_coverage=(count(journey_live), count(journey_blind),
                              count(paired_journeys(journey_live, journey_blind)[0])),
+           classes=by_train_class(live, blind),
+           strata_rows=strata_rows,
+           # The set this page speaks for. Describing the first cohort on a
+           # page built from the second would be a false statement about the
+           # method: they were sampled on different axes, for different
+           # questions, and are never pooled.
+           sampled=(f"{len({e for e in strata if e in seen})} stations sampled "
+                    "by the kind of line they sit on — every station with at "
+                    "least twenty calls a day, split by its busiest segment's "
+                    "traffic and by whether long-distance services call there, "
+                    "then drawn equally from each of the six cells")
+                   if strata_rows else
+                   ("twenty stations chosen in advance across the whole network"
+                    " — six major hubs down to three village halts"),
            daily=per_day(args.days, live, blind, conn_live, conn_blind),
            clock=hourly(live), spread=error_spread(live),
            week=week_split(live, blind, conn_live, conn_blind))

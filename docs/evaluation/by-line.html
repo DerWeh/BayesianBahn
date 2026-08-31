@@ -1,0 +1,500 @@
+<title>Forecasts against DB's own</title>
+<style>
+:root {
+  color-scheme: light;
+  --ground:      #f6f7f9;
+  --panel:       #ffffff;
+  --ink:         #14181d;
+  --ink-2:       #545d6b;
+  --ink-3:       #79828f;
+  --rule:        #dfe3e9;
+  --rule-strong: #c3cad4;
+  --series-1:    #2a78d6;
+  --series-2:    #eb6834;
+  --series-3:    #1baf7a;
+  --flag:        #b4451f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --ground:      #14161a;
+    --panel:       #1b1e24;
+    --ink:         #eef1f5;
+    --ink-2:       #a7b0bd;
+    --ink-3:       #7e8895;
+    --rule:        #2a2f37;
+    --rule-strong: #3a414b;
+    --series-1:    #3987e5;
+    --series-2:    #d95926;
+    --series-3:    #199e70;
+    --flag:        #e08256;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground:      #14161a;
+  --panel:       #1b1e24;
+  --ink:         #eef1f5;
+  --ink-2:       #a7b0bd;
+  --ink-3:       #7e8895;
+  --rule:        #2a2f37;
+  --rule-strong: #3a414b;
+  --series-1:    #3987e5;
+  --series-2:    #d95926;
+  --series-3:    #199e70;
+  --flag:        #e08256;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+}
+.wrap { max-width: 60rem; margin: 0 auto; padding: 3.5rem 1.5rem 6rem; }
+header { border-bottom: 2px solid var(--rule-strong); padding-bottom: 1.75rem; }
+.eyebrow {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  font-size: .75rem; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--ink-3); margin: 0 0 .75rem;
+}
+h1 { font-size: 2.1rem; line-height: 1.15; letter-spacing: -.022em; margin: 0 0 .6rem;
+     text-wrap: balance; font-weight: 640; }
+h2 { font-size: 1.3rem; letter-spacing: -.014em; margin: 0 0 .3rem; font-weight: 620;
+     text-wrap: balance; }
+h3 { font-size: .95rem; letter-spacing: -.006em; margin: 0 0 .4rem; font-weight: 620; }
+p { margin: 0 0 1rem; max-width: 68ch; color: var(--ink-2); }
+p.lede { color: var(--ink); font-size: 1.06rem; }
+section { padding-top: 2.75rem; }
+section + section { border-top: 1px solid var(--rule); margin-top: 2.75rem; }
+.figure { background: var(--panel); border: 1px solid var(--rule);
+          border-radius: 10px; padding: 1.25rem 1.25rem .75rem; margin: 1.25rem 0; }
+.figure svg { width: 100%; height: auto; display: block; }
+.grid { stroke: var(--rule); stroke-width: 1; }
+.rule-line { stroke: var(--ink-3); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.rule-label, .tick, .axis-label {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.tick { font-size: 11px; fill: var(--ink-3); }
+.rule-label { font-size: 11px; fill: var(--ink-2); }
+.axis-label { font-size: 11px; fill: var(--ink-3); letter-spacing: .06em;
+              text-transform: uppercase; }
+.series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.marker { stroke: var(--panel); stroke-width: 2; }
+.legend { display: flex; flex-wrap: wrap; gap: 1.1rem; list-style: none;
+          padding: 0; margin: .35rem 0 1rem; font-size: .85rem; color: var(--ink-2); }
+.legend li { display: flex; align-items: center; gap: .45rem; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .85rem;
+        font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: .5rem .7rem; border-bottom: 1px solid var(--rule);
+         white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+thead th { color: var(--ink-3); font-weight: 600; font-size: .74rem;
+           letter-spacing: .07em; text-transform: uppercase; }
+td { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--ink); }
+td:first-child { font-family: inherit; color: var(--ink-2); }
+tbody tr:last-child td { border-bottom: none; }
+.tiles { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+         margin: 1.5rem 0; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px;
+        padding: 1rem 1.1rem; }
+.tile .k { font-family: ui-monospace, Menlo, monospace; font-size: 1.65rem;
+           font-variant-numeric: tabular-nums; letter-spacing: -.02em; display: block; }
+.tile .v { font-size: .8rem; color: var(--ink-2); display: block; margin-top: .25rem; }
+.tile.flag .k { color: var(--flag); }
+dl { margin: 0; display: grid; gap: 1rem; }
+dt { font-weight: 620; font-size: .92rem; }
+dd { margin: .15rem 0 0; color: var(--ink-2); max-width: 68ch; font-size: .92rem; }
+code, pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: .82rem; }
+pre { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px;
+      padding: 1rem 1.1rem; overflow-x: auto; color: var(--ink); line-height: 1.65; }
+.caveats li { color: var(--ink-2); margin-bottom: .5rem; max-width: 68ch; }
+footer { margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--rule);
+         color: var(--ink-3); font-size: .8rem; }
+a { color: var(--series-1); }
+:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<div class="wrap">
+<header>
+  <p class="eyebrow">BayesianBahn · evaluation · 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30</p>
+  <h1>Forecasts against DB’s own</h1>
+  <p class="lede">BayesianBahn’s arrival forecasts and DB’s, scored against what
+  the trains actually did. Sample sizes, method and the limits of each figure
+  are given alongside it.</p>
+</header>
+
+<section>
+  <h2>What was measured</h2>
+  <p>Every ten minutes, DB’s own forecast was recorded for 41 stations sampled by the kind of line they sit on — every station with at least twenty calls a day, split by its busiest segment's traffic and by whether long-distance services call there, then drawn equally from each of the six cells. The next
+  day the archive says when each train really arrived, and both forecasts are
+  scored against that.</p>
+  <p>The model is the app’s own prediction code at commit
+  <code>4193a41dd708</code>, which declares version 0.3.0
+  (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 5 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
+  from before the day it predicts. It appears twice:
+  <strong>as shipped</strong>, which adjusts DB’s live number using past runs
+  <em>when DB actually reports a delay</em> and leans on the history alone when
+  it does not, and <strong>history only</strong>, which never looks at the live
+  number at all.</p>
+  <p>Two kinds of answer are scored, and they correspond to the two kinds of
+  journey the app plans. For a journey without a change the answer is an arrival
+  time, scored as a distribution against the arrival that happened. For a journey
+  with one change the answer is the probability of making that change, scored
+  against whether it was made. The two use different scores and are not
+  comparable with each other; each is compared only with DB’s answer to the same
+  question. A third answer joins them below: the complete two-leg journey — the predicted arrival at the far end of a change, against the arrival that happened. It is in the same units as a direct journey, so those two <em>are</em> comparable with each other.</p>
+  <div class="tiles">
+<div class="tile"><span class="k">75,199</span><span class="v">arrival predictions scored</span></div>
+<div class="tile"><span class="k">72,806</span><span class="v">one-change connections scored</span></div>
+<div class="tile"><span class="k">history only</span><span class="v">scores below DB from 45-90m before departure</span></div>
+<div class="tile flag"><span class="k">17%</span><span class="v">of missed connections DB called correctly</span></div>
+</div>
+</section>
+
+<section>
+  <h2>The comparison, with its uncertainty</h2>
+  <p>Each row is BayesianBahn’s score minus DB’s over the same predictions, so
+  a <strong>negative number is the lower score for BayesianBahn</strong>, and
+  lower is better for both scores used here. The interval is what
+  decides it: delays arrive in clusters — one late train produces a dozen
+  correlated predictions — so the range comes from resampling whole trains, not
+  individual predictions. Where the interval crosses zero, the collected days
+  are not enough to claim anything, however suggestive the middle number
+  looks.</p>
+<div class="scroll"><table><thead><tr><th>Comparison</th><th>Predictions</th><th>Score</th><th>Ours − DB</th><th>95% interval</th><th>Reading</th></tr></thead><tbody><tr><td>Arrival time, as shipped</td><td>75,199</td><td>CRPS, minutes</td><td>-0.642</td><td>-0.682 to -0.601</td><td>BayesianBahn lower</td></tr><tr><td>Arrival time, history only</td><td>75,199</td><td>CRPS, minutes</td><td>-0.264</td><td>-0.321 to -0.196</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, as shipped</td><td>72,806</td><td>Brier</td><td>-0.007</td><td>-0.009 to -0.004</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, history only</td><td>72,806</td><td>Brier</td><td>-0.009</td><td>-0.012 to -0.006</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, as shipped</td><td>4,716</td><td>Brier</td><td>-0.267</td><td>-0.290 to -0.242</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, history only</td><td>4,716</td><td>Brier</td><td>-0.334</td><td>-0.370 to -0.300</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, as shipped</td><td>32,322</td><td>CRPS, minutes</td><td>-2.048</td><td>-2.233 to -1.860</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, history only</td><td>32,322</td><td>CRPS, minutes</td><td>-1.778</td><td>-1.991 to -1.565</td><td>BayesianBahn lower</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>How far ahead, and how wrong</h2>
+  <p>Lead time is counted back from the train’s <em>scheduled departure</em>,
+  because that is when a passenger can still act on the answer. Lower is better;
+  the scores are in minutes and are directly comparable — see the definitions at
+  the foot of the page for why a point forecast and a distribution can be put on
+  one axis.</p>
+<div class="figure">
+<ul class="legend"><li><span class="swatch" style="background:var(--series-1)"></span>DB</li><li><span class="swatch" style="background:var(--series-2)"></span>BayesianBahn, history only</li><li><span class="swatch" style="background:var(--series-3)"></span>BayesianBahn, as shipped</li></ul>
+<svg viewBox="0 0 720 240" role="img" aria-label="CRPS, minutes (lower is better) by lead time"><line class="grid" x1="54" x2="704" y1="196.0" y2="196.0"/><text class="tick" x="46" y="200.0" text-anchor="end">0.0</text><line class="grid" x1="54" x2="704" y1="151.0" y2="151.0"/><text class="tick" x="46" y="155.0" text-anchor="end">1.1</text><line class="grid" x1="54" x2="704" y1="106.0" y2="106.0"/><text class="tick" x="46" y="110.0" text-anchor="end">2.2</text><line class="grid" x1="54" x2="704" y1="61.0" y2="61.0"/><text class="tick" x="46" y="65.0" text-anchor="end">3.3</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">4.4</text><text class="tick" x="54.0" y="216" text-anchor="middle">&lt;10m</text><text class="tick" x="184.0" y="216" text-anchor="middle">10-20m</text><text class="tick" x="314.0" y="216" text-anchor="middle">20-45m</text><text class="tick" x="444.0" y="216" text-anchor="middle">45-90m</text><text class="tick" x="574.0" y="216" text-anchor="middle">1.5-3h</text><text class="tick" x="704.0" y="216" text-anchor="middle">&gt;3h</text><polyline class="series" points="54.0,135.2 184.0,119.5 314.0,95.4 444.0,69.4 574.0,50.4 704.0,39.5" stroke="var(--series-1)"/><circle cx="54.0" cy="135.2" r="5" fill="var(--series-1)" class="marker"><title>DB — &lt;10m: 1.49</title></circle><circle cx="184.0" cy="119.5" r="5" fill="var(--series-1)" class="marker"><title>DB — 10-20m: 1.88</title></circle><circle cx="314.0" cy="95.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 20-45m: 2.47</title></circle><circle cx="444.0" cy="69.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 45-90m: 3.11</title></circle><circle cx="574.0" cy="50.4" r="5" fill="var(--series-1)" class="marker"><title>DB — 1.5-3h: 3.57</title></circle><circle cx="704.0" cy="39.5" r="5" fill="var(--series-1)" class="marker"><title>DB — &gt;3h: 3.84</title></circle><polyline class="series" points="54.0,100.6 184.0,89.0 314.0,91.4 444.0,92.1 574.0,91.9 704.0,92.0" stroke="var(--series-2)"/><circle cx="54.0" cy="100.6" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &lt;10m: 2.34</title></circle><circle cx="184.0" cy="89.0" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 10-20m: 2.63</title></circle><circle cx="314.0" cy="91.4" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 20-45m: 2.57</title></circle><circle cx="444.0" cy="92.1" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 45-90m: 2.55</title></circle><circle cx="574.0" cy="91.9" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 1.5-3h: 2.56</title></circle><circle cx="704.0" cy="92.0" r="5" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &gt;3h: 2.55</title></circle><polyline class="series" points="54.0,135.5 184.0,126.1 314.0,111.5 444.0,99.8 574.0,94.6 704.0,90.2" stroke="var(--series-3)"/><circle cx="54.0" cy="135.5" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &lt;10m: 1.48</title></circle><circle cx="184.0" cy="126.1" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 10-20m: 1.71</title></circle><circle cx="314.0" cy="111.5" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 20-45m: 2.07</title></circle><circle cx="444.0" cy="99.8" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 45-90m: 2.36</title></circle><circle cx="574.0" cy="94.6" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 1.5-3h: 2.49</title></circle><circle cx="704.0" cy="90.2" r="5" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &gt;3h: 2.60</title></circle><text class="axis-label" x="54" y="234">CRPS, minutes (lower is better)</text></svg>
+</div>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Predictions</th><th>DB</th><th>History only</th><th>As shipped</th><th>DB bias</th><th>DB surprises</th></tr></thead><tbody><tr><td>&lt;10m</td><td>4,940</td><td>1.49</td><td>2.34</td><td>1.48</td><td>-1.04</td><td>5%</td></tr><tr><td>10-20m</td><td>12,429</td><td>1.88</td><td>2.63</td><td>1.71</td><td>-1.43</td><td>7%</td></tr><tr><td>20-45m</td><td>20,569</td><td>2.47</td><td>2.57</td><td>2.07</td><td>-2.08</td><td>11%</td></tr><tr><td>45-90m</td><td>12,798</td><td>3.11</td><td>2.55</td><td>2.36</td><td>-2.83</td><td>15%</td></tr><tr><td>1.5-3h</td><td>12,325</td><td>3.57</td><td>2.56</td><td>2.49</td><td>-3.36</td><td>17%</td></tr><tr><td>&gt;3h</td><td>12,138</td><td>3.84</td><td>2.55</td><td>2.60</td><td>-3.65</td><td>18%</td></tr></tbody></table></div>
+
+  <p><strong>The two variants cross over in this bucket.</strong> In the
+  <em>&gt;3h</em> bucket the shipped model scores
+  2.60 against history alone at 2.55 — leaning on
+  DB’s number makes the answer 0.04 minutes
+  worse there. That is the shape this model was changed to remove, so a
+  crossover appearing here means a reported delay is being believed in a range
+  where it should not be.</p>
+
+  <h3>How the errors are distributed</h3>
+  <p>The means above summarise a badly skewed distribution, and the two
+  forecasts differ in its upper tail rather than in its middle. That is worth
+  reading in full, because a forecast a minute out and one twenty minutes out
+  have very different consequences for a passenger.</p>
+  <p>One asymmetry has to be held in mind while reading the boxes. DB answers
+  with a single minute, so its error is a whole number of minutes and is
+  <em>exactly</em> zero — the train arrived in the minute DB named — for
+  34% of all predictions here. A distribution cannot score zero:
+  it always pays something for its own spread, however well placed it is. So
+  the <em>bottom</em> of the two boxes is not a like-for-like comparison and
+  should not be read as one; the medians and everything above them are. The
+  same asymmetry is why DB's median is exactly 1.00 minute in every bucket.</p>
+  <p>The last two columns of the table are the point. DB's score is the lower
+  one on slightly more than half of the individual predictions, and its mean is
+  higher all the same. Being closer more often and worse on average is what a
+  heavy tail looks like from the inside.</p>
+  <p>The box spans the middle half of the predictions, the ruled line across
+  it — overhanging on both sides, so it stays visible where it meets a box
+  edge — is the median, and the whiskers reach the 10th and 90th percentiles.
+  The worst tenth of each forecast therefore reaches past the whisker, and is
+  given exactly in the table below.</p>
+<div class="figure">
+<ul class="legend"><li><span class="swatch" style="background:var(--series-1)"></span>DB</li><li><span class="swatch" style="background:var(--series-3)"></span>BayesianBahn, as shipped</li></ul>
+<svg viewBox="0 0 720 300" role="img" aria-label="Error, minutes (lower is better)"><line class="grid" x1="54" x2="704" y1="256.0" y2="256.0"/><text class="tick" x="46" y="260.0" text-anchor="end">0.0</text><line class="grid" x1="54" x2="704" y1="196.0" y2="196.0"/><text class="tick" x="46" y="200.0" text-anchor="end">2.6</text><line class="grid" x1="54" x2="704" y1="136.0" y2="136.0"/><text class="tick" x="46" y="140.0" text-anchor="end">5.2</text><line class="grid" x1="54" x2="704" y1="76.0" y2="76.0"/><text class="tick" x="46" y="80.0" text-anchor="end">7.8</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">10.3</text><line x1="92.2" x2="92.2" y1="256.0" y2="186.4" stroke="var(--series-1)" stroke-width="2"/><line x1="84.7" x2="99.7" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="84.7" x2="99.7" y1="186.4" y2="186.4" stroke="var(--series-1)" stroke-width="2"/><rect x="77.2" y="232.8" width="30.0" height="23.2" rx="3" fill="var(--series-1)" class="marker"><title>DB — &lt;10m: median 1.00, p25-p75 0.00-1.00, p90 3.00, p99 20.00 min</title></rect><line x1="73.2" x2="111.2" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="124.2" x2="124.2" y1="253.3" y2="192.8" stroke="var(--series-3)" stroke-width="2"/><line x1="116.7" x2="131.7" y1="253.3" y2="253.3" stroke="var(--series-3)" stroke-width="2"/><line x1="116.7" x2="131.7" y1="192.8" y2="192.8" stroke="var(--series-3)" stroke-width="2"/><rect x="109.2" y="225.3" width="30.0" height="23.0" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &lt;10m: median 0.72, p25-p75 0.33-1.32, p90 2.73, p99 17.27 min</title></rect><line x1="105.2" x2="143.2" y1="239.4" y2="239.4" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="108.2" y="276" text-anchor="middle">&lt;10m</text><line x1="200.5" x2="200.5" y1="256.0" y2="163.2" stroke="var(--series-1)" stroke-width="2"/><line x1="193.0" x2="208.0" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="193.0" x2="208.0" y1="163.2" y2="163.2" stroke="var(--series-1)" stroke-width="2"/><rect x="185.5" y="209.6" width="30.0" height="46.4" rx="3" fill="var(--series-1)" class="marker"><title>DB — 10-20m: median 1.00, p25-p75 0.00-2.00, p90 4.00, p99 20.00 min</title></rect><line x1="181.5" x2="219.5" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="232.5" x2="232.5" y1="252.4" y2="179.8" stroke="var(--series-3)" stroke-width="2"/><line x1="225.0" x2="240.0" y1="252.4" y2="252.4" stroke="var(--series-3)" stroke-width="2"/><line x1="225.0" x2="240.0" y1="179.8" y2="179.8" stroke="var(--series-3)" stroke-width="2"/><rect x="217.5" y="219.9" width="30.0" height="27.4" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 10-20m: median 0.80, p25-p75 0.37-1.56, p90 3.29, p99 18.30 min</title></rect><line x1="213.5" x2="251.5" y1="237.4" y2="237.4" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="216.5" y="276" text-anchor="middle">10-20m</text><line x1="308.8" x2="308.8" y1="256.0" y2="116.9" stroke="var(--series-1)" stroke-width="2"/><line x1="301.3" x2="316.3" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="301.3" x2="316.3" y1="116.9" y2="116.9" stroke="var(--series-1)" stroke-width="2"/><rect x="293.8" y="209.6" width="30.0" height="46.4" rx="3" fill="var(--series-1)" class="marker"><title>DB — 20-45m: median 1.00, p25-p75 0.00-2.00, p90 6.00, p99 26.00 min</title></rect><line x1="289.8" x2="327.8" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="340.8" x2="340.8" y1="251.1" y2="161.7" stroke="var(--series-3)" stroke-width="2"/><line x1="333.3" x2="348.3" y1="251.1" y2="251.1" stroke="var(--series-3)" stroke-width="2"/><line x1="333.3" x2="348.3" y1="161.7" y2="161.7" stroke="var(--series-3)" stroke-width="2"/><rect x="325.8" y="213.1" width="30.0" height="32.1" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 20-45m: median 0.92, p25-p75 0.47-1.85, p90 4.07, p99 21.91 min</title></rect><line x1="321.8" x2="359.8" y1="234.7" y2="234.7" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="324.8" y="276" text-anchor="middle">20-45m</text><line x1="417.2" x2="417.2" y1="256.0" y2="70.5" stroke="var(--series-1)" stroke-width="2"/><line x1="409.7" x2="424.7" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="409.7" x2="424.7" y1="70.5" y2="70.5" stroke="var(--series-1)" stroke-width="2"/><rect x="402.2" y="186.4" width="30.0" height="69.6" rx="3" fill="var(--series-1)" class="marker"><title>DB — 45-90m: median 1.00, p25-p75 0.00-3.00, p90 8.00, p99 30.00 min</title></rect><line x1="398.2" x2="436.2" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="449.2" x2="449.2" y1="250.5" y2="145.0" stroke="var(--series-3)" stroke-width="2"/><line x1="441.7" x2="456.7" y1="250.5" y2="250.5" stroke="var(--series-3)" stroke-width="2"/><line x1="441.7" x2="456.7" y1="145.0" y2="145.0" stroke="var(--series-3)" stroke-width="2"/><rect x="434.2" y="209.9" width="30.0" height="34.3" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 45-90m: median 0.99, p25-p75 0.51-1.99, p90 4.79, p99 25.06 min</title></rect><line x1="430.2" x2="468.2" y1="233.1" y2="233.1" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="433.2" y="276" text-anchor="middle">45-90m</text><line x1="525.5" x2="525.5" y1="256.0" y2="47.3" stroke="var(--series-1)" stroke-width="2"/><line x1="518.0" x2="533.0" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="518.0" x2="533.0" y1="47.3" y2="47.3" stroke="var(--series-1)" stroke-width="2"/><rect x="510.5" y="163.2" width="30.0" height="92.8" rx="3" fill="var(--series-1)" class="marker"><title>DB — 1.5-3h: median 1.00, p25-p75 0.00-4.00, p90 9.00, p99 34.76 min</title></rect><line x1="506.5" x2="544.5" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="557.5" x2="557.5" y1="250.2" y2="144.0" stroke="var(--series-3)" stroke-width="2"/><line x1="550.0" x2="565.0" y1="250.2" y2="250.2" stroke="var(--series-3)" stroke-width="2"/><line x1="550.0" x2="565.0" y1="144.0" y2="144.0" stroke="var(--series-3)" stroke-width="2"/><rect x="542.5" y="210.2" width="30.0" height="33.4" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 1.5-3h: median 0.99, p25-p75 0.53-1.98, p90 4.83, p99 28.01 min</title></rect><line x1="538.5" x2="576.5" y1="233.1" y2="233.1" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="541.5" y="276" text-anchor="middle">1.5-3h</text><line x1="633.8" x2="633.8" y1="256.0" y2="47.3" stroke="var(--series-1)" stroke-width="2"/><line x1="626.3" x2="641.3" y1="256.0" y2="256.0" stroke="var(--series-1)" stroke-width="2"/><line x1="626.3" x2="641.3" y1="47.3" y2="47.3" stroke="var(--series-1)" stroke-width="2"/><rect x="618.8" y="163.2" width="30.0" height="92.8" rx="3" fill="var(--series-1)" class="marker"><title>DB — &gt;3h: median 1.00, p25-p75 0.00-4.00, p90 9.00, p99 39.63 min</title></rect><line x1="614.8" x2="652.8" y1="232.8" y2="232.8" stroke="var(--ink)" stroke-width="2"/><line x1="665.8" x2="665.8" y1="250.2" y2="141.8" stroke="var(--series-3)" stroke-width="2"/><line x1="658.3" x2="673.3" y1="250.2" y2="250.2" stroke="var(--series-3)" stroke-width="2"/><line x1="658.3" x2="673.3" y1="141.8" y2="141.8" stroke="var(--series-3)" stroke-width="2"/><rect x="650.8" y="209.5" width="30.0" height="34.1" rx="3" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &gt;3h: median 0.99, p25-p75 0.53-2.01, p90 4.93, p99 30.81 min</title></rect><line x1="646.8" x2="684.8" y1="233.1" y2="233.1" stroke="var(--ink)" stroke-width="2"/><text class="tick" x="649.8" y="276" text-anchor="middle">&gt;3h</text><text class="axis-label" x="54" y="294">Error, minutes (lower is better)</text></svg>
+</div>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Predictions</th><th>DB median</th><th>Our median</th><th>DB p90</th><th>Our p90</th><th>DB p99</th><th>Our p99</th><th>DB over 15 min</th><th>Ours over 15 min</th><th>DB lower on the prediction</th><th>DB mean</th><th>Our mean</th></tr></thead><tbody><tr><td>&lt;10m</td><td>4,940</td><td>1.00</td><td>0.72</td><td>3.00</td><td>2.73</td><td>20.00</td><td>17.27</td><td>1.4%</td><td>1.2%</td><td>56.3%</td><td>1.49</td><td>1.48</td></tr><tr><td>10-20m</td><td>12,429</td><td>1.00</td><td>0.80</td><td>4.00</td><td>3.29</td><td>20.00</td><td>18.30</td><td>1.5%</td><td>1.4%</td><td>49.6%</td><td>1.88</td><td>1.71</td></tr><tr><td>20-45m</td><td>20,569</td><td>1.00</td><td>0.92</td><td>6.00</td><td>4.07</td><td>26.00</td><td>21.91</td><td>2.2%</td><td>1.8%</td><td>44.6%</td><td>2.47</td><td>2.07</td></tr><tr><td>45-90m</td><td>12,798</td><td>1.00</td><td>0.99</td><td>8.00</td><td>4.79</td><td>30.00</td><td>25.06</td><td>3.6%</td><td>2.6%</td><td>40.7%</td><td>3.11</td><td>2.36</td></tr><tr><td>1.5-3h</td><td>12,325</td><td>1.00</td><td>0.99</td><td>9.00</td><td>4.83</td><td>34.76</td><td>28.01</td><td>4.5%</td><td>2.9%</td><td>39.1%</td><td>3.57</td><td>2.49</td></tr><tr><td>&gt;3h</td><td>12,138</td><td>1.00</td><td>0.99</td><td>9.00</td><td>4.93</td><td>39.63</td><td>30.81</td><td>5.1%</td><td>3.2%</td><td>38.6%</td><td>3.84</td><td>2.60</td></tr></tbody></table></div>
+
+  <p>The last two columns give the share of forecasts out by more than
+  15 minutes. Over 75,199 predictions, most of which are
+  uneventful, this is the part of the distribution a mean is least able to
+  convey.</p>
+</section>
+
+<section>
+  <h2>Does the 80% range hold?</h2>
+  <p>The app gives not only a time but a range stated to contain the true
+  arrival four times in five. That is checkable: count how often the real
+  arrival fell inside it. A bar at the dashed line matches the stated
+  probability; below it the range is narrower than the forecast’s accuracy
+  supports, and above it wider.</p>
+<div class="figure">
+<ul class="legend"><li><span class="swatch" style="background:var(--series-2)"></span>BayesianBahn, history only</li><li><span class="swatch" style="background:var(--series-3)"></span>BayesianBahn, as shipped</li></ul>
+<svg viewBox="0 0 720 240" role="img" aria-label="Share of arrivals inside the stated range"><line class="grid" x1="54" x2="704" y1="196.0" y2="196.0"/><text class="tick" x="46" y="200.0" text-anchor="end">0%</text><line class="grid" x1="54" x2="704" y1="151.0" y2="151.0"/><text class="tick" x="46" y="155.0" text-anchor="end">25%</text><line class="grid" x1="54" x2="704" y1="106.0" y2="106.0"/><text class="tick" x="46" y="110.0" text-anchor="end">50%</text><line class="grid" x1="54" x2="704" y1="61.0" y2="61.0"/><text class="tick" x="46" y="65.0" text-anchor="end">75%</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">100%</text><line class="rule-line" x1="54" x2="704" y1="52.0" y2="52.0"/><text class="rule-label" x="704" y="46.0" text-anchor="end">80% — what the app claims</text><rect x="73.2" y="36.3" width="34.0" height="159.7" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &lt;10m: 0.887</title></rect><rect x="109.2" y="50.8" width="34.0" height="145.2" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &lt;10m: 0.807</title></rect><text class="tick" x="108.2" y="216" text-anchor="middle">&lt;10m</text><rect x="181.5" y="37.9" width="34.0" height="158.1" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 10-20m: 0.878</title></rect><rect x="217.5" y="56.5" width="34.0" height="139.5" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 10-20m: 0.775</title></rect><text class="tick" x="216.5" y="216" text-anchor="middle">10-20m</text><rect x="289.8" y="37.9" width="34.0" height="158.1" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 20-45m: 0.878</title></rect><rect x="325.8" y="55.4" width="34.0" height="140.6" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 20-45m: 0.781</title></rect><text class="tick" x="324.8" y="216" text-anchor="middle">20-45m</text><rect x="398.2" y="37.6" width="34.0" height="158.4" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 45-90m: 0.880</title></rect><rect x="434.2" y="47.4" width="34.0" height="148.6" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 45-90m: 0.826</title></rect><text class="tick" x="433.2" y="216" text-anchor="middle">45-90m</text><rect x="506.5" y="37.6" width="34.0" height="158.4" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 1.5-3h: 0.880</title></rect><rect x="542.5" y="40.0" width="34.0" height="156.0" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 1.5-3h: 0.867</title></rect><text class="tick" x="541.5" y="216" text-anchor="middle">1.5-3h</text><rect x="614.8" y="37.6" width="34.0" height="158.4" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — &gt;3h: 0.880</title></rect><rect x="650.8" y="39.1" width="34.0" height="156.9" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — &gt;3h: 0.872</title></rect><text class="tick" x="649.8" y="216" text-anchor="middle">&gt;3h</text><text class="axis-label" x="54" y="234">Share of arrivals inside the stated range</text></svg>
+</div>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Predictions</th><th>History only</th><th>As shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>4,940</td><td>89%</td><td>81%</td></tr><tr><td>10-20m</td><td>12,429</td><td>88%</td><td>78%</td></tr><tr><td>20-45m</td><td>20,569</td><td>88%</td><td>78%</td></tr><tr><td>45-90m</td><td>12,798</td><td>88%</td><td>83%</td></tr><tr><td>1.5-3h</td><td>12,325</td><td>88%</td><td>87%</td></tr><tr><td>&gt;3h</td><td>12,138</td><td>88%</td><td>87%</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>Connections</h2>
+  <p>A connection here is a train arriving at one of the sampled stations and
+  another leaving it a few minutes later, judged from before the first train set
+  off — the last moment at which the answer could still change a decision. DB’s
+  timetable answers yes or no; the app answers with a probability.</p>
+<div class="figure">
+<ul class="legend"><li><span class="swatch" style="background:var(--series-1)"></span>DB</li><li><span class="swatch" style="background:var(--series-2)"></span>BayesianBahn, history only</li><li><span class="swatch" style="background:var(--series-3)"></span>BayesianBahn, as shipped</li></ul>
+<svg viewBox="0 0 720 240" role="img" aria-label="Brier score (lower is better)"><line class="grid" x1="54" x2="704" y1="196.0" y2="196.0"/><text class="tick" x="46" y="200.0" text-anchor="end">0.000</text><line class="grid" x1="54" x2="704" y1="151.0" y2="151.0"/><text class="tick" x="46" y="155.0" text-anchor="end">0.050</text><line class="grid" x1="54" x2="704" y1="106.0" y2="106.0"/><text class="tick" x="46" y="110.0" text-anchor="end">0.100</text><line class="grid" x1="54" x2="704" y1="61.0" y2="61.0"/><text class="tick" x="46" y="65.0" text-anchor="end">0.151</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">0.201</text><rect x="82.2" y="46.0" width="34.0" height="150.0" rx="4" fill="var(--series-1)" class="marker"><title>DB — 2-5 min: 0.167</title></rect><rect x="118.2" y="71.8" width="34.0" height="124.2" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 2-5 min: 0.138</title></rect><rect x="154.2" y="67.7" width="34.0" height="128.3" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 2-5 min: 0.143</title></rect><text class="tick" x="135.2" y="216" text-anchor="middle">2-5 min</text><rect x="244.8" y="124.8" width="34.0" height="71.2" rx="4" fill="var(--series-1)" class="marker"><title>DB — 6-10 min: 0.079</title></rect><rect x="280.8" y="132.8" width="34.0" height="63.2" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 6-10 min: 0.070</title></rect><rect x="316.8" y="132.9" width="34.0" height="63.1" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 6-10 min: 0.070</title></rect><text class="tick" x="297.8" y="216" text-anchor="middle">6-10 min</text><rect x="407.2" y="162.1" width="34.0" height="33.9" rx="4" fill="var(--series-1)" class="marker"><title>DB — 11-20 min: 0.038</title></rect><rect x="443.2" y="166.4" width="34.0" height="29.6" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 11-20 min: 0.033</title></rect><rect x="479.2" y="164.5" width="34.0" height="31.5" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 11-20 min: 0.035</title></rect><text class="tick" x="460.2" y="216" text-anchor="middle">11-20 min</text><rect x="569.8" y="175.6" width="34.0" height="20.4" rx="4" fill="var(--series-1)" class="marker"><title>DB — 21-30 min: 0.023</title></rect><rect x="605.8" y="179.9" width="34.0" height="16.1" rx="4" fill="var(--series-2)" class="marker"><title>BayesianBahn, history only — 21-30 min: 0.018</title></rect><rect x="641.8" y="176.9" width="34.0" height="19.1" rx="4" fill="var(--series-3)" class="marker"><title>BayesianBahn, as shipped — 21-30 min: 0.021</title></rect><text class="tick" x="622.8" y="216" text-anchor="middle">21-30 min</text><text class="axis-label" x="54" y="234">Brier score (lower is better)</text></svg>
+</div>
+<div class="scroll"><table><thead><tr><th>Time to change</th><th>Connections</th><th>Actually caught</th><th>DB</th><th>History only</th><th>As shipped</th></tr></thead><tbody><tr><td>2-5 min</td><td>10,831</td><td>81%</td><td>0.167</td><td>0.138</td><td>0.143</td></tr><tr><td>6-10 min</td><td>11,609</td><td>91%</td><td>0.079</td><td>0.070</td><td>0.070</td></tr><tr><td>11-20 min</td><td>25,153</td><td>96%</td><td>0.038</td><td>0.033</td><td>0.035</td></tr><tr><td>21-30 min</td><td>25,213</td><td>98%</td><td>0.023</td><td>0.018</td><td>0.021</td></tr></tbody></table></div>
+
+  <h3>Split by what actually happened</h3>
+  <p>Almost every connection is caught, so answering “yes” every time scores
+  well on the pooled average, and a yes/no answer taken from the timetable is
+  close to doing that. The two outcomes are therefore worth reading apart: the
+  connections that failed are the smaller group and the one the pooled figure
+  says least about.</p>
+<div class="scroll"><table><thead><tr><th>Outcome</th><th>Connections</th><th>DB called it right</th><th>DB Brier</th><th>History only</th><th>…mean P(catch)</th><th>As shipped</th></tr></thead><tbody><tr><td>Connection was caught</td><td>68,090</td><td>99%</td><td>0.005</td><td>0.018</td><td>0.94</td><td>0.017</td></tr><tr><td>Connection was missed</td><td>4,716</td><td>17%</td><td>0.831</td><td>0.497</td><td>0.64</td><td>0.564</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>Does it hold from one day to the next?</h2>
+  <p>Everything above pools the collected days. Pooling gives the more precise
+  estimate; it cannot show whether a result is a property of the model or of one
+  day’s conditions. Here each day stands alone. A column that points the same
+  way in every row is the more durable result; one that changes sign between
+  days is within the range of day-to-day variation.</p>
+  <p>Read the row lengths too. The first day was collected from the evening
+  onwards, so it is both smaller and drawn only from the busiest hours — a day
+  with fewer missed connections here is not necessarily a calmer day.</p>
+<div class="scroll"><table><thead><tr><th>Day</th><th>Predictions</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>2026-08-24</td><td>1,529</td><td>2.74</td><td>3.18</td><td>2.33</td><td>84%</td><td>78%</td></tr><tr><td>2026-08-25</td><td>28,500</td><td>3.11</td><td>2.57</td><td>2.28</td><td>87%</td><td>80%</td></tr><tr><td>2026-08-29</td><td>23,100</td><td>2.79</td><td>2.59</td><td>2.24</td><td>87%</td><td>82%</td></tr><tr><td>2026-08-30</td><td>22,070</td><td>2.48</td><td>2.46</td><td>1.97</td><td>90%</td><td>84%</td></tr></tbody></table></div>
+
+  <h3>The missed connections, day by day</h3>
+  <p>This is the smallest sample on the page and the one most easily
+  over-read.</p>
+<div class="scroll"><table><thead><tr><th>Day</th><th>Missed</th><th>DB Brier</th><th>History only</th><th>As shipped</th></tr></thead><tbody><tr><td>2026-08-24</td><td>36</td><td>0.861</td><td>0.603</td><td>0.518</td></tr><tr><td>2026-08-25</td><td>2,328</td><td>0.851</td><td>0.505</td><td>0.605</td></tr><tr><td>2026-08-29</td><td>1,277</td><td>0.814</td><td>0.525</td><td>0.559</td></tr><tr><td>2026-08-30</td><td>1,075</td><td>0.807</td><td>0.442</td><td>0.484</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>Journeys with a change, end to end</h2>
+  <p>Everything above scores a journey with a change by whether the change
+  works. That is not the question a passenger has, which is when they get
+  there — and it cannot be compared with the direct-journey figures, because a
+  probability and a distribution over arrival times are not in the same units.
+  This section asks the passenger's question. The answer is scored the same way
+  a direct journey is, in minutes of CRPS, so the two rows can finally be read
+  against each other.</p>
+  <p>Both forecasters are asked before the feeder sets off and see the same
+  5.5 candidate trains on average. DB answers with
+  the arrival of whichever train its own forecasts say the passenger catches;
+  ours answers with a distribution over the arrival, which includes missing the
+  planned connection and taking a later train — it puts
+  0.8% of its weight on catching none of the candidates
+  at all. The truth is the arrival of whichever train was actually caught.</p>
+  <p><strong>Truth is not held to that list.</strong> A passenger who misses
+  every train the app offered waits for the next one that runs, and the
+  forecast is then wrong by however long that took — so the walk to the train
+  actually boarded goes on past the end of the list, and both forecasters are
+  charged for the difference. That happens on
+  0.6% of the journeys here. Scoring only the ones that
+  fit inside the list would drop exactly the answers that were most wrong: it
+  raised this model's margin over DB by about 0.8 minutes of CRPS while
+  discarding a third of the evidence.</p>
+  <p>This is the newest part of the page and rests on the fewest days: the far
+  end of a change only began being polled once the second tier existed, so this
+  table starts later than every other one here.</p>
+  <p><strong>The table is measured over the journeys both variants
+  answered.</strong> They do not answer the same set: a connecting train with
+  too little shared history can be carried by a live report and cannot be
+  carried without one, so the shipped model answers
+  34,812 journeys against the blinded model's
+  33,850, and 32,322 are answered by both.
+  Measuring each over its own set would put answers to different questions in
+  one row — it made the live number look worth four times what it is worth on
+  the journeys both answered. Answering more journeys is a real advantage of
+  the shipped model, but it is a difference in coverage and is counted here
+  rather than folded into a score.</p>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Journeys</th><th>Boarded past the list</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>735</td><td>0%</td><td>6.35</td><td>6.62</td><td>5.60</td><td>62%</td><td>62%</td></tr><tr><td>10-20m</td><td>4,643</td><td>0%</td><td>7.86</td><td>7.05</td><td>6.22</td><td>63%</td><td>59%</td></tr><tr><td>20-45m</td><td>12,125</td><td>0%</td><td>7.49</td><td>6.76</td><td>6.25</td><td>60%</td><td>59%</td></tr><tr><td>45-90m</td><td>9,153</td><td>0%</td><td>9.62</td><td>7.89</td><td>7.80</td><td>63%</td><td>60%</td></tr><tr><td>1.5-3h</td><td>3,834</td><td>1%</td><td>13.73</td><td>10.80</td><td>10.75</td><td>66%</td><td>63%</td></tr><tr><td>&gt;3h</td><td>1,832</td><td>4%</td><td>26.87</td><td>17.05</td><td>18.70</td><td>66%</td><td>60%</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>Which kinds of train, and which kinds of line</h2>
+  <p>Everything above pools every train at every sampled station. The model
+  does not treat them alike: it carries a separate prior per class of train —
+  a mean of 4.0 minutes for long distance against 1.0 for an S-Bahn — so the
+  classes are the axis those constants were chosen on, and splitting by them
+  is the only way to see whether each one earns its value. Lower is better;
+  the gap is BayesianBahn's score minus DB's, with the interval that decides
+  it.</p>
+<div class="scroll"><table><thead><tr><th>Kind of train</th><th>Predictions</th><th>DB</th><th>History only</th><th>As shipped</th><th>Ours - DB</th><th>95% interval</th><th>80% range</th></tr></thead><tbody><tr><td>Long distance</td><td>5,839</td><td>6.69</td><td>8.37</td><td>5.77</td><td>-0.921</td><td>-1.239 to -0.609</td><td>76%</td></tr><tr><td>Regional</td><td>45,899</td><td>2.74</td><td>2.38</td><td>2.12</td><td>-0.620</td><td>-0.663 to -0.572</td><td>83%</td></tr><tr><td>Bus (regional prior)</td><td>352</td><td>0.00</td><td>0.04</td><td>0.04</td><td>0.042</td><td>0.000 to 0.120</td><td>100%</td></tr><tr><td>S-Bahn</td><td>23,109</td><td>2.03</td><td>1.48</td><td>1.41</td><td>-0.625</td><td>-0.665 to -0.584</td><td>80%</td></tr></tbody></table></div>
+
+  <p>A category that is neither long distance nor one of the named regional
+  ones still falls through to the regional prior, because that is what
+  <code>TrainClass.fromCategory</code> does with anything beginning with a
+  letter. Replacement buses reach it that way, and they are a third of every
+  regional prediction here. They are not trains — they do not share the
+  tracks and are not held by the same signals — and they score about half a
+  minute worse than the regional trains they were pooled with, so they are
+  given their own row. The model is unchanged: the row name says which prior
+  they were scored under.</p>
+
+  <h3>By the kind of line the station sits on</h3>
+  <p>The second cohort was sampled on this axis and no other: every station
+  with at least twenty calls a day was split by its busiest segment's traffic
+  and by whether long-distance services call there, then sampled equally per
+  cell. Equal allocation is what makes the cells comparable with each other,
+  and it is also why this is not a picture of the network as travelled — a
+  single-track branch carries as much weight here as a main corridor.
+  <em>regional</em> is a cell where no long-distance service calls;
+  <em>mixed</em> is one where long distance shares the tracks.</p>
+<div class="scroll"><table><thead><tr><th>Kind of line</th><th>Predictions</th><th>DB</th><th>History only</th><th>As shipped</th><th>Ours - DB</th><th>95% interval</th><th>80% range</th></tr></thead><tbody><tr><td>low-regional</td><td>4,133</td><td>1.40</td><td>1.34</td><td>1.20</td><td>-0.208</td><td>-0.302 to -0.111</td><td>87%</td></tr><tr><td>low-mixed</td><td>5,313</td><td>2.61</td><td>2.56</td><td>2.14</td><td>-0.470</td><td>-0.636 to -0.321</td><td>84%</td></tr><tr><td>mid-regional</td><td>7,725</td><td>2.83</td><td>2.33</td><td>2.17</td><td>-0.657</td><td>-0.781 to -0.537</td><td>85%</td></tr><tr><td>mid-mixed</td><td>10,181</td><td>3.06</td><td>2.89</td><td>2.50</td><td>-0.552</td><td>-0.659 to -0.450</td><td>80%</td></tr><tr><td>high-regional</td><td>14,708</td><td>1.72</td><td>1.35</td><td>1.28</td><td>-0.432</td><td>-0.474 to -0.389</td><td>85%</td></tr><tr><td>high-mixed</td><td>33,139</td><td>3.44</td><td>3.19</td><td>2.60</td><td>-0.840</td><td>-0.910 to -0.770</td><td>79%</td></tr></tbody></table></div>
+</section>
+
+<section>
+  <h2>Working days and the weekend</h2>
+  <p>The two are different networks to forecast. DB’s own mean error is
+  3.09 minutes from Monday to Friday against
+  2.64 minutes at the weekend, so there
+  is substantially less to improve on in the quieter half. Each figure below is
+  BayesianBahn’s score minus DB’s, computed within that part of the week
+  alone.</p>
+<div class="scroll"><table><thead><tr><th>Days</th><th>Predictions</th><th>DB’s own error</th><th>Arrival, shipped</th><th>Arrival, history only</th><th>Missed connections</th><th>Missed, shipped</th></tr></thead><tbody><tr><td>Monday to Friday</td><td>30,029</td><td>3.09</td><td>-0.809 (-0.863 to -0.753)</td><td>-0.489 (-0.560 to -0.413)</td><td>2,364</td><td>-0.248 (-0.277 to -0.222)</td></tr><tr><td>Saturday and Sunday</td><td>45,170</td><td>2.64</td><td>-0.530 (-0.582 to -0.479)</td><td>-0.114 (-0.197 to -0.026)</td><td>2,352</td><td>-0.286 (-0.324 to -0.249)</td></tr></tbody></table></div>
+
+  <p>An interval that spans zero says the collected days cannot separate the
+  two forecasters in that part of the week, not that they are equal.</p>
+</section>
+
+<section>
+  <h2>Delay through the day</h2>
+  <p>Delay is not a property of a train alone: a late train occupies a platform
+  and the next one can inherit some of it, so delay accumulated in the morning
+  may still be on the network in the afternoon. If so, an hour-of-day term
+  describes the data rather than merely fitting it.</p>
+  <p>The collected days show that pattern. The mean arrival delay climbs from
+  <strong>1.91 min at 05:00</strong> to
+  <strong>4.97 min at 15:00</strong>, a factor of
+  2.6, and then drains overnight. Each
+  train counts once, at its scheduled arrival hour, however many times it was
+  polled. Only days that cover the whole clock are included, and only hours
+  carrying at least 100 trains.</p>
+<svg viewBox="0 0 720 260" role="img" aria-label="Mean arrival delay, minutes"><line class="grid" x1="54" x2="704" y1="216.0" y2="216.0"/><text class="tick" x="46" y="220.0" text-anchor="end">0.000</text><line class="grid" x1="54" x2="704" y1="166.0" y2="166.0"/><text class="tick" x="46" y="170.0" text-anchor="end">1.490</text><line class="grid" x1="54" x2="704" y1="116.0" y2="116.0"/><text class="tick" x="46" y="120.0" text-anchor="end">2.981</text><line class="grid" x1="54" x2="704" y1="66.0" y2="66.0"/><text class="tick" x="46" y="70.0" text-anchor="end">4.471</text><line class="grid" x1="54" x2="704" y1="16.0" y2="16.0"/><text class="tick" x="46" y="20.0" text-anchor="end">5.961</text><rect x="61.0" y="92.6" width="18.5" height="123.4" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 04: 3.678</title></rect><text class="tick" x="70.2" y="236" text-anchor="middle">04</text><rect x="93.5" y="151.8" width="18.5" height="64.2" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 05: 1.914</title></rect><text class="tick" x="102.8" y="236" text-anchor="middle">05</text><rect x="126.0" y="148.2" width="18.5" height="67.8" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 06: 2.020</title></rect><text class="tick" x="135.2" y="236" text-anchor="middle">06</text><rect x="158.5" y="130.6" width="18.5" height="85.4" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 07: 2.546</title></rect><text class="tick" x="167.8" y="236" text-anchor="middle">07</text><rect x="191.0" y="133.6" width="18.5" height="82.4" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 08: 2.458</title></rect><text class="tick" x="200.2" y="236" text-anchor="middle">08</text><rect x="223.5" y="101.4" width="18.5" height="114.6" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 09: 3.417</title></rect><text class="tick" x="232.8" y="236" text-anchor="middle">09</text><rect x="256.0" y="92.2" width="18.5" height="123.8" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 10: 3.691</title></rect><text class="tick" x="265.2" y="236" text-anchor="middle">10</text><rect x="288.5" y="63.1" width="18.5" height="152.9" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 11: 4.558</title></rect><text class="tick" x="297.8" y="236" text-anchor="middle">11</text><rect x="321.0" y="87.9" width="18.5" height="128.1" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 12: 3.817</title></rect><text class="tick" x="330.2" y="236" text-anchor="middle">12</text><rect x="353.5" y="59.8" width="18.5" height="156.2" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 13: 4.656</title></rect><text class="tick" x="362.8" y="236" text-anchor="middle">13</text><rect x="386.0" y="53.6" width="18.5" height="162.4" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 14: 4.840</title></rect><text class="tick" x="395.2" y="236" text-anchor="middle">14</text><rect x="418.5" y="49.3" width="18.5" height="166.7" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 15: 4.968</title></rect><text class="tick" x="427.8" y="236" text-anchor="middle">15</text><rect x="451.0" y="54.9" width="18.5" height="161.1" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 16: 4.803</title></rect><text class="tick" x="460.2" y="236" text-anchor="middle">16</text><rect x="483.5" y="62.4" width="18.5" height="153.6" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 17: 4.577</title></rect><text class="tick" x="492.8" y="236" text-anchor="middle">17</text><rect x="516.0" y="90.9" width="18.5" height="125.1" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 18: 3.730</title></rect><text class="tick" x="525.2" y="236" text-anchor="middle">18</text><rect x="548.5" y="75.7" width="18.5" height="140.3" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 19: 4.182</title></rect><text class="tick" x="557.8" y="236" text-anchor="middle">19</text><rect x="581.0" y="95.4" width="18.5" height="120.6" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 20: 3.595</title></rect><text class="tick" x="590.2" y="236" text-anchor="middle">20</text><rect x="613.5" y="61.1" width="18.5" height="154.9" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 21: 4.617</title></rect><text class="tick" x="622.8" y="236" text-anchor="middle">21</text><rect x="646.0" y="83.6" width="18.5" height="132.4" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 22: 3.948</title></rect><text class="tick" x="655.2" y="236" text-anchor="middle">22</text><rect x="678.5" y="98.7" width="18.5" height="117.3" rx="4" fill="var(--series-1)" class="marker"><title>Mean arrival delay — 23: 3.495</title></rect><text class="tick" x="687.8" y="236" text-anchor="middle">23</text><text class="axis-label" x="54" y="254">Mean arrival delay, minutes</text></svg>
+
+  <p>The maximum falls in the mid-afternoon rather than at the evening rush.
+  One reading is that accumulated delay is worked off after the last peak
+  departures, so the worst hour to arrive is set by how much delay the network
+  is still carrying rather than by passenger numbers.</p>
+  <h3>What that means for the time bands</h3>
+  <p>The model keeps separate delay statistics per time band, which only makes
+  sense if the hours inside a band resemble each other. <em>Spread</em> is the
+  distance between the latest and earliest hourly mean inside the band: a large
+  spread means the band is averaging together hours that behave differently.</p>
+<div class="scroll"><table><thead><tr><th>Band</th><th>Hours</th><th>Quietest hour</th><th>Latest hour</th><th>Spread</th></tr></thead><tbody><tr><td>MORNING_PEAK</td><td>06-08</td><td>2.02</td><td>2.55</td><td>0.53</td></tr><tr><td>MIDDAY</td><td>09-15</td><td>3.42</td><td>4.97</td><td>1.55</td></tr><tr><td>EVENING_PEAK</td><td>16-18</td><td>3.73</td><td>4.80</td><td>1.07</td></tr><tr><td>NIGHT</td><td>19-05</td><td>1.91</td><td>4.62</td><td>2.70</td></tr></tbody></table></div>
+
+  <p>The bands that ship were chosen from the commuter timetable rather than
+  from this curve, and do not line up with it: the peak band ends before the
+  peak, and the
+  night band spans the range from the quietest hour of the night to the tail of
+  the evening. This is an observation about the model’s bucketing rather than
+  about the trains, and it is only as good as the days collected so far.</p>
+</section>
+
+<section>
+  <h2>Definitions</h2>
+  <dl>
+    <dt>CRPS — continuous ranked probability score</dt>
+    <dd>The integral of (F(x) − 1{x ≥ y})² over all x, where F is the forecast’s
+    cumulative distribution and y is what happened. In minutes; lower is better.
+    A point forecast is a distribution with all its weight in one place, and for
+    that case CRPS is exactly the absolute error — which is why DB’s column and
+    ours sit on the same axis. It is the only score here that credits the whole
+    distribution rather than just its middle.</dd>
+
+    <dt>Brier score</dt>
+    <dd>Mean squared distance between a stated probability and the 0/1 outcome;
+    lower is better. A yes/no answer is a probability of 1 or 0, so its Brier
+    score is simply the share it got wrong. This makes “yes” and “72%”
+    comparable.</dd>
+
+    <dt>DB bias</dt>
+    <dd>Mean signed error. Negative means DB predicted the train earlier than it
+    arrived — optimism, which is the direction that costs a passenger a
+    connection.</dd>
+
+    <dt>DB surprises</dt>
+    <dd>Share of arrivals more than 5 minutes later than DB said. This is the
+    error that turns into a missed change.</dd>
+
+    <dt>As shipped vs history only</dt>
+    <dd>Both are the same model. <em>As shipped</em> feeds it DB’s live number
+    for the station, but only when that number is a reported delay: DB states a
+    stop in four shapes and three of them mean “on time”, which is the plan
+    restated rather than an observation, so those are passed through as no
+    report at all. <em>History only</em> withholds the live number in every
+    case. The model was built to take the measured delay at the train’s
+    <em>previous</em> stop, and the live path substitutes this station’s forecast
+    instead — an approximation documented in the source, and where DB does
+    report a delay the gap between these two columns is what it costs.</dd>
+
+    <dt>Ground truth</dt>
+    <dd>The archive’s recorded arrival minus the scheduled arrival, the same
+    definition used to build the history the model learns from. Cancelled stops
+    are excluded from the delay scores.</dd>
+
+    <dt>Time to change</dt>
+    <dd>Scheduled gap between the feeder arriving and the connection leaving,
+    less the 5 minutes assumed for walking between platforms.</dd>
+  </dl>
+</section>
+
+<section>
+  <h2>What this does not establish</h2>
+  <ul class="caveats">
+    <li><strong>4 days of data.</strong> Delays cluster by line, by weather and by
+    incident, so the effective sample is far smaller than the counts suggest. A
+    single quiet day is one draw, not a result — which is why every comparison
+    above carries an interval and every day is also shown on its own.</li>
+    <li><strong>The days do not cover the same hours.</strong> Collection began
+    in the evening on the first day and ran round the clock afterwards, so a
+    difference between days mixes the date with the time of day. Both matter: DB’s
+    yes/no on connections is far more often right during the day than in the
+    evening, so the pooled figure for missed connections depends on the mix.</li>
+    <li><strong>Every feasible pair counts as a connection</strong>, including
+    changes nobody would make. That inflates how often connections are caught and
+    flatters both forecasters against real journeys.</li>
+    <li><strong>DB’s forecast is read from IRIS</strong>, the feed behind the
+    station displays, not from the Navigator app itself. The two normally agree;
+    the cross-check that would confirm it was unavailable while this ran.</li>
+    <li><strong>Twenty stations</strong>, chosen before any data existed but still
+    twenty. Nothing here is weighted to how often people actually travel.</li>
+    <li><strong>Weekdays and weekend days are pooled.</strong> Traffic, staffing and the timetable itself differ
+    between weekdays and weekends, so a figure drawn from one does not transfer
+    to the other — the hour-of-day curve above least of all. Where both kinds of
+    day are present, the two are also shown apart, above.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Reproducing this</h2>
+  <p>Every figure above comes from the commands below. The collector must have
+  been running on the day in question; the archive publishes the ground truth the
+  following morning.</p>
+  <pre># collect (runs continuously, survives restarts and power cuts)
+pixi run -e evaluate collect
+pixi run -e evaluate collect-status      # is it still healthy?
+
+# once the archive has published the day, score it and rebuild
+# this page — stages already done are skipped, so adding a day
+# costs only that day
+pixi run -e evaluate evaluate 2026-08-24 2026-08-25 2026-08-29 2026-08-30</pre>
+</section>
+
+<footer>
+  Generated 2026-09-01 from 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30, by
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 4193a41dd7082b4301d2512a5dade8fa5348f1d8.
+  MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
+  piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
+</footer>
+</div>
