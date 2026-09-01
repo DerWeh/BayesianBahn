@@ -209,6 +209,21 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
+- **Pool the two histories instead of switching between them.** The line is
+  currently a fallback: the app takes the number's runs, or the line's, never
+  both. Backtesting the combination says the switch is the wrong shape. Giving
+  the train's own runs `n / (n + 8)` of the weight and its line's the rest —
+  one distribution, no switch — beats the line alone by 0.105 min of CRPS on
+  the fallback population (95% 0.094..0.116) and never loses where the number
+  is rich; a *fixed* weighting cannot do both, since the half-and-half that
+  wins at the bottom costs 0.03-0.04 across the 87% of predictions at the top.
+  End to end it is worth 0.026 min against what ships today and 0.008 against
+  the fallback (0.061 and 0.020 across the December timetable change). The
+  gain is gone by 32 effective runs, so the line shard need only be fetched
+  below that — about 13% of predictions in a settled period. Two things to
+  weigh first: the pooled intervals cover 89% against a nominal 80%, a little
+  wider than the 88% they replace, and `pipeline/backtest_fallback.py` measures
+  a k of 8 on two windows only.
 - **Measure the line fallback forward.** The archive backtest decided it; the
   forward comparison against DB cannot report it until the daily data job has
   published a set of line shards, because the collected days were scored

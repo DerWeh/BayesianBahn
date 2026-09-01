@@ -187,7 +187,7 @@ def test_only_strictly_earlier_runs_are_visible() -> None:
         np.array([1, 2, 3], dtype=np.int32), np.array([480, 480, 480], dtype=np.int32),
         np.array([1.0, 2.0, 3.0]), np.full(3, np.nan), np.zeros(3, dtype=np.int32),
     )
-    days, delay, _, _ = store.before(480, 3, bf.TOD_WINDOW_MIN)
+    days, delay, *_ = store.before(480, 3, bf.TOD_WINDOW_MIN)
     assert list(days) == [1, 2]
     assert list(delay) == [1.0, 2.0]
 
@@ -198,7 +198,7 @@ def test_the_time_of_day_window_wraps_around_midnight() -> None:
         np.array([1, 1], dtype=np.int32), np.array([1430, 720], dtype=np.int32),
         np.array([1.0, 2.0]), np.full(2, np.nan), np.zeros(2, dtype=np.int32),
     )
-    days, delay, _, _ = store.before(10, 5, bf.TOD_WINDOW_MIN)
+    _, delay, *_ = store.before(10, 5, bf.TOD_WINDOW_MIN)
     assert list(delay) == [1.0]
 
 
@@ -213,9 +213,9 @@ def test_a_line_shard_only_carries_the_days_it_publishes() -> None:
         np.array([0, 50, 99], dtype=np.int32), np.array([480, 480, 480], dtype=np.int32),
         np.array([1.0, 2.0, 3.0]), np.full(3, np.nan), np.zeros(3, dtype=np.int32),
     )
-    _, delay, _, _ = store.before(480, 100, bf.TOD_WINDOW_MIN, max_days=45)
+    _, delay, *_ = store.before(480, 100, bf.TOD_WINDOW_MIN, max_days=45)
     assert list(delay) == [3.0]
-    _, all_delay, _, _ = store.before(480, 100, bf.TOD_WINDOW_MIN)
+    _, all_delay, *_ = store.before(480, 100, bf.TOD_WINDOW_MIN)
     assert list(all_delay) == [1.0, 2.0, 3.0]
 
 
@@ -264,3 +264,124 @@ def test_a_cluster_interval_is_wider_than_the_events_alone_suggest() -> None:
     low, high = bf.cluster_ci(cluster, diff, draws=400)
     assert low < diff.mean() < high
     assert high - low > 0.5
+
+
+# --- the pooled models ------------------------------------------------------
+
+
+def test_the_sorted_scorers_agree_with_the_general_ones() -> None:
+    """The pooled sweep sorts its support once and reuses it across weightings.
+    If that shortcut ever disagreed with the plain formula, every pooled number
+    would be wrong in a way no table would show."""
+    rng = np.random.default_rng(11)
+    for _ in range(20):
+        x = rng.normal(3.0, 6.0, 40)
+        w = rng.random(40) + 0.01
+        y = float(rng.normal(3.0, 6.0))
+        order = np.argsort(x, kind="stable")
+        assert bf.crps_sorted(x[order], w[order], y) == pytest.approx(
+            bf.crps_empirical(x, w, y)
+        )
+        low, high = bf.weighted_quantiles(x, w, (0.1, 0.9))
+        assert bf.covered_sorted(x[order], w[order], y) == (low <= y <= high)
+
+
+def test_a_boost_multiplies_the_query_s_own_runs() -> None:
+    w = np.ones(4)
+    own = np.array([True, True, False, False])
+    assert list(bf.mixed(w, own, ("boost", 4.0))) == [4.0, 4.0, 1.0, 1.0]
+
+
+def test_a_share_gives_the_own_runs_that_fraction_however_few_they_are() -> None:
+    """The reason both knobs are measured: with two own runs against ninety-
+    eight of the line's, a multiplier of four still leaves them 8% of the mass
+    while a share of 0.7 means 0.7."""
+    w = np.ones(100)
+    own = np.zeros(100, dtype=bool)
+    own[:2] = True
+    mixed = bf.mixed(w, own, ("share", 0.7))
+    assert mixed[own].sum() == pytest.approx(0.7)
+    assert mixed[~own].sum() == pytest.approx(0.3)
+    boosted = bf.mixed(w, own, ("boost", 4.0))
+    assert boosted[own].sum() / boosted.sum() == pytest.approx(8 / 106, abs=1e-6)
+
+
+def test_a_mix_with_nothing_on_one_side_changes_nothing() -> None:
+    """A share renormalises two groups; with one of them empty there is nothing
+    to renormalise and every run must keep the weight it had."""
+    w = np.array([1.0, 2.0, 3.0])
+    for own in (np.zeros(3, dtype=bool), np.ones(3, dtype=bool)):
+        assert list(bf.mixed(w, own, ("share", 0.7))) == [1.0, 2.0, 3.0]
+        assert list(bf.mixed(w, own, ("boost", 4.0))) == [1.0, 2.0, 3.0]
+    assert list(bf.mixed(w, None, ("share", 0.7))) == [1.0, 2.0, 3.0]
+
+
+def test_the_pool_counts_the_query_s_own_runs_once() -> None:
+    """A line shard contains the query's own runs, so taking both shards whole
+    would enter them twice — and then a "boost" of 1 would not be the line."""
+    num = (np.array([1, 2], dtype=np.int32), np.array([5.0, 6.0]),
+           np.full(2, np.nan), np.zeros(2, dtype=np.int32), None)
+    line = (np.array([1, 1, 2], dtype=np.int32), np.array([5.0, 9.0, 6.0]),
+            np.full(3, np.nan), np.zeros(3, dtype=np.int32),
+            np.array(["4711", "4712", "4711"]))
+    combined, own = bf.pooled_history(num, line, "4711")
+    assert list(combined[1]) == [5.0, 6.0, 9.0]
+    assert list(own) == [True, True, False]
+
+
+def test_the_pool_keeps_runs_the_line_window_has_already_cut() -> None:
+    """The app holds both shards, and the number's is not trimmed — so a run
+    older than the line window is still history the user really has."""
+    num = (np.array([1, 90], dtype=np.int32), np.array([5.0, 6.0]),
+           np.full(2, np.nan), np.zeros(2, dtype=np.int32), None)
+    line = (np.array([90], dtype=np.int32), np.array([6.0]),
+            np.full(1, np.nan), np.zeros(1, dtype=np.int32), np.array(["4711"]))
+    combined, own = bf.pooled_history(num, line, "4711")
+    assert list(combined[0]) == [1, 90]
+    assert own.all()
+
+
+def test_a_line_history_knows_which_runs_belong_to_which_number() -> None:
+    store = bf.History(
+        np.array([1, 1, 2], dtype=np.int32), np.array([480, 481, 480], dtype=np.int32),
+        np.array([1.0, 2.0, 3.0]), np.full(3, np.nan), np.zeros(3, dtype=np.int32),
+        run_of=np.array(["4711", "4712", "4711"]),
+    )
+    *_, run_of = store.before(480, 5, bf.TOD_WINDOW_MIN)
+    assert list(run_of) == ["4711", "4712", "4711"]
+
+
+def test_an_unmixed_pool_is_the_line_itself() -> None:
+    """The identity the whole sweep is anchored on: a line shard already holds
+    the number's runs, so pooling with no reweighting must reproduce it."""
+    days = np.arange(1, 21, dtype=np.int32)
+    delays = np.linspace(0.0, 10.0, 20)
+    hist = (days, delays, np.full(20, np.nan), np.zeros(20, dtype=np.int32))
+    own = np.zeros(20, dtype=bool)
+    own[:3] = True
+    plain, = bf.pooled_scores(hist, own, 30, 1, None, 4.0, (("flat", None),)).values()
+    reference = bf.score_one(hist, 30, 1, None, 4.0)
+    assert plain[0] == pytest.approx(reference[0])
+    assert plain[1] == pytest.approx(reference[1])
+
+
+def test_the_shrink_share_follows_how_many_own_runs_there_are() -> None:
+    """The one weighting that can be right at both ends: all line when the
+    number has nothing, all number once it has plenty."""
+    w = np.ones(100)
+    for own_runs, expected in ((4, 4 / (4 + 8)), (8, 0.5), (64, 64 / 72)):
+        own = np.zeros(100, dtype=bool)
+        own[:own_runs] = True
+        mixed = bf.mixed(w, own, ("shrink", 8.0))
+        assert mixed[own].sum() / mixed.sum() == pytest.approx(expected)
+
+
+def test_shrinking_uses_the_effective_count_not_the_raw_one() -> None:
+    """Fifty runs that are all but one stale are not fifty runs, and the gate
+    the app switches on counts them the same way."""
+    w = np.concatenate([[1.0], np.full(49, 1e-6), np.ones(50)])
+    own = np.zeros(100, dtype=bool)
+    own[:50] = True
+    mixed = bf.mixed(w, own, ("shrink", 8.0))
+    # Effective n of the own side is ~1, so the line keeps almost everything.
+    assert mixed[own].sum() / mixed.sum() == pytest.approx(1 / 9, abs=0.02)

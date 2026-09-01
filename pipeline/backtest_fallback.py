@@ -176,9 +176,9 @@ class History:
     search for the day cutoff over an already sorted array.
     """
 
-    __slots__ = ("day", "tod", "delay", "prev", "weekday", "_cache")
+    __slots__ = ("day", "tod", "delay", "prev", "weekday", "run_of", "_cache")
 
-    def __init__(self, day, tod, delay, prev, weekday) -> None:
+    def __init__(self, day, tod, delay, prev, weekday, run_of=None) -> None:
         order = np.argsort(day, kind="stable")
         self.day = day[order].astype(np.int32)
         # int32 on purpose: the column arrives as int8 and `24 * 60 - gap`
@@ -187,6 +187,9 @@ class History:
         self.delay = delay[order]
         self.prev = prev[order]
         self.weekday = weekday[order]
+        # Which run number each row belongs to — only a line history needs it,
+        # to tell the query's own runs from the rest of the line's.
+        self.run_of = None if run_of is None else np.asarray(run_of)[order]
         self._cache: dict[tuple[int, int], tuple] = {}
 
     def before(self, query_tod: int, query_day: int, window: int,
@@ -197,16 +200,19 @@ class History:
             gap = np.abs(self.tod - query_tod)
             keep = np.minimum(gap, 24 * 60 - gap) <= window
             slot = (self.day[keep], self.delay[keep], self.prev[keep],
-                    self.weekday[keep])
+                    self.weekday[keep],
+                    None if self.run_of is None else self.run_of[keep])
             self._cache[key] = slot
-        days, delay, prev, weekday = slot
+        days, delay, prev, weekday, run_of = slot
         cut = int(np.searchsorted(days, query_day, side="left"))
         # A published line shard carries only its most recent days, so a
         # backtest that reads every run of the line measures a shard nobody
         # will ever hold.
         start = (0 if max_days is None
                  else int(np.searchsorted(days, query_day - max_days, side="left")))
-        return days[start:cut], delay[start:cut], prev[start:cut], weekday[start:cut]
+        return (days[start:cut], delay[start:cut], prev[start:cut],
+                weekday[start:cut],
+                None if run_of is None else run_of[start:cut])
 
 
 def effective_n(w: np.ndarray) -> float:
@@ -215,17 +221,58 @@ def effective_n(w: np.ndarray) -> float:
     return s1 * s1 / s2 if s2 > 0 else 0.0
 
 
+def mixed(w: np.ndarray, own: np.ndarray | None,
+          mix: tuple[str, float] | None) -> np.ndarray:
+    """Reweights a pooled history towards the query's own run number.
+
+    Three ways of saying "trust this train's own runs more", because they are
+    not the same bet when the counts are this lopsided. A *boost* multiplies
+    them, which with three own runs against five hundred of the line's still
+    leaves them a rounding error unless the multiplier is enormous. A *share*
+    gives them a fixed fraction of the total weight however few they are, which
+    is the knob the question "how much is one of this train's own runs worth"
+    actually has in mind. A *shrink* makes that share depend on how many own
+    runs there are, which is the only one of the three that can be right at
+    both ends at once.
+    """
+    if mix is None or own is None or not own.any() or own.all():
+        return w
+    kind, value = mix
+    if kind == "boost":
+        return np.where(own, w * value, w)
+    if kind == "shrinkcap":
+        if effective_n(w[own]) >= POOL_CEILING:
+            # Zero weight is exactly exclusion for every score computed here,
+            # and keeps one support array for the whole sweep.
+            return np.where(own, w, 0.0)
+        kind, value = "shrink", value
+    if kind == "shrink":
+        # n / (n + k) on the own runs' own effective count: the weight the
+        # line keeps shrinks as the train's own history thickens.
+        n = effective_n(w[own])
+        value = n / (n + value)
+    own_mass, other_mass = w[own].sum(), w[~own].sum()
+    if own_mass <= 0 or other_mass <= 0:
+        return w
+    return np.where(own, w * (value / own_mass), w * ((1.0 - value) / other_mass))
+
+
 def empirical(hist: tuple, query_day: int, query_weekday: int,
-              live: float | None) -> tuple[np.ndarray, np.ndarray] | None:
+              live: float | None, own: np.ndarray | None = None,
+              mix: tuple[str, float] | None = None,
+              ) -> tuple[np.ndarray, np.ndarray] | None:
     """Mirror of EmpiricalDelay.build: (support, weights), or None when empty.
 
     The gate on effective sample size is the caller's, as it is [Predictor]'s.
+    [own] and [mix] are the pooled models' extra step, applied to the base
+    weights before the live kernel — which is where the app would apply it too.
     """
-    days, delay, prev, weekday = hist
+    days, delay, prev, weekday = hist[:4]
     if days.size == 0:
         return None
     w = np.exp(-LN2 / HALF_LIFE_DAYS * (query_day - days))
     w = np.where(weekday == query_weekday, w * SAME_WEEKDAY_BOOST, w)
+    w = mixed(w, own, mix)
     if live is not None:
         known = ~np.isnan(prev)
         if int(known.sum()) >= MIN_EFFECTIVE_N:
@@ -249,6 +296,22 @@ def crps_empirical(x: np.ndarray, w: np.ndarray, y: float) -> float:
     return float(np.sum(w * np.abs(x - y)) - 0.5 * exx)
 
 
+def crps_sorted(xs: np.ndarray, ws: np.ndarray, y: float) -> float:
+    """CRPS with the support already sorted ascending — same formula, no sort."""
+    ws = ws / ws.sum()
+    cw = np.cumsum(ws)
+    exx = 2.0 * float(np.sum(ws * xs * ((cw - ws) - (1.0 - cw))))
+    return float(np.sum(ws * np.abs(xs - y)) - 0.5 * exx)
+
+
+def covered_sorted(xs: np.ndarray, ws: np.ndarray, y: float) -> bool:
+    """Whether y falls inside the 80% interval of a sorted weighted sample."""
+    cw = np.cumsum(ws) / ws.sum()
+    low = xs[min(int(np.searchsorted(cw, 0.1)), xs.size - 1)]
+    high = xs[min(int(np.searchsorted(cw, 0.9)), xs.size - 1)]
+    return bool(low <= y <= high)
+
+
 def weighted_quantiles(x: np.ndarray, w: np.ndarray, qs) -> list[float]:
     order = np.argsort(x, kind="stable")
     xs, ws = x[order], w[order]
@@ -266,7 +329,40 @@ def gated(live: float | None) -> float | None:
 # ------------------------------------------------------------------- the sweep
 
 
-MODELS = ("number", "line", "thin", "prior", "shipped", "proposed")
+# The pooled models: the query's own run number's history and its line's, in
+# one distribution, with the own runs weighted up. `line` is the same pool with
+# no reweighting at all — a line shard already contains the number's own runs —
+# so the sweep across these says whether the cascade's hard switch is leaving
+# anything on the table at either end.
+POOLED: tuple[tuple[str, tuple[str, float]], ...] = (
+    ("boost16", ("boost", 16.0)),
+    ("boost64", ("boost", 64.0)),
+    ("share30", ("share", 0.3)),
+    ("share50", ("share", 0.5)),
+    ("share70", ("share", 0.7)),
+    ("share90", ("share", 0.9)),
+    # The adaptive rule the fixed shares point at: the own runs take
+    # n / (n + k) of the weight, where n is their own effective count. It is
+    # the cascade written as one continuous model — all line at n = 0, all
+    # number as n grows — and the fixed grid above says the optimum really does
+    # move that way, best around a half where the number has three or four runs
+    # and at nothing by the time it has thirty.
+    ("shrink4", ("shrink", 4.0)),
+    ("shrink8", ("shrink", 8.0)),
+    ("shrink16", ("shrink", 16.0)),
+    # The same rule, but stopping once the number's own history is thick
+    # enough that the line has nothing left to add. Pooling everywhere would
+    # mean fetching a line shard for every prediction; this asks what the
+    # shortcut costs.
+    ("shrink8cap", ("shrinkcap", 8.0)),
+)
+
+# Above this many effective runs of a train's own, "shrinkcap" stops consulting
+# the line at all. Read off the same sweep: from here up, every weighting that
+# is not actively harmful is worth a thousandth of a minute or less.
+POOL_CEILING = 32.0
+POOLED_NAMES = tuple(name for name, _ in POOLED)
+MODELS = ("number", "line", "thin", "prior", "shipped", "proposed", *POOLED_NAMES)
 
 
 class Recorder:
@@ -278,9 +374,13 @@ class Recorder:
     which event belonged to which.
     """
 
-    FIELDS = ("cluster", "scenario", "bucket", "num_ok", "line_ok", "y",
-              "crps_number", "crps_line", "crps_thin", "prior_z",
-              "cov_number", "cov_line", "cov_thin")
+    FIELDS = (
+        "cluster", "scenario", "bucket", "num_ok", "line_ok", "eff_number", "y",
+        "crps_number", "crps_line", "crps_thin", "prior_z",
+        "cov_number", "cov_line", "cov_thin",
+        *(f"crps_{name}" for name in POOLED_NAMES),
+        *(f"cov_{name}" for name in POOLED_NAMES),
+    )
 
     def __init__(self) -> None:
         self.rows: dict[str, list] = {f: [] for f in self.FIELDS}
@@ -293,9 +393,10 @@ class Recorder:
         return pl.DataFrame(self.rows)
 
 
-def score_one(hist, query_day, query_weekday, live, y) -> tuple[float, float, bool]:
+def score_one(hist, query_day, query_weekday, live, y, own=None,
+              mix=None) -> tuple[float, float, bool]:
     """(CRPS, effective n, covered by the 80% interval) of an empirical history."""
-    built = empirical(hist, query_day, query_weekday, live)
+    built = empirical(hist, query_day, query_weekday, live, own, mix)
     if built is None:
         return math.nan, 0.0, False
     x, w = built
@@ -303,6 +404,77 @@ def score_one(hist, query_day, query_weekday, live, y) -> tuple[float, float, bo
         return math.nan, 0.0, False
     q10, q90 = weighted_quantiles(x, w, (0.1, 0.9))
     return crps_empirical(x, w, y), effective_n(w), q10 <= y <= q90
+
+
+def pooled_scores(hist: tuple, own: np.ndarray, query_day: int,
+                  query_weekday: int, live: float | None, y: float,
+                  mixes) -> dict[str, tuple[float, float, bool]]:
+    """Score several own-run weightings over one pooled history.
+
+    They share a support and differ only in the weights, so the sort the CRPS
+    needs is done once for all of them rather than once each — which is what
+    makes a sweep over seven weightings affordable across a million events.
+    """
+    days, delay, prev, weekday = hist[:4]
+    if days.size == 0:
+        return {name: (math.nan, 0.0, False) for name, _ in mixes}
+    base = np.exp(-LN2 / HALF_LIFE_DAYS * (query_day - days))
+    base = np.where(weekday == query_weekday, base * SAME_WEEKDAY_BOOST, base)
+
+    known, kernel, x = None, None, delay
+    if live is not None:
+        has_prev = ~np.isnan(prev)
+        if int(has_prev.sum()) >= MIN_EFFECTIVE_N:
+            known = has_prev
+            bandwidth = max(3.0, LIVE_BANDWIDTH * abs(live))
+            z = (prev[known] - live) / bandwidth
+            kernel = LIVE_KERNEL_FLOOR + np.exp(-0.5 * z * z)
+            x = live + (delay[known] - prev[known])
+    order = np.argsort(x, kind="stable")
+    xs = x[order]
+
+    out = {}
+    for name, mix in mixes:
+        # The reweighting goes on the base weights, before the live kernel —
+        # where the app would apply it too.
+        w = mixed(base, own, mix)
+        if known is not None:
+            w = w[known] * kernel
+        if w.sum() <= 0:
+            out[name] = (math.nan, 0.0, False)
+            continue
+        ws = w[order]
+        out[name] = (crps_sorted(xs, ws, y), effective_n(w),
+                     covered_sorted(xs, ws, y))
+    return out
+
+
+def pooled_history(num_hist: tuple, line_hist: tuple,
+                   run_number) -> tuple[tuple, np.ndarray]:
+    """The two shards the app would be holding, as one history plus an own-mask.
+
+    The number's runs come from its own shard, whole; the line's come from the
+    line shard, which carries 45 days and *includes* the query's own runs — so
+    those are dropped from the line side rather than counted twice. Taking the
+    number's side from its own shard also keeps the runs the line shard's window
+    has already cut, which is history the app really would still have.
+    """
+    line_days, line_delay, line_prev, line_weekday, line_run = line_hist
+    if line_run is None:
+        keep = np.zeros(line_days.size, dtype=bool)
+    else:
+        keep = line_run != run_number
+    combined = tuple(
+        np.concatenate([own_side, other_side[keep]])
+        for own_side, other_side in zip(num_hist[:4],
+                                        (line_days, line_delay, line_prev,
+                                         line_weekday))
+    )
+    own = np.concatenate([
+        np.ones(num_hist[0].size, dtype=bool),
+        np.zeros(int(keep.sum()), dtype=bool),
+    ])
+    return combined, own
 
 
 def sweep(df: pl.DataFrame, eval_from: int, eval_to: int, line_window: int,
@@ -324,6 +496,7 @@ def sweep(df: pl.DataFrame, eval_from: int, eval_to: int, line_window: int,
                 grp["day"].to_numpy(), grp["tod_min"].to_numpy(),
                 grp["delay"].to_numpy(), grp["prev"].to_numpy(),
                 grp["weekday"].to_numpy(),
+                run_of=grp["train_number"].to_numpy() if ident == "line" else None,
             )
         return built
 
@@ -334,7 +507,7 @@ def sweep(df: pl.DataFrame, eval_from: int, eval_to: int, line_window: int,
     cluster = 0
     for key, grp in keyed.group_by(["eva", "train_type", "train_number"],
                                    maintain_order=False):
-        eva, ttype, _ = key
+        eva, ttype, run_number = key
         number = History(
             grp["day"].to_numpy(), grp["tod_min"].to_numpy(),
             grp["delay"].to_numpy(), grp["prev"].to_numpy(),
@@ -356,8 +529,11 @@ def sweep(df: pl.DataFrame, eval_from: int, eval_to: int, line_window: int,
             qday, qtod, qwd = row["day"], int(row["tod_min"]), row["weekday"]
             y = float(row["delay"])
             num_hist = number.before(qtod, qday, TOD_WINDOW_MIN)
-            line_hist = (line.before(qtod, qday, line_window, line_days) if line is not None
-                         else (np.empty(0), np.empty(0), np.empty(0), np.empty(0)))
+            line_hist = (
+                line.before(qtod, qday, line_window, line_days) if line is not None
+                else (np.empty(0), np.empty(0), np.empty(0), np.empty(0), None)
+            )
+            pool_hist, pool_own = pooled_history(num_hist, line_hist, run_number)
             reported = None if row["prev"] is None else gated(float(row["prev"]))
 
             for scenario in ("blind", "live"):
@@ -370,16 +546,29 @@ def sweep(df: pl.DataFrame, eval_from: int, eval_to: int, line_window: int,
                     continue
                 crps_num, eff_num, cov_num = score_one(num_hist, qday, qwd, live, y)
                 crps_line, eff_line, cov_line = score_one(line_hist, qday, qwd, live, y)
+                pooled = {}
+                for name, (crps_mix, eff_mix, cov_mix) in pooled_scores(
+                    pool_hist, pool_own, qday, qwd, live, y, POOLED,
+                ).items():
+                    usable = eff_mix >= MIN_EFFECTIVE_N
+                    pooled[f"crps_{name}"] = crps_mix if usable else math.nan
+                    pooled[f"cov_{name}"] = cov_mix
                 out.add(
                     cluster=cluster, scenario=scenario, bucket=bucket,
                     num_ok=eff_num >= MIN_EFFECTIVE_N,
                     line_ok=eff_line >= MIN_EFFECTIVE_N,
+                    # Kept as a number, not just the gate's verdict: "does the
+                    # line still have something to add" has a different answer
+                    # at nine effective runs than at ninety, and a hard switch
+                    # at eight cannot tell them apart.
+                    eff_number=eff_num,
                     y=y,
                     crps_number=crps_num if eff_num >= MIN_EFFECTIVE_N else math.nan,
                     crps_line=crps_line if eff_line >= MIN_EFFECTIVE_N else math.nan,
                     crps_thin=crps_num,
                     prior_z=y - loc if live is None else y - live,
                     cov_number=cov_num, cov_line=cov_line, cov_thin=cov_num,
+                    **pooled,
                 )
     return out.frame()
 
@@ -415,6 +604,17 @@ def with_prior(scored: pl.DataFrame) -> pl.DataFrame:
     fallback_cov = pl.when(pl.col("line_ok")).then(pl.col("cov_line")).otherwise(
         pl.col("cov_prior")
     )
+    proposed_crps = pl.when(pl.col("num_ok")).then(pl.col("crps_number")).otherwise(
+        fallback_crps
+    )
+    proposed_cov = pl.when(pl.col("num_ok")).then(pl.col("cov_number")).otherwise(
+        fallback_cov
+    )
+    # `combined` drops the switch entirely: one distribution built from both
+    # shards, the train's own runs taking n / (n + 8) of the weight. It still
+    # needs the cascade underneath for the events where even the two together
+    # are too thin to clear the floor.
+    usable_pool = pl.col("crps_shrink8").is_not_nan() & pl.col("crps_shrink8").is_not_null()
     return joined.with_columns(
         crps_shipped=pl.when(pl.col("num_ok")).then(pl.col("crps_number")).otherwise(
             pl.col("crps_prior")
@@ -422,12 +622,17 @@ def with_prior(scored: pl.DataFrame) -> pl.DataFrame:
         cov_shipped=pl.when(pl.col("num_ok")).then(pl.col("cov_number")).otherwise(
             pl.col("cov_prior")
         ),
-        crps_proposed=pl.when(pl.col("num_ok")).then(pl.col("crps_number")).otherwise(
-            fallback_crps
+        crps_proposed=proposed_crps,
+        cov_proposed=proposed_cov,
+        crps_combined=pl.when(usable_pool).then(pl.col("crps_shrink8")).otherwise(
+            proposed_crps
         ),
-        cov_proposed=pl.when(pl.col("num_ok")).then(pl.col("cov_number")).otherwise(
-            fallback_cov
+        cov_combined=pl.when(usable_pool).then(pl.col("cov_shrink8")).otherwise(
+            proposed_cov
         ),
+        on_prior=~pl.col("num_ok") & ~pl.col("line_ok") & ~usable_pool,
+        shipped_on_prior=~pl.col("num_ok"),
+        proposed_on_prior=~pl.col("num_ok") & ~pl.col("line_ok"),
     )
 
 
@@ -506,16 +711,21 @@ def report(scored: pl.DataFrame, out: Path | None) -> None:
         print(f"{rows.height} events, {thin.height} ({share:.1%}) with no usable "
               f"history for the train number; a line-keyed history covers "
               f"{covered:.1%} of those")
+        for label, column in (("as shipped", "shipped_on_prior"),
+                              ("with the line as a fallback", "proposed_on_prior"),
+                              ("with the two pooled", "on_prior")):
+            print(f"    falls through to the class prior {label}: "
+                  f"{float(rows[column].mean()):.1%}")
 
         blocks = {
             # Where the app falls back to the prior today. The comparison the
             # change is for.
-            "number_thin": (thin, ("prior", "line", "thin")),
+            "number_thin": (thin, ("prior", "line", "thin", *POOLED_NAMES)),
             # Where the app uses the number's history. Line-keying must not be
             # allowed in here, and this says what it would cost if it were.
-            "number_ok": (rich, ("number", "line", "prior")),
+            "number_ok": (rich, ("number", "line", "prior", *POOLED_NAMES)),
             # Both together: what a user would actually see.
-            "all": (rows, ("shipped", "proposed")),
+            "all": (rows, ("shipped", "proposed", "combined")),
         }
         for name, (subset, models) in blocks.items():
             print(f"\n  {name}: {subset.height} events")
@@ -531,10 +741,18 @@ def report(scored: pl.DataFrame, out: Path | None) -> None:
             "prior_vs_thin": (thin, "prior", "thin"),
             "thin_vs_line": (thin, "thin", "line"),
             "shipped_vs_proposed": (rows, "shipped", "proposed"),
+            "proposed_vs_combined": (rows, "proposed", "combined"),
+            "shipped_vs_combined": (rows, "shipped", "combined"),
             # The reason this is a fallback and not a promotion. Paired, over
             # the events both answered — the unpaired table above cannot say
             # it, because the line answers a different set.
             "number_vs_line": (rich, "number", "line"),
+            # Does combining beat switching? Two questions, one at each end of
+            # the cascade: where the number has nothing, is the line alone as
+            # good as the line plus those few runs; and where the number has
+            # plenty, does its line still have something to add.
+            **{f"line_vs_{name}": (thin, "line", name) for name in POOLED_NAMES},
+            **{f"number_vs_{name}": (rich, "number", name) for name in POOLED_NAMES},
         }.items():
             delta = compare(subset, left, right)
             result[f"{scenario}|{label}"] = delta
@@ -542,6 +760,39 @@ def report(scored: pl.DataFrame, out: Path | None) -> None:
                 print(f"    {label}: {delta['delta']:+.3f} min "
                       f"(95% {delta['ci95'][0]:+.3f}..{delta['ci95'][1]:+.3f}) "
                       f"over {delta['n']} events, {delta['clusters']} trains")
+
+        # How the pooled models fare as the number's own history thickens. A
+        # cascade switches at eight effective runs; if combining wins just
+        # above that line and loses far above it, the switch is the wrong
+        # shape and a shrinkage would beat it.
+        depth = {}
+        for name, low, high in (("0-8 (thin)", 0.0, MIN_EFFECTIVE_N),
+                                ("8-16", MIN_EFFECTIVE_N, 16.0),
+                                ("16-32", 16.0, 32.0),
+                                ("32-64", 32.0, 64.0),
+                                ("64+", 64.0, math.inf)):
+            block = rows.filter(
+                (pl.col("eff_number") >= low) & (pl.col("eff_number") < high)
+            )
+            if block.height == 0:
+                continue
+            baseline = "line" if high <= MIN_EFFECTIVE_N else "number"
+            depth[name] = {
+                "n": block.height,
+                "baseline": baseline,
+                **{n: compare(block, baseline, n) for n in POOLED_NAMES},
+            }
+        result[f"{scenario}|by_depth"] = depth
+        print("\n    pooling against the best single source, by how much"
+              " history the number has (positive = pooling wins):")
+        header = " ".join(f"{n:>9}" for n in POOLED_NAMES)
+        print(f"    {'effective runs':<14}{'n':>8} {'vs':<7} {header}")
+        for name, block in depth.items():
+            cells = " ".join(
+                f"{block[n]['delta']:+9.3f}" if block[n]["n"] else f"{'-':>9}"
+                for n in POOLED_NAMES
+            )
+            print(f"    {name:<14}{block['n']:>8} {block['baseline']:<7} {cells}")
 
         by_class = {}
         for bucket in sorted(thin["bucket"].unique().to_list()):
