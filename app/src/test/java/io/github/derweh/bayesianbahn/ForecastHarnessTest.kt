@@ -197,8 +197,8 @@ class ForecastHarnessTest {
     @Test
     fun `a shard is parsed once when a train's events arrive together`() {
         val s = store(listOf("RE_1", "RE_2"), capacity = 8)
-        repeat(5) { s.load("RE", "1", null) }
-        repeat(5) { s.load("RE", "2", null) }
+        repeat(5) { s.load("RE", "1") }
+        repeat(5) { s.load("RE", "2") }
         assertEquals("grouped access should parse each shard exactly once", 2, s.parses)
     }
 
@@ -209,17 +209,17 @@ class ForecastHarnessTest {
         // Walk all five, then come back to the first. With a capacity of two it
         // must have been evicted — which is the whole point: an unbounded cache
         // would still be holding it, and would hold all four thousand.
-        (1..5).forEach { s.load("RE", "$it", null) }
+        (1..5).forEach { s.load("RE", "$it") }
         assertEquals(5, s.parses)
-        s.load("RE", "1", null)
+        s.load("RE", "1")
         assertEquals("the evicted history should be re-read, not still resident", 6, s.parses)
     }
 
     @Test
     fun `an evicted history is still returned correctly`() {
         val s = store((1..5).map { "RE_$it" }, capacity = 2)
-        (1..5).forEach { s.load("RE", "$it", null) }
-        val again = s.load("RE", "1", null)
+        (1..5).forEach { s.load("RE", "$it") }
+        val again = s.load("RE", "1")
         assertEquals("RE_1", again?.trainName)
         assertEquals(1, again?.stations?.size)
     }
@@ -227,18 +227,30 @@ class ForecastHarnessTest {
     @Test
     fun `a train with no shard is not re-read on every event`() {
         val s = store(emptyList(), capacity = 8)
-        repeat(5) { assertNull(s.load("RE", "999", null)) }
+        repeat(5) { assertNull(s.load("RE", "999")) }
         // The bug this pins: `getOrPut` treats a cached null as a miss, so every
         // event of every history-less train went back to the filesystem.
         assertEquals("a missing shard should be remembered as missing", 1, s.parses)
     }
 
     @Test
-    fun `the line key is tried when the number has no shard`() {
-        val s = store(listOf("RE_9"), capacity = 8)
-        // Number first, then line — so this costs two parses and finds the line.
-        val found = s.load("RE", "12345", "RE 9")
-        assertEquals("RE_9", found?.trainName)
-        assertEquals(2, s.parses)
+    fun `the line shard is a separate lookup, keyed by line and station`() {
+        val s = store(listOf("RE9_8000013"), capacity = 8)
+        assertNull("the number's own key must not reach the line's shard",
+            s.load("RE", "12345"))
+        val found = s.loadLine("RE", "RE9", "8000013", null)
+        assertEquals("RE9_8000013", found?.trainName)
+    }
+
+    @Test
+    fun `the line comes from the train's own shard when the board omits it`() {
+        // IRIS names a line on about a sixth of stops; the shard names it on
+        // nearly all of them, which is what makes the fallback reachable.
+        val s = store(listOf("RE9_8000013"), capacity = 8)
+        val fromNumber = TrainHistory("RE 12345", "RE", emptyMap(), line = "RE9")
+        assertEquals("RE9_8000013",
+            s.loadLine("RE", null, "8000013", fromNumber)?.trainName)
+        assertNull("no line anywhere means no fallback",
+            s.loadLine("RE", null, "8000013", null))
     }
 }

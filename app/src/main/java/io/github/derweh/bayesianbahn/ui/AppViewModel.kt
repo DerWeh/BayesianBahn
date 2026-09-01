@@ -254,7 +254,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val history = container.historyRepository.load(
                 category = stop.label.category,
                 number = stop.label.number,
-                line = stop.label.line,
             )
             val event = stop.arrival ?: stop.departure
             val forecast = predictor.forecast(
@@ -264,6 +263,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 trainCategory = stop.label.category,
                 plannedTimeMillis = event?.plannedTime ?: System.currentTimeMillis(),
                 liveDelayMinutes = event?.liveDelayMinutes,
+                lineHistory = {
+                    container.historyRepository.loadLine(
+                        stop.label.category, stop.label.line, station.eva, history,
+                    )
+                },
             )
             predictionState = PredictionState.Loaded(forecast)
         }

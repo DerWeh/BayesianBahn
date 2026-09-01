@@ -5,6 +5,35 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
+## [Unreleased]
+
+### Added
+- **A forecast for trains whose run number is too new to have one.** IRIS gives
+  every run its own number and renumbers at each timetable change, so a train
+  that has run for years can arrive with almost nothing behind it: over eleven
+  collected days a quarter of arrivals fell through to a class-wide prior that
+  knows neither the station nor the hour. Those trains still have a line, and
+  the line has run all along. `pipeline/build_shards.py` now publishes a second
+  set of shards keyed by line and station, and the app reads one when — and only
+  when — the train's own history comes up short. Walk-forward over 781,000
+  archive events at 62 stations, on exactly the events the prior answers today,
+  the line scores 0.43 min of CRPS better (95% 0.40..0.46, resampling whole
+  trains) with a shard available for 88% of them; across the December 2025
+  timetable change, where the population doubles to 11% of events, the same
+  0.41. Regional and S-Bahn both gain; long distance almost never carries a
+  line number, so there is nothing to say about it either way. The screens say
+  which line the numbers came from rather than claiming they are this train's.
+
+### Changed
+- **The line shard is a separate lookup, not a second candidate key.**
+  `HistoryRepository.load` had always asked for a line-keyed shard when the
+  number's key missed. Now that those shards exist, that would have handed a
+  line's pooled runs to every caller — including the two-leg model, which pairs
+  a candidate's departure and arrival by date and would have joined one train's
+  departure to another train's arrival. Line-keying also loses to number-keying
+  wherever the number has a history (0.13 min of CRPS, 95% 0.12..0.13), so it
+  is now reached only through the fallback that measured better.
+
 ## [0.3.0] - 2026-08-29
 
 ### Fixed

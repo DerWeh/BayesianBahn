@@ -3,6 +3,7 @@ package io.github.derweh.bayesianbahn
 import io.github.derweh.bayesianbahn.data.CandidateBuilder
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.model.ConnectionModel
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -40,7 +41,7 @@ import java.time.LocalDate
 class JourneyHarness {
 
     @Test
-    fun `score recorded journeys with the shipping model`() {
+    fun `score recorded journeys with the shipping model`() = runBlocking {
         val journeys = System.getenv("HARNESS_JOURNEYS")
         assumeTrue("set HARNESS_JOURNEYS to run the harness", journeys != null)
         val events = File(requireNotNull(journeys))
@@ -60,113 +61,126 @@ class JourneyHarness {
         var noFeeder = 0
 
         out.bufferedWriter().use { writer ->
-            events.forEachLine { line ->
-                if (line.isBlank()) return@forEachLine
-                val event = Json.parseToJsonElement(line) as JsonObject
-                val truthArrival = event.int("truth_arrival")
-                val dbArrival = event.int("db_arrival")
-                if (truthArrival == null || dbArrival == null) return@forEachLine
+            // A sequence rather than File.forEachLine: that one is not inline,
+            // so the suspending line lookup below cannot be called inside it.
+            events.bufferedReader().use { reader ->
+                for (line in reader.lineSequence()) {
+                    if (line.isBlank()) continue
+                    val event = Json.parseToJsonElement(line) as JsonObject
+                    val truthArrival = event.int("truth_arrival")
+                    val dbArrival = event.int("db_arrival")
+                    if (truthArrival == null || dbArrival == null) continue
 
-                // Already trimmed to before `day` by the store, once per shard.
-                val feederHistory = histories.load(
-                    event.str("cat")!!, event.str("num")!!, event.str("line"),
-                )
-                val feederPlanned = ForecastHarness.wallMinutesToMillis(
-                    event.int("planned")!!,
-                )
-                val feederForecast = predictor.forecast(
-                    history = feederHistory,
-                    stationEva = event.str("eva")!!,
-                    stationName = "",
-                    trainCategory = event.str("cat")!!,
-                    plannedTimeMillis = feederPlanned,
-                    liveDelayMinutes = if (blind) null else event.dbl("db"),
-                    today = day,
-                )
+                    // Already trimmed to before `day` by the store, once per shard.
+                    val feederHistory = histories.load(
+                        event.str("cat")!!, event.str("num")!!,
+                    )
+                    val feederPlanned = ForecastHarness.wallMinutesToMillis(
+                        event.int("planned")!!,
+                    )
+                    val feederForecast = predictor.forecast(
+                        history = feederHistory,
+                        stationEva = event.str("eva")!!,
+                        stationName = "",
+                        trainCategory = event.str("cat")!!,
+                        plannedTimeMillis = feederPlanned,
+                        liveDelayMinutes = if (blind) null else event.dbl("db"),
+                        today = day,
+                        lineHistory = {
+                            histories.loadLine(
+                                event.str("cat")!!, event.str("line"),
+                                event.str("eva")!!, feederHistory,
+                            )
+                        },
+                    )
 
-                val candidates = (event["candidates"] as JsonArray).jsonArray
-                    .map { it as JsonObject }
-                    .mapNotNull { candidate ->
-                        CandidateBuilder.build(
-                            history = histories.load(
-                                candidate.str("cat")!!, candidate.str("num")!!,
-                                candidate.str("line"),
-                            ),
-                            id = candidate.str("id")!!,
-                            label = candidate.str("id")!!,
-                            transferEva = event.str("eva")!!,
-                            transferName = "",
-                            destinationEva = event.str("dest_eva"),
-                            destinationName = event.str("dest")!!,
-                            plannedDepartureMillis = ForecastHarness.wallMinutesToMillis(
-                                candidate.int("planned_dep")!!,
-                            ),
-                            liveDepartureDelay =
-                                if (blind) null else candidate.dbl("live_dep"),
-                            cancelledLive =
-                                !blind && candidate.bool("cancelled_live") == true,
-                            today = day,
-                        )
+                    val candidates = (event["candidates"] as JsonArray).jsonArray
+                        .map { it as JsonObject }
+                        .mapNotNull { candidate ->
+                            CandidateBuilder.build(
+                                // The number's own shard only: CandidateBuilder
+                                // pairs the two legs of a run by date, and a line's
+                                // shard holds many runs a day — it would join one
+                                // train's departure to another's arrival.
+                                history = histories.load(
+                                    candidate.str("cat")!!, candidate.str("num")!!,
+                                ),
+                                id = candidate.str("id")!!,
+                                label = candidate.str("id")!!,
+                                transferEva = event.str("eva")!!,
+                                transferName = "",
+                                destinationEva = event.str("dest_eva"),
+                                destinationName = event.str("dest")!!,
+                                plannedDepartureMillis = ForecastHarness.wallMinutesToMillis(
+                                    candidate.int("planned_dep")!!,
+                                ),
+                                liveDepartureDelay =
+                                    if (blind) null else candidate.dbl("live_dep"),
+                                cancelledLive =
+                                    !blind && candidate.bool("cancelled_live") == true,
+                                today = day,
+                            )
+                        }
+                    if (candidates.isEmpty()) {
+                        noCandidates++
+                        continue
                     }
-                if (candidates.isEmpty()) {
-                    noCandidates++
-                    return@forEachLine
-                }
 
-                val result = ConnectionModel.propagate(
-                    feederArrival = feederForecast.distribution,
-                    feederPlannedArrivalMillis = feederPlanned,
-                    transferMinutes = TRANSFER_MINUTES,
-                    candidates = candidates,
-                )
-                if (result == null) {
-                    noFeeder++
-                    return@forEachLine
-                }
+                    val result = ConnectionModel.propagate(
+                        feederArrival = feederForecast.distribution,
+                        feederPlannedArrivalMillis = feederPlanned,
+                        transferMinutes = TRANSFER_MINUTES,
+                        candidates = candidates,
+                    )
+                    if (result == null) {
+                        noFeeder++
+                        continue
+                    }
 
-                // The model answers in minutes relative to the planned arrival
-                // of the first candidate it kept, which it picks itself. Both
-                // the truth and DB's answer are absolute wall-clock minutes, so
-                // they are rebased here rather than guessed at in Python.
-                val reference = result.referenceArrivalMillis
-                val truth = minutesFrom(reference, truthArrival)
-                val db = minutesFrom(reference, dbArrival)
-                val d = result.distribution
-                writer.write(
-                    """{"eva":${ForecastHarness.q(event.str("eva"))},""" +
-                        """"cat":${ForecastHarness.q(event.str("cat"))},""" +
-                        """"num":${ForecastHarness.q(event.str("num"))},""" +
-                        """"dest":${ForecastHarness.q(event.str("dest"))},""" +
-                        """"tau":0,"lead":${event.dbl("lead")},""" +
-                        """"read_at":${event.dbl("read_at")},""" +
-                        """"planned":${event.int("planned")},""" +
-                        """"planned_dep":${event.int("planned_dep")},""" +
-                        """"candidates":${candidates.size},""" +
-                        // Whether the passenger's train sat past the end of the
-                        // list either forecaster was offered — the journeys the
-                        // old cap dropped, and the ones the app got most wrong.
-                        """"beyond_list":${event.bool("beyond_list")},""" +
-                        // The model reconstructs the planned arrival at the far
-                        // end from history; the event builder holds the real
-                        // one. Emitting the reference makes any gap between the
-                        // two visible instead of turning into a delay.
-                        """"reference":${millisToWallMinutes(reference)},""" +
-                        """"reference_id":${ForecastHarness.q(
-                            result.candidates.firstOrNull {
-                                it.candidate.plannedArrivalMillis == reference
-                            }?.candidate?.id,
-                        )},""" +
-                        """"miss_p":${result.missProbability},""" +
-                        """"db":$db,"truth":$truth,""" +
-                        """"crps":${ForecastHarness.crps(d, truth)},""" +
-                        """"cdf_at":${d.cdf(truth)},"cdf_below":${d.cdf(truth - 1.0)},""" +
-                        """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
-                        """"q90":${d.quantile(0.9)},""" +
-                        """"source":${ForecastHarness.q(feederForecast.source.name)},""" +
-                        """"runs":${feederForecast.runCount}}""",
-                )
-                writer.newLine()
-                scored++
+                    // The model answers in minutes relative to the planned arrival
+                    // of the first candidate it kept, which it picks itself. Both
+                    // the truth and DB's answer are absolute wall-clock minutes, so
+                    // they are rebased here rather than guessed at in Python.
+                    val reference = result.referenceArrivalMillis
+                    val truth = minutesFrom(reference, truthArrival)
+                    val db = minutesFrom(reference, dbArrival)
+                    val d = result.distribution
+                    writer.write(
+                        """{"eva":${ForecastHarness.q(event.str("eva"))},""" +
+                            """"cat":${ForecastHarness.q(event.str("cat"))},""" +
+                            """"num":${ForecastHarness.q(event.str("num"))},""" +
+                            """"dest":${ForecastHarness.q(event.str("dest"))},""" +
+                            """"tau":0,"lead":${event.dbl("lead")},""" +
+                            """"read_at":${event.dbl("read_at")},""" +
+                            """"planned":${event.int("planned")},""" +
+                            """"planned_dep":${event.int("planned_dep")},""" +
+                            """"candidates":${candidates.size},""" +
+                            // Whether the passenger's train sat past the end of the
+                            // list either forecaster was offered — the journeys the
+                            // old cap dropped, and the ones the app got most wrong.
+                            """"beyond_list":${event.bool("beyond_list")},""" +
+                            // The model reconstructs the planned arrival at the far
+                            // end from history; the event builder holds the real
+                            // one. Emitting the reference makes any gap between the
+                            // two visible instead of turning into a delay.
+                            """"reference":${millisToWallMinutes(reference)},""" +
+                            """"reference_id":${ForecastHarness.q(
+                                result.candidates.firstOrNull {
+                                    it.candidate.plannedArrivalMillis == reference
+                                }?.candidate?.id,
+                            )},""" +
+                            """"miss_p":${result.missProbability},""" +
+                            """"db":$db,"truth":$truth,""" +
+                            """"crps":${ForecastHarness.crps(d, truth)},""" +
+                            """"cdf_at":${d.cdf(truth)},"cdf_below":${d.cdf(truth - 1.0)},""" +
+                            """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
+                            """"q90":${d.quantile(0.9)},""" +
+                            """"source":${ForecastHarness.q(feederForecast.source.name)},""" +
+                            """"runs":${feederForecast.runCount}}""",
+                    )
+                    writer.newLine()
+                    scored++
+                }
             }
         }
         println("journeys: scored $scored, $noCandidates with no usable candidate, " +

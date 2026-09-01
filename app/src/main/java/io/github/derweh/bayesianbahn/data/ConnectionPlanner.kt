@@ -102,7 +102,7 @@ class ConnectionPlanner(
             ?: return Outcome.Error(UserMessage.NoPlannedArrival(transfer.name))
 
         val feederHistory = historyRepository.load(
-            feeder.label.category, feeder.label.number, feeder.label.line,
+            feeder.label.category, feeder.label.number,
         )
         val feederForecast = predictor.forecast(
             history = feederHistory,
@@ -112,6 +112,11 @@ class ConnectionPlanner(
             plannedTimeMillis = feederPlanned,
             liveDelayMinutes = feederArrival.liveDelayMinutes,
             today = today,
+            lineHistory = {
+                historyRepository.loadLine(
+                    feeder.label.category, feeder.label.line, transfer.eva, feederHistory,
+                )
+            },
         )
 
         val towardsDestination = board
@@ -162,8 +167,11 @@ class ConnectionPlanner(
         val departure = stop.departure ?: return null
         val plannedDep = departure.plannedTime ?: return null
         return CandidateBuilder.build(
+            // The number's own shard only: CandidateBuilder pairs the two legs
+            // of a run by date, and a line's shard holds many runs a day — it
+            // would join one train's departure to another train's arrival.
             history = historyRepository.load(
-                stop.label.category, stop.label.number, stop.label.line,
+                stop.label.category, stop.label.number,
             ),
             id = stop.id,
             label = "${stop.label.display} → ${stop.destination ?: "?"}",

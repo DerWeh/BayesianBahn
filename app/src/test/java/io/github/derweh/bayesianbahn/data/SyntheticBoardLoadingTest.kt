@@ -55,7 +55,7 @@ class SyntheticBoardLoadingTest {
         val permits = SyntheticTimetable.MAX_CONCURRENT_SHARDS
         val latch = CountDownLatch(permits)
         val reachedTogether = AtomicInteger()
-        val timetable = timetable(12, { _, _, _ ->
+        val timetable = timetable(12, { _, _ ->
             latch.countDown()
             if (latch.await(10, TimeUnit.SECONDS)) reachedTogether.incrementAndGet()
             null
@@ -72,7 +72,7 @@ class SyntheticBoardLoadingTest {
     fun `no more shards are in flight than the permit count allows`() {
         val live = AtomicInteger()
         val peak = AtomicInteger()
-        val timetable = timetable(20, { _, _, _ ->
+        val timetable = timetable(20, { _, _ ->
             val now = live.incrementAndGet()
             peak.updateAndGet { maxOf(it, now) }
             Thread.sleep(5)
@@ -91,7 +91,7 @@ class SyntheticBoardLoadingTest {
     @Test
     fun `a train the caller will discard is never fetched`() {
         val asked = ConcurrentLinkedQueue<String>()
-        val timetable = timetable(4, { category, number, _ ->
+        val timetable = timetable(4, { category, number ->
             asked += "$category $number"
             null
         })
@@ -109,7 +109,7 @@ class SyntheticBoardLoadingTest {
     @Test
     fun `without a filter every train on the board is fetched`() {
         val asked = ConcurrentLinkedQueue<String>()
-        val timetable = timetable(4, { category, number, _ ->
+        val timetable = timetable(4, { category, number ->
             asked += "$category $number"
             null
         })
@@ -122,7 +122,7 @@ class SyntheticBoardLoadingTest {
     fun `the stop budget is spent on trains the filter keeps`() {
         // The filter runs before the cap, so a long-distance-heavy board does
         // not burn the budget on trains a Deutschland-Ticket search cannot use.
-        val timetable = timetable(SyntheticTimetable.MAX_STOPS + 10, { _, _, _ -> null })
+        val timetable = timetable(SyntheticTimetable.MAX_STOPS + 10, { _, _ -> null })
         val stops = runBlocking {
             timetable.board("8000001", start, hours = 24) {
                 DeutschlandTicket.covers(it.category)
@@ -136,7 +136,7 @@ class SyntheticBoardLoadingTest {
     @Test
     fun `routes land on the stop they belong to`() {
         // The concurrent version must not shuffle results onto other stops.
-        val timetable = timetable(6, { category, number, _ ->
+        val timetable = timetable(6, { category, number ->
             TrainHistory(
                 "$category $number", category,
                 mapOf(
@@ -159,7 +159,7 @@ class SyntheticBoardLoadingTest {
 
     @Test
     fun `stops stay in departure order`() {
-        val timetable = timetable(8, { _, _, _ -> null })
+        val timetable = timetable(8, { _, _ -> null })
         val stops = runBlocking { timetable.board("8000001", start, hours = 4) }
         val times = stops.map { it.departure!!.plannedTime!! }
         assertEquals(times.sorted(), times)
@@ -169,7 +169,7 @@ class SyntheticBoardLoadingTest {
     fun `a board that cannot be fetched is empty, not a crash`() {
         val timetable = SyntheticTimetable(
             ByteSource { _, _, _, _ -> null },
-            { _, _, _ -> null },
+            { _, _ -> null },
             boardUrl = "http://localhost/",
         )
         assertEquals(emptyList<Any>(), runBlocking { timetable.board("8000001", start, 4) })

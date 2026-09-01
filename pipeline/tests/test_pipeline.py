@@ -293,7 +293,11 @@ def test_shards_reads_monthly_and_recent_together(mixed_dir, tmp_path, monkeypat
     _run(build_shards, monkeypatch, mixed_dir, out)
 
     index = json.loads((out / "index.json").read_text())
-    assert set(index) == {"RE_4711", "RB_5000"}
+    # Two per-run shards and, under the second key each of them answers to,
+    # their lines.
+    assert set(index) == {
+        "RE_4711", "RB_5000", f"RE_9_{ULM}", f"RB_7_{AUGSBURG}",
+    }
 
     shard = json.loads(gzip.decompress((out / "shards" / "RE_4711.jgz").read_bytes()))
     station = shard[ULM] if isinstance(shard, dict) and ULM in shard else shard
@@ -311,7 +315,228 @@ def test_shards_station_filter_keeps_whole_runs(mixed_dir, tmp_path, monkeypatch
     """--stations selects trains by identity, so the regional zip stays coherent."""
     out = tmp_path / "out"
     _run(build_shards, monkeypatch, mixed_dir, out, "--stations", AUGSBURG)
-    assert set(json.loads((out / "index.json").read_text())) == {"RB_5000"}
+    assert set(json.loads((out / "index.json").read_text())) == {
+        "RB_5000", f"RB_7_{AUGSBURG}",
+    }
+
+
+HISTORY_REPOSITORY = (
+    Path(__file__).resolve().parents[2]
+    / "app/src/main/java/io/github/derweh/bayesianbahn/data/HistoryRepository.kt"
+)
+
+
+@pytest.fixture
+def line_dir(tmp_path: Path) -> Path:
+    """One line at one station, run under two numbers, plus its replacement bus.
+
+    This is the shape the line shard exists for. RE 4711 runs the RE9 for the
+    first ten days and RE 4712 takes it over for the next ten — a renumbering,
+    which is what a timetable change does to a train that has not otherwise
+    changed. Bus 900 runs "the RE9" too, as a rail replacement, and its delays
+    have nothing to do with the trains': it must not land in the same shard.
+    """
+    data = tmp_path / "data"
+    days = _days(dt.date(2026, 6, 1), 20)
+    rows = []
+    for i, day in enumerate(days):
+        number = "4711" if i < 10 else "4712"
+        rows.append(_stop(MONTHLY_SCHEMA, day, eva=ULM, station="Ulm Hbf",
+                          ttype="RE", number=number, line="RE9", minute=5,
+                          delay=i % 5))
+        rows.append(_stop(MONTHLY_SCHEMA, day, eva=ULM, station="Ulm Hbf",
+                          ttype="Bus", number="900", line="RE9", minute=8,
+                          delay=20))
+    _write(data / "data-2026-06.parquet", MONTHLY_SCHEMA, rows)
+    return data
+
+
+def _shard(out: Path, key: str) -> dict:
+    return json.loads(gzip.decompress((out / "shards" / f"{key}.jgz").read_bytes()))
+
+
+def _runs(shard: dict, station: str) -> int:
+    return len(shard["stations"][station]["a"])
+
+
+def test_a_line_shard_pools_the_runs_of_every_number_on_it(line_dir, tmp_path,
+                                                           monkeypatch) -> None:
+    """The whole point: the line has history where a fresh number has none."""
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out)
+
+    assert _runs(_shard(out, "RE_4711"), "Ulm Hbf") == 10
+    assert _runs(_shard(out, "RE_4712"), "Ulm Hbf") == 10
+    assert _runs(_shard(out, f"RE9_{ULM}"), "Ulm Hbf") == 20
+
+
+def test_a_replacement_bus_keeps_its_own_line_shard(line_dir, tmp_path,
+                                                    monkeypatch) -> None:
+    """Type + line, not line alone: a bus on the RE9 is not an RE9 train.
+
+    Pooling them would answer for a train from twenty minutes of bus delay,
+    which is worse than the prior it replaced rather than better.
+    """
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out)
+
+    assert _runs(_shard(out, f"BUS_RE9_{ULM}"), "Ulm Hbf") == 20
+    assert _runs(_shard(out, f"RE9_{ULM}"), "Ulm Hbf") == 20
+    assert _shard(out, f"BUS_RE9_{ULM}")["type"] == "Bus"
+    assert _shard(out, f"RE9_{ULM}")["type"] == "RE"
+
+
+def test_bucketing_never_splits_a_line_across_passes(line_dir, tmp_path,
+                                                     monkeypatch) -> None:
+    """The country-wide build runs in hash partitions; a shard must fit in one.
+
+    Partitioning by train number would scatter one line over several passes,
+    and each pass rewrites the file from scratch — so the last pass to touch a
+    line would publish it holding only its own share of the history, with
+    nothing to show that anything was missing.
+    """
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out, "--buckets", "3")
+
+    assert _runs(_shard(out, f"RE9_{ULM}"), "Ulm Hbf") == 20
+    assert json.loads((out / "index.json").read_text())[f"RE9_{ULM}"] == 20
+
+
+def test_line_shards_keep_only_the_most_recent_days(line_dir, tmp_path,
+                                                    monkeypatch) -> None:
+    """Whole days, counted back from the line's last run at that station."""
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out, "--line-days", "6")
+
+    assert _runs(_shard(out, f"RE9_{ULM}"), "Ulm Hbf") == 6
+    # The per-run shards are not trimmed: they are small already, and the
+    # recency decay is what silences their old runs.
+    assert _runs(_shard(out, "RE_4711"), "Ulm Hbf") == 10
+
+
+def test_a_line_that_stopped_running_publishes_nothing(tmp_path, monkeypatch) -> None:
+    """The window is a date, not "this line's last 45 days".
+
+    A branch line closed for the summer would otherwise publish a shard of its
+    last month whenever it ran, and the app would answer a query about today
+    from it — with no sign that the history is a season old.
+    """
+    data = tmp_path / "data"
+    rows = []
+    for i, day in enumerate(_days(dt.date(2026, 6, 1), 5)):
+        rows.append(_stop(MONTHLY_SCHEMA, day, eva=ULM, station="Ulm Hbf",
+                          ttype="RE", number="4711", line="RE9", minute=5))
+    for day in _days(dt.date(2026, 6, 20), 5):
+        rows.append(_stop(MONTHLY_SCHEMA, day, eva=ULM, station="Ulm Hbf",
+                          ttype="RB", number="5000", line="RB7", minute=40))
+    _write(data / "data-2026-06.parquet", MONTHLY_SCHEMA, rows)
+
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, data, out, "--line-days", "10")
+
+    index = json.loads((out / "index.json").read_text())
+    assert f"RB7_{ULM}" in index, "the line still running keeps its shard"
+    assert f"RE9_{ULM}" not in index, "the line that stopped must publish nothing"
+    assert not (out / "shards" / f"RE9_{ULM}.jgz").exists()
+    # The per-run shards are untouched: they are what the model prefers, and
+    # an old one is still the best answer for the train it belongs to.
+    assert "RE_4711" in index
+
+
+def test_each_file_reports_the_last_day_it_holds(mixed_dir) -> None:
+    """The line pass reads every file once per hash bucket — sixteen times over
+    on a country-wide build — so the ones that cannot contribute a run to the
+    window are worth skipping before they are opened. This is what decides."""
+    files = sorted(mixed_dir.glob("data-*.parquet"))
+    ends = build_shards.last_days(files)
+    assert len(ends) == len(files)
+
+    def as_date(day: int) -> dt.date:
+        return dt.date(1970, 1, 1) + dt.timedelta(days=day)
+
+    assert as_date(ends[mixed_dir / "data-2026-06.parquet"]) == dt.date(2026, 6, 30)
+    assert as_date(ends[mixed_dir / "data-recent-2026-07-04.parquet"]) == dt.date(2026, 7, 4)
+    # A three-day window reaches back to 2026-07-02, so only the last three
+    # daily files can hold anything and the month is skipped outright.
+    since = max(ends.values()) - 3 + 1
+    kept = {f.stem for f in files if ends[f] >= since}
+    assert kept == {"data-recent-2026-07-02", "data-recent-2026-07-03",
+                    "data-recent-2026-07-04"}
+
+
+def test_line_shards_can_be_left_out(line_dir, tmp_path, monkeypatch) -> None:
+    """--line-days 0 for a build that only wants the per-run shards."""
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out, "--line-days", "0")
+
+    assert set(json.loads((out / "index.json").read_text())) == {
+        "RE_4711", "RE_4712", "BUS_900",
+    }
+    assert not (out / "shards" / f"RE9_{ULM}.jgz").exists()
+
+
+def test_the_line_shard_records_which_line_it_is(line_dir, tmp_path,
+                                                 monkeypatch) -> None:
+    out = tmp_path / "out"
+    _run(build_shards, monkeypatch, line_dir, out)
+
+    shard = _shard(out, f"RE9_{ULM}")
+    # The name the screens print is the line, not the key: the station number
+    # is addressing, and a user reading "RE9 8000170" would learn nothing.
+    assert (shard["train"], shard["line"]) == ("RE9", "RE9")
+
+
+def test_the_line_key_rule_is_the_app_s(line_dir, tmp_path, monkeypatch) -> None:
+    """A key the app never asks for publishes bytes nobody reads.
+
+    The app builds the second candidate key itself, from the category and the
+    line IRIS gave it, and fetches whatever that names. If this file spells the
+    key differently the lookup misses silently — the same failure the feature
+    is fixing — so the rule is pinned against the Kotlin that has to agree
+    with it.
+    """
+    src = HISTORY_REPOSITORY.read_text(encoding="utf-8")
+    assert 'if (line.startsWith(category)) line else "$category $line"' in re.sub(
+        r"\\s+", " ", src[src.index("fun lineKey"):src.index("fun lineKey") + 400]
+    )
+    assert 'trainName.trim().replace(Regex("[^A-Za-z0-9]+"), "_").trim(\'_\').uppercase()' \
+        in re.sub(r"\s+", " ", src)
+
+    assert '+ " " + stationEva' in re.sub(
+        r"\s+", " ", src[src.index("fun lineKey"):src.index("fun lineKey") + 400]
+    )
+
+    for train_type, line, expected in [
+        ("S", "S7", f"S7_{ULM}"),      # IRIS already puts the product in the line
+        ("RE", "RE9", f"RE9_{ULM}"),
+        ("Bus", "S7", f"BUS_S7_{ULM}"),  # ...but not the train's own product
+        ("HLB", "RB90", f"HLB_RB90_{ULM}"),
+        ("RE", "9", f"RE_9_{ULM}"),    # a bare line number still gets one
+    ]:
+        assert build_shards.line_key(train_type, line, ULM) == expected
+
+
+def test_a_line_shard_never_lands_on_a_train_s_key(tmp_path, monkeypatch) -> None:
+    """Overwriting a train's history with its line's would be silent and wrong.
+
+    Nothing in the archive collides today — a run number is digits and a line
+    key ends in a station — but the guard is cheap and the failure it catches
+    is invisible: the train would simply start answering from its line.
+    """
+    data = tmp_path / "data"
+    # A run number that spells out the line key of line "9" at Ulm, so both
+    # rules produce RE_9_8000170.
+    _write(
+        data / "data-2026-06.parquet",
+        MONTHLY_SCHEMA,
+        [
+            _stop(MONTHLY_SCHEMA, day, eva=ULM, station="Ulm Hbf", ttype="RE",
+                  number=f"9 {ULM}", line="9", minute=5)
+            for day in _days(dt.date(2026, 6, 1), 3)
+        ],
+    )
+    with pytest.raises(SystemExit, match="overwrite a train shard"):
+        _run(build_shards, monkeypatch, data, tmp_path / "out")
 
 
 def _plan_xml(station: str, sid: str, arr: str, dep: str, line: str = "9") -> str:

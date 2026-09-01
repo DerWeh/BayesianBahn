@@ -91,6 +91,14 @@
         <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges an diesem Bahnhof.</item>
         <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges an diesem Bahnhof.</item>
     </plurals>
+    <plurals name="forecast_empirical_line_live">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt der Linie %2$s an diesem Bahnhof, neu gewichtet auf die aktuelle Live-Verspätung (%3$s). Die Zugnummer dieser Fahrt ist zu neu für eine eigene Historie.</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten der Linie %2$s an diesem Bahnhof, neu gewichtet auf die aktuelle Live-Verspätung (%3$s). Die Zugnummer dieser Fahrt ist zu neu für eine eigene Historie.</item>
+    </plurals>
+    <plurals name="forecast_empirical_line">
+        <item quantity="one">Empirisch: %1$d frühere Fahrt der Linie %2$s an diesem Bahnhof. Die Zugnummer dieser Fahrt ist zu neu für eine eigene Historie.</item>
+        <item quantity="other">Empirisch: %1$d frühere Fahrten der Linie %2$s an diesem Bahnhof. Die Zugnummer dieser Fahrt ist zu neu für eine eigene Historie.</item>
+    </plurals>
     <string name="forecast_prior">Keine Verspätungshistorie für diesen Zug — gezeigt wird eine A-priori-Schätzung für seine Zuggattung und Tageszeit.</string>
     <string name="live_note_ignored_on_time">" Die DB meldet diesen Zug derzeit als pünktlich, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>
     <string name="live_note_ignored_early">" Die DB meldet diesen Zug derzeit als verfrüht, was sie für fast jeden Zug bis kurz vor Abfahrt tut; die Vorhersage stützt sich deshalb nicht darauf."</string>

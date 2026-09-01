@@ -98,6 +98,16 @@
         <item quantity="one">Empirical: %1$d past run of this train at this station.</item>
         <item quantity="other">Empirical: %1$d past runs of this train at this station.</item>
     </plurals>
+    <!-- The run number is new; the line it runs is not. Naming the line is the
+         point: it tells the user what the numbers are actually about. -->
+    <plurals name="forecast_empirical_line_live">
+        <item quantity="one">Empirical: %1$d past run of line %2$s at this station, reweighted to match this train\'s current live delay (%3$s). Its own run number is too new to have a history.</item>
+        <item quantity="other">Empirical: %1$d past runs of line %2$s at this station, reweighted to match this train\'s current live delay (%3$s). Its own run number is too new to have a history.</item>
+    </plurals>
+    <plurals name="forecast_empirical_line">
+        <item quantity="one">Empirical: %1$d past run of line %2$s at this station. This train\'s own run number is too new to have a history.</item>
+        <item quantity="other">Empirical: %1$d past runs of line %2$s at this station. This train\'s own run number is too new to have a history.</item>
+    </plurals>
     <string name="forecast_prior">No delay history available for this train — showing a prior estimate for its category and time of day.</string>
     <string name="live_note_ignored_on_time">" DB currently reports this train on time, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>
     <string name="live_note_ignored_early">" DB currently reports this train ahead of schedule, which it does for almost every train until shortly before departure, so the forecast does not lean on it."</string>

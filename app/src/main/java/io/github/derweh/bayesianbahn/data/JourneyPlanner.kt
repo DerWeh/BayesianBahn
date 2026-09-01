@@ -180,7 +180,7 @@ class JourneyPlanner(
         to: Station,
     ): Itinerary? {
         val departure = stop.departure?.plannedTime ?: return null
-        val history = historyRepository.load(stop.label.category, stop.label.number, stop.label.line)
+        val history = historyRepository.load(stop.label.category, stop.label.number)
         val destHistory = history?.stations?.entries
             ?.firstOrNull { (name, sh) -> sh.eva == to.eva || pathMatches(name, to.name) }
             ?.value ?: return null
@@ -200,6 +200,11 @@ class JourneyPlanner(
             trainCategory = stop.label.category,
             plannedTimeMillis = plannedArr,
             liveDelayMinutes = stop.departure?.liveDelayMinutes,
+            lineHistory = {
+                historyRepository.loadLine(
+                    stop.label.category, stop.label.line, to.eva, history,
+                )
+            },
         )
         return Itinerary(
             feeder = stop,

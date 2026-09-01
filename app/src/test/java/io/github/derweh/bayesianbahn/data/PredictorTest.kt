@@ -1,6 +1,7 @@
 package io.github.derweh.bayesianbahn.data
 
 import io.github.derweh.bayesianbahn.model.HistoricalRun
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -45,16 +46,23 @@ class PredictorTest {
         ),
     )
 
-    private fun forecast(live: Double?, history: TrainHistory? = history(6)) =
-        Predictor().forecast(
-            history = history,
-            stationEva = "8000013",
-            stationName = "Augsburg Hbf",
-            trainCategory = "RE",
-            plannedTimeMillis = plannedMillis,
-            liveDelayMinutes = live,
-            today = today,
-        )
+    private fun forecast(
+        live: Double?,
+        history: TrainHistory? = history(6),
+        line: TrainHistory? = null,
+        lineFetches: IntArray = IntArray(1),
+    ) = runBlocking {
+            Predictor().forecast(
+                history = history,
+                stationEva = "8000013",
+                stationName = "Augsburg Hbf",
+                trainCategory = "RE",
+                plannedTimeMillis = plannedMillis,
+                liveDelayMinutes = live,
+                today = today,
+                lineHistory = { lineFetches[0]++; line },
+            )
+        }
 
     // --- the gate itself ---------------------------------------------------
 
@@ -143,5 +151,54 @@ class PredictorTest {
         assertEquals(ForecastSource.PRIOR, f.source)
         assertNull(f.ignoredLiveDelay)
         assertEquals(15.0, f.distribution.quantile(0.5), 2.0)
+    }
+
+    // --- the line fallback -------------------------------------------------
+
+    @Test
+    fun `the line answers when the run number is too new to`() {
+        // Three runs is under the effective-sample floor, so this number alone
+        // would have gone to the prior — a quarter of arrivals do.
+        val f = forecast(live = null, history = history(3, runs = 3), line = history(9))
+        assertEquals(ForecastSource.EMPIRICAL_LINE, f.source)
+        assertEquals("RE 1", f.lineName)
+        assertEquals("the line's delays, not the three runs of the number",
+            9.0, f.distribution.quantile(0.5), 1e-9)
+    }
+
+    @Test
+    fun `a train with its own history never pays for the line shard`() {
+        // The line shard is one file per line rather than per run, so it is
+        // larger; three predictions in four must not fetch it at all.
+        val fetches = IntArray(1)
+        val f = forecast(live = null, line = history(9), lineFetches = fetches)
+        assertEquals(ForecastSource.EMPIRICAL, f.source)
+        assertEquals(0, fetches[0])
+        assertNull(f.lineName)
+    }
+
+    @Test
+    fun `the line is a fallback, not a source of last resort before nothing`() {
+        // No history anywhere still means the prior; the cascade adds a step,
+        // it does not remove the floor.
+        val f = forecast(live = null, history = null, line = history(9, runs = 2))
+        assertEquals(ForecastSource.PRIOR, f.source)
+        assertNull(f.lineName)
+    }
+
+    @Test
+    fun `a line forecast still conditions on a reported delay`() {
+        val f = forecast(live = 12.0, history = null, line = history(3))
+        assertEquals(ForecastSource.EMPIRICAL_LINE_LIVE, f.source)
+        // Delta model: the line's runs each arrived at the delay they left
+        // with, so a report of 12 shifts the whole support to 12.
+        assertEquals(12.0, f.distribution.quantile(0.5), 1e-9)
+    }
+
+    @Test
+    fun `an ignored on-time report is still reported from the line path`() {
+        val f = forecast(live = 0.0, history = null, line = history(6))
+        assertEquals(ForecastSource.EMPIRICAL_LINE, f.source)
+        assertEquals(0.0, f.ignoredLiveDelay!!, 1e-9)
     }
 }

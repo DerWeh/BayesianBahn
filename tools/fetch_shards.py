@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
 import http.client
 import json
 import os
@@ -59,23 +60,47 @@ def shard_key(train_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", train_name.strip()).strip("_").upper()
 
 
-def candidate_keys(category: str, number: str, line: str | None) -> list[str]:
-    """Mirrors HistoryRepository.candidateKeys: number first, then line."""
-    keys = []
-    if number.strip():
-        keys.append(shard_key(f"{category} {number}"))
-    if line and line.strip():
-        keys.append(shard_key(line if line.startswith(category) else f"{category} {line}"))
-    return list(dict.fromkeys(keys))
+def train_key(category: str, number: str) -> str:
+    """Mirrors HistoryRepository.load: the train's own shard, that key only."""
+    return shard_key(f"{category} {number}")
 
 
-def trains_of(day, out: Path) -> set[tuple[str, str, str | None]]:
+def line_key(category: str, line: str, eva: str) -> str:
+    """Mirrors HistoryRepository.lineKey — line and station, not line alone."""
+    name = line if line.startswith(category) else f"{category} {line}"
+    return shard_key(f"{name} {eva}")
+
+
+def shard_line(out: Path, key: str) -> str | None:
+    """The line a fetched train shard records, if any.
+
+    The board names a line on about a sixth of stops, the train's own shard on
+    nearly all of them, and where both spoke they agreed every time — so this
+    is where most of the fallback's reach comes from. Reading it means the line
+    keys can only be known after the train keys have been fetched, which is why
+    this runs as a second pass.
+    """
+    for tier in BRANCHES:
+        path = out / tier / f"{key}.jgz"
+        if not path.exists():
+            continue
+        try:
+            shard = json.loads(gzip.decompress(path.read_bytes()).decode())
+        except (OSError, ValueError):
+            continue
+        if shard.get("line"):
+            return str(shard["line"])
+    return None
+
+
+def trains_of(day, out: Path) -> set[tuple[str, str, str | None, str | None]]:
     """Every train the day's plan records name — the whole polled network."""
     records, _ = cf.Journal.read(out / f"forecasts-{day}.jsonl")
-    return {(r["cat"], r["num"], r.get("line")) for r in records if r["t"] == "plan"}
+    return {(r["cat"], r["num"], r.get("line"), r.get("eva"))
+            for r in records if r["t"] == "plan"}
 
 
-def trains_scored(events: list[Path]) -> set[tuple[str, str, str | None]]:
+def trains_scored(events: list[Path]) -> set[tuple[str, str, str | None, str | None]]:
     """The trains the event files actually ask the model about.
 
     Three shapes, because the three event kinds name their trains differently:
@@ -84,7 +109,7 @@ def trains_scored(events: list[Path]) -> set[tuple[str, str, str | None]]:
     objects. Missing one of these would quietly starve the model of history for
     those trains — which reads as "no history" and is not otherwise visible.
     """
-    trains: set[tuple[str, str, str | None]] = set()
+    trains: set[tuple[str, str, str | None, str | None]] = set()
     for path in events:
         if not path.exists():
             continue
@@ -93,13 +118,20 @@ def trains_scored(events: list[Path]) -> set[tuple[str, str, str | None]]:
                 if not line.strip():
                     continue
                 event = json.loads(line)
-                trains.add((event["cat"], event["num"], event.get("line")))
+                # The station is carried alongside, because a line shard is per
+                # station: the fallback is only ever asked about the stop being
+                # forecast, which is the event's own `eva`.
+                trains.add((event["cat"], event["num"], event.get("line"),
+                            event.get("eva")))
                 if event.get("conn"):
                     cat, _, num = event["conn"].partition(" ")
-                    trains.add((cat, num, None))
+                    trains.add((cat, num, None, None))
+                # Candidates are read by CandidateBuilder, which pairs the two
+                # legs of a run by date — a line shard holds many runs a day and
+                # would pair one train's departure with another's arrival. So
+                # they get their own shard and no line fallback.
                 for candidate in event.get("candidates") or ():
-                    trains.add((candidate["cat"], candidate["num"],
-                                candidate.get("line")))
+                    trains.add((candidate["cat"], candidate["num"], None, None))
     return trains
 
 
@@ -203,15 +235,34 @@ def main() -> None:
             f"{args.day}: the event files named no trains at all "
             f"({', '.join(str(p) for p in args.events)}). Fetching nothing "
             "would score every train as one the model has never seen.")
-    keys = sorted({k for cat, num, line in trains for k in candidate_keys(cat, num, line)})
+    keys = sorted({train_key(cat, num) for cat, num, _, _ in trains if num.strip()})
     source = "scored events" if args.events else "the whole journal"
     print(f"{len(trains)} trains from {source} -> {len(keys)} shard keys "
           f"({args.workers} at a time)", file=sys.stderr)
 
     counts = {"base": 0, "recent": 0, "missing": 0}
+    fetch_all(keys, args.out, day, args.workers, counts)
+
+    # Second pass: the line shards, now that the train shards can be read for
+    # the line the board did not give.
+    lines = sorted({
+        line_key(cat, line, eva)
+        for cat, num, board_line, eva in trains
+        if eva
+        for line in ((board_line or "").strip()
+                     or shard_line(args.out, train_key(cat, num)) or "",)
+        if line
+    })
+    print(f"{len(lines)} line shard keys", file=sys.stderr)
+    fetch_all(lines, args.out, day, args.workers, counts)
+    print(json.dumps(counts), file=sys.stderr)
+
+
+def fetch_all(keys: list[str], out: Path, day: dt.date, workers: int,
+              counts: dict[str, int]) -> None:
     done = 0
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = [pool.submit(fetch_key, key, args.out, day) for key in keys]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(fetch_key, key, out, day) for key in keys]
         for future in as_completed(futures):
             tiers = future.result()
             for tier in tiers:
@@ -221,7 +272,6 @@ def main() -> None:
             done += 1
             if done % 100 == 0:
                 print(f"  {done}/{len(keys)}", file=sys.stderr, flush=True)
-    print(json.dumps(counts), file=sys.stderr)
 
 
 if __name__ == "__main__":

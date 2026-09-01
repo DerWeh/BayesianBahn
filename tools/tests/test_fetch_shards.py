@@ -162,3 +162,60 @@ def test_fetch_treats_404_as_no_history_without_retrying(monkeypatch):
     monkeypatch.setattr(fs.urllib.request, "urlopen", missing)
     assert fs.fetch("https://x/RE_1.jgz") is None
     assert len(calls) == 1
+
+
+# --- which keys get fetched -------------------------------------------------
+#
+# The evaluation is only honest if it fetches the shards the app would hold.
+# A key spelled differently here is not an error anywhere — the model simply
+# scores those trains as ones it has never seen, which is exactly the state the
+# line fallback exists to get out of.
+
+APP = (
+    TOOLS.parent
+    / "app/src/main/java/io/github/derweh/bayesianbahn/data/HistoryRepository.kt"
+)
+
+
+def test_the_keys_are_spelled_as_the_app_spells_them():
+    assert fs.train_key("ICE", "512") == "ICE_512"
+    assert fs.line_key("S", "S7", "8089105") == "S7_8089105"
+    assert fs.line_key("RE", "RE9", "8000013") == "RE9_8000013"
+    # A replacement bus on the S7 is not an S7 train.
+    assert fs.line_key("Bus", "S7", "8089105") == "BUS_S7_8089105"
+    source = APP.read_text(encoding="utf-8")
+    assert 'if (line.startsWith(category)) line else "$category $line"' in source
+    assert '+ " " + stationEva' in source
+
+
+def test_events_carry_the_station_a_line_shard_would_be_keyed_by(tmp_path):
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"cat":"RE","num":"4711","line":"RE9","eva":"8000013",'
+        '"candidates":[{"cat":"RB","num":"5000","line":"RB7"}]}\n',
+        encoding="utf-8",
+    )
+    trains = fs.trains_scored([events])
+    assert ("RE", "4711", "RE9", "8000013") in trains
+    # The candidate gets its own shard and no line: CandidateBuilder pairs the
+    # two legs of a run by date, which a line's pooled runs would scramble.
+    assert ("RB", "5000", None, None) in trains
+
+
+def test_the_line_is_read_off_the_train_s_own_shard(tmp_path):
+    import gzip
+    import json
+
+    (tmp_path / "base").mkdir()
+    (tmp_path / "base" / "RE_4711.jgz").write_bytes(
+        gzip.compress(json.dumps({"train": "RE 4711", "line": "RE9"}).encode()),
+    )
+    assert fs.shard_line(tmp_path, "RE_4711") == "RE9"
+    assert fs.shard_line(tmp_path, "RE_9999") is None
+
+
+def test_a_corrupt_shard_is_not_a_line(tmp_path):
+    """A truncated cache entry must read as "no line", not crash the fetch."""
+    (tmp_path / "base").mkdir()
+    (tmp_path / "base" / "RE_4711.jgz").write_bytes(b"not gzip")
+    assert fs.shard_line(tmp_path, "RE_4711") is None

@@ -307,13 +307,15 @@ def test_shard_keys_mirror_the_repository() -> None:
     assert fs.shard_key("RB26") == "RB26"
 
 
-def test_candidate_keys_try_the_number_then_the_line() -> None:
+def test_the_train_and_the_line_are_two_separate_keys() -> None:
+    """They used to be one lookup that fell through from the first to the
+    second. They cannot be: a line shard pools every run of the line, which is
+    the right answer only for a number that has no history of its own."""
     import fetch_shards as fs
-    assert fs.candidate_keys("RE", "10924", None) == ["RE_10924"]
-    assert fs.candidate_keys("RB", "25441", "RB26") == ["RB_25441", "RB26"]
+    assert fs.train_key("RE", "10924") == "RE_10924"
+    assert fs.line_key("RB", "RB26", "8000013") == "RB26_8000013"
     # A line not already prefixed by the category gets it prepended.
-    assert fs.candidate_keys("S", "42687", "1") == ["S_42687", "S_1"]
-    assert fs.candidate_keys("RE", "", "RE9") == ["RE9"]
+    assert fs.line_key("S", "1", "8000013") == "S_1_8000013"
 
 
 # --- the binning matrix ------------------------------------------------------

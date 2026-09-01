@@ -2,9 +2,10 @@ package io.github.derweh.bayesianbahn
 
 import io.github.derweh.bayesianbahn.data.HistoryRepository
 import io.github.derweh.bayesianbahn.data.Predictor
-import io.github.derweh.bayesianbahn.data.TrainHistory
 import io.github.derweh.bayesianbahn.data.StationHistory
+import io.github.derweh.bayesianbahn.data.TrainHistory
 import io.github.derweh.bayesianbahn.model.DelayDistribution
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -43,7 +44,7 @@ import java.util.zip.GZIPInputStream
 class ForecastHarness {
 
     @Test
-    fun `score recorded events with the shipping model`() {
+    fun `score recorded events with the shipping model`() = runBlocking {
         val eventsPath = System.getenv("HARNESS_EVENTS")
         assumeTrue("set HARNESS_EVENTS to run the harness", eventsPath != null)
         val shards = File(requireNotNull(System.getenv("HARNESS_SHARDS")))
@@ -69,69 +70,77 @@ val histories = ShardStore(shards, day)
         var withHistory = 0
 
         out.bufferedWriter().use { writer ->
-            File(eventsPath).forEachLine { line ->
-                if (line.isBlank()) return@forEachLine
-                val event = Json.parseToJsonElement(line) as JsonObject
-                val truth = event.int("archive") ?: event.int("settled")
-                if (truth == null || event.bool("cancelled") == true) {
-                    skipped++
-                    return@forEachLine
-                }
-                // Already trimmed to before `day` by the store, once per shard.
-                val history = histories.load(
-                    event.str("cat")!!, event.str("num")!!, event.str("line"),
-                )
-                history?.let { withHistory++ }
+            // A sequence rather than File.forEachLine: that one is not inline,
+            // so the suspending line lookup below cannot be called inside it.
+            File(eventsPath).bufferedReader().use { reader ->
+                for (line in reader.lineSequence()) {
+                    if (line.isBlank()) continue
+                    val event = Json.parseToJsonElement(line) as JsonObject
+                    val truth = event.int("archive") ?: event.int("settled")
+                    if (truth == null || event.bool("cancelled") == true) {
+                        skipped++
+                        continue
+                    }
+                    // Already trimmed to before `day` by the store, once per shard.
+                    val history = histories.load(event.str("cat")!!, event.str("num")!!)
+                    history?.let { withHistory++ }
 
-                val plannedMillis = wallMinutesToMillis(event.int("planned")!!)
-                val forecast = predictor.forecast(
-                    history = history,
-                    stationEva = event.str("eva")!!,
-                    stationName = "",
-                    trainCategory = event.str("cat")!!,
-                    plannedTimeMillis = plannedMillis,
-                    // HARNESS_BLIND drops the live signal, isolating what the
-                    // history alone predicts. The app's live path feeds DB's
-                    // forecast for *this* station into a model trained on the
-                    // actual delay at the *previous* stop — a documented
-                    // approximation whose cost is worth measuring.
-                    liveDelayMinutes = if (blind) null else event.dbl("db"),
-                    // Pinned: recency weighting depends on it, so leaving it as
-                    // "now" would make the same input score differently on a
-                    // rerun and destroy the regression yardstick.
-                    today = day,
-                )
-                val d = forecast.distribution
-                writer.write(
-                    """{"eva":${q(event.str("eva"))},"cat":${q(event.str("cat"))},""" +
-                        """"num":${q(event.str("num"))},"tau":${event.int("tau")},""" +
-                        """"lead":${event.dbl("lead")},"db":${event.int("db")},""" +
-                        // Passed through so the analysis can re-bin the same
-                        // scores against any anchor without rerunning the model.
-                        """"read_at":${event.dbl("read_at")},""" +
-                        """"planned":${event.int("planned")},""" +
-                        """"planned_dep":${event.int("planned_dep")},""" +
-                        """"archive":${event.int("archive")},""" +
-                        """"archive_dep":${event.int("archive_dep")},""" +
-                        """"truth":$truth,"crps":${crps(d, truth.toDouble())},""" +
-                        """"cdf_at":${d.cdf(truth.toDouble())},""" +
-                        """"cdf_below":${d.cdf(truth - 1.0)},""" +
-                        """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
-                        """"q90":${d.quantile(0.9)},"source":${q(forecast.source.name)},""" +
-                        // Connection events carry the feeder arrival delay at
-                        // which the change stops working. P(catch) is then just
-                        // the model's own CDF there — the distribution answering
-                        // the question DB answers with a yes or a no.
-                        (event.int("threshold")?.let {
-                            """"threshold":$it,"p_catch":${d.cdf(it.toDouble())},""" +
-                                """"db_catch_p":${if (event.bool("db_catch") == true) 1 else 0},""" +
-                                """"caught":${event.bool("caught")},""" +
-                                """"slack":${event.int("slack")},"""
-                        } ?: "") +
-                        """"runs":${forecast.runCount}}""",
-                )
-                writer.newLine()
-                scored++
+                    val plannedMillis = wallMinutesToMillis(event.int("planned")!!)
+                    val forecast = predictor.forecast(
+                        history = history,
+                        stationEva = event.str("eva")!!,
+                        stationName = "",
+                        trainCategory = event.str("cat")!!,
+                        plannedTimeMillis = plannedMillis,
+                        // HARNESS_BLIND drops the live signal, isolating what the
+                        // history alone predicts. The app's live path feeds DB's
+                        // forecast for *this* station into a model trained on the
+                        // actual delay at the *previous* stop — a documented
+                        // approximation whose cost is worth measuring.
+                        liveDelayMinutes = if (blind) null else event.dbl("db"),
+                        // Pinned: recency weighting depends on it, so leaving it as
+                        // "now" would make the same input score differently on a
+                        // rerun and destroy the regression yardstick.
+                        today = day,
+                        lineHistory = {
+                            histories.loadLine(
+                                event.str("cat")!!, event.str("line"),
+                                event.str("eva")!!, history,
+                            )
+                        },
+                    )
+                    val d = forecast.distribution
+                    writer.write(
+                        """{"eva":${q(event.str("eva"))},"cat":${q(event.str("cat"))},""" +
+                            """"num":${q(event.str("num"))},"tau":${event.int("tau")},""" +
+                            """"lead":${event.dbl("lead")},"db":${event.int("db")},""" +
+                            // Passed through so the analysis can re-bin the same
+                            // scores against any anchor without rerunning the model.
+                            """"read_at":${event.dbl("read_at")},""" +
+                            """"planned":${event.int("planned")},""" +
+                            """"planned_dep":${event.int("planned_dep")},""" +
+                            """"archive":${event.int("archive")},""" +
+                            """"archive_dep":${event.int("archive_dep")},""" +
+                            """"truth":$truth,"crps":${crps(d, truth.toDouble())},""" +
+                            """"cdf_at":${d.cdf(truth.toDouble())},""" +
+                            """"cdf_below":${d.cdf(truth - 1.0)},""" +
+                            """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
+                            """"q90":${d.quantile(0.9)},"source":${q(forecast.source.name)},""" +
+                            // Connection events carry the feeder arrival delay at
+                            // which the change stops working. P(catch) is then just
+                            // the model's own CDF there — the distribution answering
+                            // the question DB answers with a yes or a no.
+                            (event.int("threshold")?.let {
+                                """"threshold":$it,"p_catch":${d.cdf(it.toDouble())},""" +
+                                    """"db_catch_p":${if (event.bool("db_catch") == true) 1 else 0},""" +
+                                    """"caught":${event.bool("caught")},""" +
+                                    """"slack":${event.int("slack")},"""
+                            } ?: "") +
+                            """"runs":${forecast.runCount}}""",
+                    )
+                    writer.newLine()
+                    scored++
+                }
             }
         }
         println("harness: scored $scored events, skipped $skipped without truth")
@@ -193,19 +202,36 @@ val histories = ShardStore(shards, day)
         var parses = 0
             private set
 
-        fun load(category: String, number: String, line: String?): TrainHistory? {
-            for (key in candidateKeys(category, number, line)) {
-                val found = if (cache.containsKey(key)) {
-                    cache[key]
-                } else {
-                    parses++
-                    HistoryRepository.mergeHistories(read("base", key), read("recent", key))
-                        ?.let { if (day == null) it else asOf(it, day) }
-                        .also { cache[key] = it }
-                }
-                if (found != null) return found
-            }
-            return null
+        /** The train's own shard, by category and run number — that key only. */
+        fun load(category: String, number: String): TrainHistory? =
+            if (number.isBlank()) null
+            else lookup(HistoryRepository.shardKey("$category $number"))
+
+        /**
+         * The line's shard at one station, mirroring
+         * [HistoryRepository.loadLine] — including that the line usually comes
+         * from the train's own shard rather than from the board, which names
+         * one for about a sixth of stops.
+         */
+        fun loadLine(
+            category: String,
+            line: String?,
+            stationEva: String,
+            from: TrainHistory?,
+        ): TrainHistory? {
+            val name = line?.takeIf { it.isNotBlank() }
+                ?: from?.line?.takeIf { it.isNotBlank() }
+                ?: return null
+            if (stationEva.isBlank()) return null
+            return lookup(HistoryRepository.lineKey(category, name, stationEva))
+        }
+
+        private fun lookup(key: String): TrainHistory? {
+            if (cache.containsKey(key)) return cache[key]
+            parses++
+            return HistoryRepository.mergeHistories(read("base", key), read("recent", key))
+                ?.let { if (day == null) it else asOf(it, day) }
+                .also { cache[key] = it }
         }
 
         private fun read(tier: String, key: String): TrainHistory? {
@@ -214,18 +240,6 @@ val histories = ShardStore(shards, day)
             val bytes = file.inputStream().use { GZIPInputStream(it).readBytes() }
             return HistoryRepository.parseShard(bytes.decodeToString())
         }
-
-        private fun candidateKeys(category: String, number: String, line: String?) =
-            buildList {
-                if (number.isNotBlank()) add(HistoryRepository.shardKey("$category $number"))
-                if (!line.isNullOrBlank()) {
-                    add(
-                        HistoryRepository.shardKey(
-                            if (line.startsWith(category)) line else "$category $line",
-                        ),
-                    )
-                }
-            }.distinct()
 
         companion object {
             /**

@@ -84,7 +84,7 @@ class SyntheticTimetable(
                         val path = gate.withPermit {
                             pathAfter(
                                 historyRepository.load(
-                                    stop.label.category, stop.label.number, stop.label.line,
+                                    stop.label.category, stop.label.number,
                                 ),
                                 eva,
                                 depTod,

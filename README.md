@@ -41,6 +41,8 @@ settings.
   from DB's IRIS API. `pipeline/build_shards.py` condenses it into one small
   shard per train: every station it calls at, with date, planned time,
   arrival/departure delay, delay at the previous stop, and cancellations.
+  It writes a second, smaller set keyed by *line and station* — the fallback
+  for a run number too new to have a history of its own.
 - **Live state**: the app fetches the keyless IRIS timetable API
   (`iris.noncd.db.de`) for the live board — the same source DB's station
   displays use.
@@ -60,9 +62,29 @@ settings.
   when it reports a delay**: DB states a stop in four shapes and three of
   them mean "on time", which is the plan restated rather than an
   observation — see `LiveReport` for what
-  believing it cost. Trains without history
-  fall back to a Bayesian Normal-inverse-gamma prior per train class and
-  time of day (closed-form Student-t predictive).
+  believing it cost. A train whose run number has too little history at the
+  station falls back to the history of its **line** there, and only then to a
+  Bayesian Normal-inverse-gamma prior per train class and time of day
+  (closed-form Student-t predictive).
+- **Line-keyed fallback**: IRIS gives every run its own number and renumbers at
+  each timetable change, so a train that has run for years can arrive with
+  almost nothing behind it — over eleven collected days a quarter of arrivals
+  fell through to the prior, and those trains have a median of two runs at the
+  station in the published base data against 106 for the trains that do not.
+  Their line has run all along. `pipeline/backtest_fallback.py` walk-forwards
+  the two answers over 781,000 archive events at 62 stations: on exactly the
+  events the app gives to the prior, the line scores 0.43 min of CRPS better
+  (95% 0.40..0.46, resampling whole trains), with a line-keyed shard available
+  for 88% of them. Across the December 2025 timetable change — where the
+  population doubles to 11% of events — the same 0.41 (95% 0.39..0.43). The
+  gain is regional (0.43) and S-Bahn (0.37); long distance is too rare to say
+  either way, because almost no long-distance train carries a line number at
+  all and fewer than a hundred events in each window have one.
+  It is a fallback and not a promotion: where the number *does* have a history,
+  its own runs beat its line's by 0.13 min (95% 0.12..0.13), so the line is
+  never consulted there. The line usually comes from the train's own shard
+  rather than from the board — IRIS names a line on 17% of stops, the shard on
+  99.7% of the ones that need it, and where both spoke they agreed every time.
 - **Connections**: for a journey with a transfer, the app propagates the
   feeder's arrival distribution through the transfer with the law of total
   probability: the passenger boards the first connecting train (in planned
@@ -93,12 +115,18 @@ settings.
   individually (a few KB each) from the repo's `shards` branch, where the
   workflow publishes the merged base+recent set daily. Fetched shards are
   cached on disk with an 18-hour refresh, so a commuter's usual
-  connections cost one download and then work offline.
+  connections cost one download and then work offline. A line shard is fetched
+  only once the train's own shard has come up short, which is about a quarter
+  of predictions.
 - **Shard format**: a columnar layout (deduplicated planned times,
   delta-coded dates, departure stored only when it differs from arrival)
   cut shard size ~63% versus naive per-run JSON rows; gzip keeps decoding
   dependency-free (brotli would save a further ~15% at the cost of a
-  decoder dependency).
+  decoder dependency). Line shards use the same format and are keyed by line
+  *and* station, holding 45 days: a median of 1.4 KB against 1.0 KB for a
+  train's, and 13.5 KB at the worst station on the busiest S-Bahn. Keyed by
+  line alone they would be 3.4 MB, because "S1" names eight unrelated networks
+  and a forecast needs one station of one of them.
 - **Backtesting**: `pipeline/backtest.py` walk-forward evaluates model
   variants on months of archive data with proper scoring rules (CRPS,
   pinball loss, interval coverage), reported with their upper tail rather
@@ -181,24 +209,17 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
-- **Line-keyed shards as a fallback.** IRIS gives every run its own number, so
-  a train renumbered at a timetable change has no history and falls back to the
-  class-wide prior: 7.2% of scored arrivals, where the app scores 1.19 against
-  DB's 0.90 — the one slice where DB is clearly ahead. Every one of those
-  trains has a line, and every line has history at that station (median 5,962
-  runs a month). `HistoryRepository.candidateKeys` already asks for a
-  line-keyed shard as its second key; `build_shards.py` has never written one,
-  so the lookup has always missed. The columnar shard format costs about 1.6
-  bytes a run, which puts a (line, station) shard at ~9 KB and a whole line at
-  ~0.3 MB — the same order as the per-train shards already fetched on demand.
-  A *fallback*, not a replacement: measured head to head, line-keying is worse
-  than number-keying wherever the number has history (S-Bahn 1.270 against
-  1.231) and impossible for long distance, which has no line number.
+- **Measure the line fallback forward.** The archive backtest decided it; the
+  forward comparison against DB cannot report it until the daily data job has
+  published a set of line shards, because the collected days were scored
+  against a `shards` branch that had none. The prediction to hold it to: the
+  prior's share of arrivals drops from 24% to about 3%, and the arrivals figure
+  improves by roughly 0.1 minutes of CRPS.
 - Stratify the report by the kind of line, now that the second cohort samples
   it: does the advantage hold on a single-track branch as well as on a
   multi-track corridor, and where long-distance services share the tracks? Each
   station carries its busiest-segment traffic and long-distance share in
-  `forecast_stations_cohort2.csv`; the report does not read them yet.
+  `forecast_stations_cohort2.csv`, and the report reads them.
 - Track count and freight are still not observed. Both drive delay and neither
   appears in a passenger timetable, so `network_graph.py` uses segment traffic
   and traffic mix as proxies and says so. OpenStreetMap has the track data but

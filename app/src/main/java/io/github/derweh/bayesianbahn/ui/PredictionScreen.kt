@@ -224,6 +224,26 @@ private fun PredictionContent(
                     forecast.runCount,
                     forecast.runCount,
                 )
+                ForecastSource.EMPIRICAL_LINE_LIVE -> {
+                    val effective = forecast.effectiveRuns.roundToInt()
+                    pluralStringResource(
+                        R.plurals.forecast_empirical_line_live,
+                        forecast.runCount,
+                        forecast.runCount,
+                        forecast.lineName.orEmpty(),
+                        pluralStringResource(
+                            R.plurals.forecast_effective_runs,
+                            effective,
+                            effective,
+                        ),
+                    )
+                }
+                ForecastSource.EMPIRICAL_LINE -> pluralStringResource(
+                    R.plurals.forecast_empirical_line,
+                    forecast.runCount,
+                    forecast.runCount,
+                    forecast.lineName.orEmpty(),
+                )
                 ForecastSource.PRIOR -> stringResource(R.string.forecast_prior)
             } + ignoredLiveNote(forecast.ignoredLiveDelay),
             style = MaterialTheme.typography.bodySmall,

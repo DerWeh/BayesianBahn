@@ -24,6 +24,17 @@ data class TrainHistory(
     val trainType: String,
     /** Station name → historical runs. */
     val stations: Map<String, StationHistory>,
+    /**
+     * The line this identity runs, as the shard records it ("RE9", "S7").
+     *
+     * Read from the shard rather than from the live board because the board
+     * usually does not say: IRIS carries the line on only 17% of the stops
+     * collected over eleven days, while the train's own shard names it for
+     * 99.7% of the stops that need the fallback — and where both spoke, they
+     * agreed every time. Without this the line-keyed fallback would reach one
+     * prediction in six of the ones it exists for.
+     */
+    val line: String? = null,
 )
 
 data class StationHistory(val eva: String?, val runs: List<HistoricalRun>)
@@ -34,7 +45,28 @@ data class StationHistory(val eva: String?, val runs: List<HistoricalRun>)
  * takes this rather than the repository itself.
  */
 fun interface HistorySource {
-    suspend fun load(category: String, number: String, line: String?): TrainHistory?
+    suspend fun load(category: String, number: String): TrainHistory?
+
+    /**
+     * The history of the *line* a train runs, for a run number that has none.
+     *
+     * IRIS gives every run its own number and renumbers at each timetable
+     * change, so a train that has run for years can arrive with a handful of
+     * runs behind it — measured over the eleven collected days, the trains that
+     * fall through to the prior have a median of two runs at the station in the
+     * published base data against 106 for the trains that do not. Their line
+     * has run all along.
+     *
+     * Defaulted rather than abstract so this stays a `fun interface`: the
+     * planners' tests supply a history source as a lambda, and a source that
+     * has no line data simply does not fall back.
+     */
+    suspend fun loadLine(
+        category: String,
+        line: String?,
+        stationEva: String,
+        from: TrainHistory?,
+    ): TrainHistory? = null
 }
 
 /**
@@ -54,24 +86,46 @@ class HistoryRepository(
 ) : HistorySource {
 
     /**
-     * Finds the shard for a train, trying category+number ("ICE 512") first
-     * and category+line ("RE 9") second, matching the pipeline's naming.
+     * Finds the shard for one train, by category+number ("ICE 512").
+     *
+     * Only that key. The line-keyed shard is a different thing and is fetched
+     * by [loadLine] on purpose: it holds every run of the line pooled together,
+     * which is the right answer for a train with no history of its own and the
+     * wrong one everywhere else — over the 711,000 archive events where both
+     * could answer, the number's own runs beat its line's by 0.13 min of CRPS
+     * (95% 0.12..0.13) — and [CandidateBuilder] would quietly pair one run's
+     * departure with another run's arrival, because it joins the two legs of a
+     * candidate on the date and a line runs many times a day.
      *
      * Repeats within a session are served from [cache]; see there for why one
      * search asks for the same train many times.
      */
-    override suspend fun load(category: String, number: String, line: String?): TrainHistory? {
-        val keys = candidateKeys(category, number, line)
-        if (keys.isEmpty()) return null
-        // shardKey() maps every key to [A-Z0-9_], so "|" cannot occur inside
-        // one and the joined string identifies the candidate list uniquely.
-        return cache.get(keys.joinToString("|")) {
-            withContext(Dispatchers.IO) {
-                keys.firstNotNullOfOrNull { readShard(it) }
-                    ?: keys.firstNotNullOfOrNull { onDemand(it) }
-            }
-        }
+    override suspend fun load(category: String, number: String): TrainHistory? {
+        if (number.isBlank()) return null
+        return shard(shardKey("$category $number"))
     }
+
+    /**
+     * The line's own history, from [line] if the board named it and otherwise
+     * from what the train's own shard records. Null when neither knows one.
+     */
+    override suspend fun loadLine(
+        category: String,
+        line: String?,
+        stationEva: String,
+        from: TrainHistory?,
+    ): TrainHistory? {
+        val name = line?.takeIf { it.isNotBlank() }
+            ?: from?.line?.takeIf { it.isNotBlank() }
+            ?: return null
+        if (stationEva.isBlank()) return null
+        return shard(lineKey(category, name, stationEva))
+    }
+
+    private suspend fun shard(key: String): TrainHistory? =
+        cache.get(key) {
+            withContext(Dispatchers.IO) { readShard(key) ?: onDemand(key) }
+        }
 
     /**
      * Drops the in-memory memo. Call after the downloaded history changes —
@@ -94,15 +148,6 @@ class HistoryRepository(
             .bytes("$ONDEMAND_DIR-recent", key, "$recentShardUrl$key.jgz", TTL_MILLIS)
             ?.let { parseShard(it.decodeToString()) }
         return mergeHistories(base, recent)
-    }
-
-    private fun candidateKeys(category: String, number: String, line: String?): List<String> {
-        val keys = mutableListOf<String>()
-        if (number.isNotBlank()) keys += shardKey("$category $number")
-        if (line != null && line.isNotBlank()) {
-            keys += shardKey(if (line.startsWith(category)) line else "$category $line")
-        }
-        return keys.distinct()
     }
 
     private fun readShard(key: String): TrainHistory? {
@@ -153,9 +198,27 @@ class HistoryRepository(
         /** Base shards change monthly; a week of cache is plenty fresh. */
         const val BASE_TTL_MILLIS = 7 * 24 * 60 * 60 * 1000L
 
-        /** Mirrors `train_key` in build_shards.py. */
+        /** Mirrors `shard_key` in build_shards.py. */
         fun shardKey(trainName: String): String =
             trainName.trim().replace(Regex("[^A-Za-z0-9]+"), "_").trim('_').uppercase()
+
+        /**
+         * Mirrors `line_key` in build_shards.py.
+         *
+         * IRIS writes the line with its product already in it ("S7", "RE9"),
+         * but not the *train's* product: a rail-replacement bus on the S7
+         * arrives as category "Bus" line "S7" and its delays have nothing to
+         * do with the trains'. Prepending the category unless the line already
+         * carries it keeps the two apart, BUS_S7 against S7.
+         *
+         * One shard per line *and station*: a forecast needs one station, and
+         * "S1" alone names eight unrelated networks — 3.4 MB to download where
+         * the station asked about is a kilobyte and a half of it.
+         */
+        fun lineKey(category: String, line: String, stationEva: String): String =
+            shardKey(
+                (if (line.startsWith(category)) line else "$category $line") + " " + stationEva,
+            )
 
         /**
          * Overlays [recent] runs onto [base]; where both cover the same
@@ -181,7 +244,9 @@ class HistoryRepository(
                     }
                 }
             }
-            return TrainHistory(base.trainName, base.trainType, stations)
+            return TrainHistory(
+                base.trainName, base.trainType, stations, base.line ?: recent.line,
+            )
         }
 
         /**
@@ -203,6 +268,7 @@ class HistoryRepository(
         private data class ShardDto(
             val train: String = "?",
             val type: String = "?",
+            val line: String? = null,
             val stations: Map<String, StationDto> = emptyMap(),
         )
 
@@ -236,6 +302,7 @@ class HistoryRepository(
             return TrainHistory(
                 trainName = root.train,
                 trainType = root.type,
+                line = root.line,
                 stations = root.stations.mapValues { (_, station) ->
                     StationHistory(
                         eva = station.eva,

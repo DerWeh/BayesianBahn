@@ -22,6 +22,8 @@ tools/.timetable/
 tools/.forecasts/
 tools/.shards/
 tools/.scored/
+# Cohort 2 is scored into its own directory, so the glob covers both.
+tools/.scored-*/
 tools/.iris-cache/
 
 # Release signing — never commit
