@@ -219,3 +219,47 @@ def test_a_corrupt_shard_is_not_a_line(tmp_path):
     (tmp_path / "base").mkdir()
     (tmp_path / "base" / "RE_4711.jgz").write_bytes(b"not gzip")
     assert fs.shard_line(tmp_path, "RE_4711") is None
+
+
+def test_a_key_with_no_shard_is_not_asked_for_twice(tmp_path, monkeypatch):
+    """A seventh of scored trains have no shard, and until line shards are
+    published every line key is one too. Re-asking each run is thousands of
+    requests to a public host for an answer already known."""
+    calls = []
+    monkeypatch.setattr(fs, "fetch", lambda url, tries=3: calls.append(url))
+    monkeypatch.setattr(fs, "PAUSE", 0)
+    assert fs.fetch_key("RE_1", tmp_path, DAY) == ()
+    assert len(calls) == 2      # one per tier
+    assert fs.fetch_key("RE_1", tmp_path, DAY) == ()
+    assert len(calls) == 2, "the misses should have been remembered"
+
+
+def test_a_remembered_miss_expires_with_the_overlay(tmp_path, monkeypatch):
+    """The recent tier is rebuilt daily, so a train that had no overlay
+    yesterday may have one today — and the negative cache must not outlive
+    that, or the evaluation silently scores it as history-less for ever."""
+    marker = tmp_path / "recent" / "RE_1.404"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"")
+    stamp = dt.datetime.combine(DAY - dt.timedelta(days=2), dt.time(12, 0)).timestamp()
+    os.utime(marker, (stamp, stamp))
+    calls = []
+    monkeypatch.setattr(fs, "fetch", lambda url, tries=3: calls.append(url))
+    monkeypatch.setattr(fs, "PAUSE", 0)
+    fs.fetch_key("RE_1", tmp_path, DAY)
+    assert any("shards-recent" in url for url in calls)
+
+
+def test_a_shard_that_appears_clears_its_own_miss(tmp_path, monkeypatch):
+    """Line shards land on the base branch at the next monthly rebuild, so a
+    remembered miss has to be forgettable."""
+    marker = tmp_path / "base" / "RE_1.404"
+    marker.parent.mkdir(parents=True)
+    marker.write_bytes(b"")
+    stamp = dt.datetime.combine(DAY - dt.timedelta(days=2), dt.time(12, 0)).timestamp()
+    os.utime(marker, (stamp, stamp))
+    monkeypatch.setattr(fs, "fetch", lambda url, tries=3: b"body")
+    monkeypatch.setattr(fs, "PAUSE", 0)
+    fs.fetch_key("RE_1", tmp_path, DAY)
+    assert not marker.exists()
+    assert (tmp_path / "base" / "RE_1.jgz").read_bytes() == b"body"

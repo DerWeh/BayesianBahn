@@ -163,7 +163,7 @@ def fetch(url: str, tries: int = 3) -> bytes | None:
     return None
 
 
-def is_fresh(target: Path, tier: str, day: dt.date) -> bool:
+def is_fresh(target: Path, tier: str, day: dt.date) -> bool:  # noqa: D401
     """Whether a cached shard can stand in for the one published on `day`.
 
     The base branch is rebuilt monthly and covers months before any evaluated
@@ -199,11 +199,27 @@ def fetch_key(key: str, out: Path, day: dt.date) -> tuple[str, ...]:
         if is_fresh(target, tier, day):
             got.append(tier)
             continue
+        # A miss is re-checked on the recent tier's rule whichever tier it is
+        # on: the positive rule keeps a base shard for ever, and a *missing*
+        # base shard is not permanent — the next monthly rebuild publishes the
+        # keys that were absent, and a negative cache that outlived it would
+        # score those trains as history-less indefinitely.
+        missing = target.with_suffix(".404")
+        if is_fresh(missing, "recent", day):
+            continue
         body = fetch(f"{base_url}{key}.jgz")
         if PAUSE:
             time.sleep(PAUSE)
         if body is None:
+            # Remembered, the way the app's CachedFetcher remembers a 404: a
+            # seventh of scored trains have no shard at all, and until line
+            # shards are published every line key is one too. Re-asking for
+            # them on every run is thousands of requests to a public host for
+            # an answer already known.
+            missing.parent.mkdir(parents=True, exist_ok=True)
+            missing.write_bytes(b"")
             continue
+        missing.unlink(missing_ok=True)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Temp then rename: an interrupted run must not leave a truncated
         # shard that later looks like a complete one.
