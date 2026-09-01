@@ -156,31 +156,58 @@ class PredictorTest {
     // --- the line fallback -------------------------------------------------
 
     @Test
-    fun `the line answers when the run number is too new to`() {
-        // Three runs is under the effective-sample floor, so this number alone
-        // would have gone to the prior — a quarter of arrivals do.
+    fun `the line carries the answer when the run number is too new to`() {
+        // Three runs is well under the eight pseudo-runs the shrinkage gives
+        // the line, so the line holds most of the weight — and this number
+        // alone would have gone to the prior, as a quarter of arrivals did.
         val f = forecast(live = null, history = history(3, runs = 3), line = history(9))
         assertEquals(ForecastSource.EMPIRICAL_LINE, f.source)
         assertEquals("RE 1", f.lineName)
-        assertEquals("the line's delays, not the three runs of the number",
+        assertEquals("mostly the line's delays, not the three runs of the number",
             9.0, f.distribution.quantile(0.5), 1e-9)
+        // ...but the train's own three runs are in there, not discarded.
+        assertTrue(f.distribution.cdf(3.0) > 0.0)
     }
 
     @Test
-    fun `a train with its own history never pays for the line shard`() {
-        // The line shard is one file per line rather than per run, so it is
-        // larger; three predictions in four must not fetch it at all.
+    fun `a train with plenty of history never pays for the line shard`() {
+        // Forty runs is far past the ceiling where pooling stops being worth
+        // anything, so the shard is not asked for: roughly seven predictions
+        // in eight stop here.
         val fetches = IntArray(1)
         val f = forecast(live = null, line = history(9), lineFetches = fetches)
         assertEquals(ForecastSource.EMPIRICAL, f.source)
         assertEquals(0, fetches[0])
         assertNull(f.lineName)
+        assertEquals("and its own answer is untouched", 6.0,
+            f.distribution.quantile(0.5), 1e-9)
     }
 
     @Test
-    fun `the line is a fallback, not a source of last resort before nothing`() {
-        // No history anywhere still means the prior; the cascade adds a step,
-        // it does not remove the floor.
+    fun `a train just short of the ceiling does consult its line`() {
+        val fetches = IntArray(1)
+        val f = forecast(live = null, history = history(6, runs = 9),
+            line = history(9), lineFetches = fetches)
+        assertEquals(1, fetches[0])
+        // Nine of its own runs against eight pseudo-runs: the train's own
+        // history holds just over half, so the screens still call it its own —
+        // but the line is named, because it is a third of the answer and
+        // "past runs of this train" would not be true of all of it.
+        assertEquals(ForecastSource.EMPIRICAL, f.source)
+        assertEquals("RE 1", f.lineName)
+        assertTrue(f.ownShare > 0.5 && f.ownShare < 1.0)
+    }
+
+    @Test
+    fun `a forecast that never saw a line says so by naming none`() {
+        val f = forecast(live = null, history = history(6, runs = 9), line = null)
+        assertNull(f.lineName)
+        assertEquals(1.0, f.ownShare, 1e-9)
+    }
+
+    @Test
+    fun `the prior still answers when the two together are too thin`() {
+        // Pooling removes the switch, not the floor.
         val f = forecast(live = null, history = null, line = history(9, runs = 2))
         assertEquals(ForecastSource.PRIOR, f.source)
         assertNull(f.lineName)

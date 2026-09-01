@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import backtest_fallback as bf  # noqa: E402
+from backtest_fallback import POOLED  # noqa: E402
 
 APP = Path(__file__).resolve().parents[2] / "app/src/main/java/io/github/derweh/bayesianbahn"
 EMPIRICAL_DELAY = APP / "model/EmpiricalDelay.kt"
@@ -46,6 +47,18 @@ def test_the_weighting_constants_are_the_app_s() -> None:
     assert bf.LIVE_KERNEL_FLOOR == kotlin_const(EMPIRICAL_DELAY, "LIVE_KERNEL_FLOOR")
     assert bf.LIVE_SHRINKAGE == kotlin_const(DELAY_MODEL, "LIVE_SHRINKAGE")
     assert bf.MIN_LIVE_SCALE == kotlin_const(DELAY_MODEL, "MIN_LIVE_SCALE")
+
+
+def test_the_shipped_shrinkage_is_the_one_that_was_measured() -> None:
+    """The app pools a train's history with its line's at n / (n + k), and k
+    came from the sweep in this file. A k the sweep never scored would be a
+    weighting nothing has measured, sitting behind numbers that claim it was."""
+    shrinks = {name: value for name, (kind, value) in POOLED if kind.startswith("shrink")}
+    assert kotlin_const(EMPIRICAL_DELAY, "LINE_PSEUDO_RUNS") in shrinks.values()
+    # And the ceiling where the app stops consulting the line has to be a
+    # boundary the depth table actually reports, or "it costs 0.002 above here"
+    # is a claim about a band nobody measured.
+    assert kotlin_const(EMPIRICAL_DELAY, "LINE_CEILING_N") == bf.POOL_CEILING
 
 
 def test_the_priors_are_the_app_s() -> None:

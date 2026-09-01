@@ -610,11 +610,14 @@ def with_prior(scored: pl.DataFrame) -> pl.DataFrame:
     proposed_cov = pl.when(pl.col("num_ok")).then(pl.col("cov_number")).otherwise(
         fallback_cov
     )
-    # `combined` drops the switch entirely: one distribution built from both
-    # shards, the train's own runs taking n / (n + 8) of the weight. It still
-    # needs the cascade underneath for the events where even the two together
-    # are too thin to clear the floor.
-    usable_pool = pl.col("crps_shrink8").is_not_nan() & pl.col("crps_shrink8").is_not_null()
+    # `combined` is the shipped model: the switch dropped entirely, one
+    # distribution built from both shards with the train's own runs taking
+    # n / (n + 8) of the weight — and the line left unread above the ceiling,
+    # which is what the app does rather than the uncapped ideal. It still needs
+    # the cascade underneath for the events where even the two together are too
+    # thin to clear the floor.
+    pooled = "crps_shrink8cap"
+    usable_pool = pl.col(pooled).is_not_nan() & pl.col(pooled).is_not_null()
     return joined.with_columns(
         crps_shipped=pl.when(pl.col("num_ok")).then(pl.col("crps_number")).otherwise(
             pl.col("crps_prior")
@@ -624,10 +627,8 @@ def with_prior(scored: pl.DataFrame) -> pl.DataFrame:
         ),
         crps_proposed=proposed_crps,
         cov_proposed=proposed_cov,
-        crps_combined=pl.when(usable_pool).then(pl.col("crps_shrink8")).otherwise(
-            proposed_crps
-        ),
-        cov_combined=pl.when(usable_pool).then(pl.col("cov_shrink8")).otherwise(
+        crps_combined=pl.when(usable_pool).then(pl.col(pooled)).otherwise(proposed_crps),
+        cov_combined=pl.when(usable_pool).then(pl.col("cov_shrink8cap")).otherwise(
             proposed_cov
         ),
         on_prior=~pl.col("num_ok") & ~pl.col("line_ok") & ~usable_pool,

@@ -245,7 +245,7 @@ private fun PredictionContent(
                     forecast.lineName.orEmpty(),
                 )
                 ForecastSource.PRIOR -> stringResource(R.string.forecast_prior)
-            } + ignoredLiveNote(forecast.ignoredLiveDelay),
+            } + lineSupportNote(forecast) + ignoredLiveNote(forecast.ignoredLiveDelay),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -373,6 +373,27 @@ fun DelayDistributionChart(
  * for ignoring it. Without a word here the app looks like it is failing to read
  * the live data it plainly has.
  */
+/**
+ * Says the line helped, where the sentence above has already claimed the runs
+ * are the train's own.
+ *
+ * Between eight and thirty effective runs of its own, a train still takes a
+ * fifth to a half of its forecast from its line — about one prediction in
+ * twelve. Nothing above that consults the line at all, and where the line
+ * carries most of the answer the sentence above says so itself, so this is
+ * exactly the middle case and nothing else.
+ */
+@Composable
+private fun lineSupportNote(forecast: Forecast): String {
+    val line = forecast.lineName ?: return ""
+    if (forecast.source != ForecastSource.EMPIRICAL &&
+        forecast.source != ForecastSource.EMPIRICAL_LIVE
+    ) {
+        return ""
+    }
+    return stringResource(R.string.forecast_line_support, line)
+}
+
 @Composable
 private fun ignoredLiveNote(ignoredLiveDelay: Double?): String {
     if (ignoredLiveDelay == null) return ""

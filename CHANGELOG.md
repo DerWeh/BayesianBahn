@@ -25,6 +25,26 @@ fixes; expect breaking changes between minors until 1.0).
   which line the numbers came from rather than claiming they are this train's.
 
 ### Changed
+- **A train's history and its line's are pooled, not switched between.** The
+  first version of the above picked one or the other. Backtesting the
+  combination showed the switch to be a step function fitted to a curve: the
+  train's own runs now take `n / (n + 8)` of the weight and its line's the rest,
+  so a fresh run number answers almost entirely from its line and a settled one
+  barely notices the line is there. Worth 0.105 min of CRPS against answering
+  from the line alone (95% 0.094..0.116) and 0.002 against the number alone
+  (95% 0.002..0.003), where no *fixed* weighting can have both ends —
+  half-and-half wins by 0.119 where the number has nothing and loses 0.032
+  across the 87% of predictions where it has plenty. End to end, 0.025 min
+  against having no line at all, with 0.5% of arrivals left to the class prior
+  instead of 4.8%. Above 32 effective runs of its own a train does not read the
+  line shard at all, which costs 0.002 and saves a fetch on seven predictions
+  in eight. Where the line contributed, the screens name it.
+- **Forecasts are faster than before the line existed.** The time-of-day filter
+  is the only code that touches every run in a shard, and it split and parsed
+  two `"HH:mm"` strings per run on every prediction. `HistoricalRun` parses its
+  planned time once, when the shard is read: a forecast over the largest line
+  shard in the country (8,505 runs) takes 0.17 ms instead of 0.64, and an
+  ordinary number-only forecast 0.042 ms instead of 0.094.
 - **The line shard is a separate lookup, not a second candidate key.**
   `HistoryRepository.load` had always asked for a line-keyed shard when the
   number's key missed. Now that those shards exist, that would have handed a

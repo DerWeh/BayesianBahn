@@ -62,29 +62,37 @@ settings.
   when it reports a delay**: DB states a stop in four shapes and three of
   them mean "on time", which is the plan restated rather than an
   observation — see `LiveReport` for what
-  believing it cost. A train whose run number has too little history at the
-  station falls back to the history of its **line** there, and only then to a
-  Bayesian Normal-inverse-gamma prior per train class and time of day
+  believing it cost. A train's own runs and its **line's** runs at that station
+  go into one distribution; only when the two together are still too thin does a
+  Bayesian Normal-inverse-gamma prior per train class and time of day answer
   (closed-form Student-t predictive).
-- **Line-keyed fallback**: IRIS gives every run its own number and renumbers at
-  each timetable change, so a train that has run for years can arrive with
-  almost nothing behind it — over eleven collected days a quarter of arrivals
-  fell through to the prior, and those trains have a median of two runs at the
-  station in the published base data against 106 for the trains that do not.
-  Their line has run all along. `pipeline/backtest_fallback.py` walk-forwards
-  the two answers over 781,000 archive events at 62 stations: on exactly the
-  events the app gives to the prior, the line scores 0.43 min of CRPS better
-  (95% 0.40..0.46, resampling whole trains), with a line-keyed shard available
-  for 88% of them. Across the December 2025 timetable change — where the
-  population doubles to 11% of events — the same 0.41 (95% 0.39..0.43). The
-  gain is regional (0.43) and S-Bahn (0.37); long distance is too rare to say
-  either way, because almost no long-distance train carries a line number at
-  all and fewer than a hundred events in each window have one.
-  It is a fallback and not a promotion: where the number *does* have a history,
-  its own runs beat its line's by 0.13 min (95% 0.12..0.13), so the line is
-  never consulted there. The line usually comes from the train's own shard
-  rather than from the board — IRIS names a line on 17% of stops, the shard on
-  99.7% of the ones that need it, and where both spoke they agreed every time.
+- **Pooling a train with its line**: IRIS gives every run its own number and
+  renumbers at each timetable change, so a train that has run for years can
+  arrive with almost nothing behind it — over eleven collected days a quarter of
+  arrivals fell through to the prior, and those trains have a median of two runs
+  at the station in the published base data against 106 for the trains that do
+  not. Their line has run all along. The train's own runs take `n / (n + 8)` of
+  the weight and its line's the rest, so a fresh run number answers almost
+  entirely from its line and a settled one barely notices the line is there.
+  `pipeline/backtest_fallback.py` walk-forwards this over 781,000 archive events
+  at 62 stations, resampling whole trains for the intervals. Against the class
+  prior on the events that used to reach it, the line is worth 0.43 min of CRPS
+  (95% 0.40..0.46) with a shard available for 88% of them; pooling instead of
+  switching is worth a further 0.105 (95% 0.094..0.116), and 0.002 where the
+  number already has a history (95% 0.002..0.003). *Switching* cannot have both
+  ends: half-and-half wins by 0.119 where the number has nothing and loses
+  0.032 across the 87% of predictions where it has plenty. End to end the pooled
+  model is 0.025 min ahead of the version with no line at all (95% 0.023..0.026)
+  and leaves 0.5% of arrivals on the prior instead of 4.8%; across the December
+  2025 timetable change, where the thin population doubles, 0.055 and 1.3%
+  instead of 11.1%. The gain is regional and S-Bahn; long distance is too rare
+  to say either way, because almost no long-distance train carries a line number.
+  The line usually comes from the train's own shard rather than from the board —
+  IRIS names a line on 17% of stops, the shard on 99.7% of the ones that need
+  it, and where both spoke they agreed every time. Above 32 effective runs of
+  its own a train does not read the line shard at all: the shrinkage has
+  converged by there, so it costs 0.002 and saves a fetch on seven predictions
+  in eight.
 - **Connections**: for a journey with a transfer, the app propagates the
   feeder's arrival distribution through the transfer with the law of total
   probability: the passenger boards the first connecting train (in planned
@@ -209,21 +217,13 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
-- **Pool the two histories instead of switching between them.** The line is
-  currently a fallback: the app takes the number's runs, or the line's, never
-  both. Backtesting the combination says the switch is the wrong shape. Giving
-  the train's own runs `n / (n + 8)` of the weight and its line's the rest —
-  one distribution, no switch — beats the line alone by 0.105 min of CRPS on
-  the fallback population (95% 0.094..0.116) and never loses where the number
-  is rich; a *fixed* weighting cannot do both, since the half-and-half that
-  wins at the bottom costs 0.03-0.04 across the 87% of predictions at the top.
-  End to end it is worth 0.026 min against what ships today and 0.008 against
-  the fallback (0.061 and 0.020 across the December timetable change). The
-  gain is gone by 32 effective runs, so the line shard need only be fetched
-  below that — about 13% of predictions in a settled period. Two things to
-  weigh first: the pooled intervals cover 89% against a nominal 80%, a little
-  wider than the 88% they replace, and `pipeline/backtest_fallback.py` measures
-  a k of 8 on two windows only.
+- **Re-fit the shrinkage as more data arrives.** `n / (n + 8)` was chosen on
+  two windows of one archive, and the sweep that chose it only tried k of 4, 8
+  and 16 — 4 is better where the number has almost nothing and 16 is better in
+  the middle band, so the curve is flat enough that the number is not sharp.
+  The pooled intervals also cover 88.6% against a nominal 80%, a shade wider
+  than the 88.4% they replace, which is the wrong direction for an interval
+  that is already too wide.
 - **Measure the line fallback forward.** The archive backtest decided it; the
   forward comparison against DB cannot report it until the daily data job has
   published a set of line shards, because the collected days were scored

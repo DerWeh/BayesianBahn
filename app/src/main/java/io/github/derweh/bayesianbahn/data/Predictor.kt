@@ -3,6 +3,7 @@ package io.github.derweh.bayesianbahn.data
 import io.github.derweh.bayesianbahn.model.DelayDistribution
 import io.github.derweh.bayesianbahn.model.DelayModel
 import io.github.derweh.bayesianbahn.model.EmpiricalDelay
+import io.github.derweh.bayesianbahn.model.HistoricalRun
 import io.github.derweh.bayesianbahn.model.LiveReport
 import io.github.derweh.bayesianbahn.model.StudentTDelay
 import io.github.derweh.bayesianbahn.model.TimeBand
@@ -43,30 +44,42 @@ data class Forecast(
      */
     val ignoredLiveDelay: Double? = null,
     /**
-     * The line the runs came from, when they are not this train's own. The
-     * screens name it, because "past runs of this train" would be a lie and
-     * the difference is one a user can judge.
+     * The line whose runs helped, null when the forecast is the train's own
+     * alone. The screens name it, because "past runs of this train" would
+     * otherwise be a lie, and the difference is one a user can judge.
      */
     val lineName: String? = null,
+    /**
+     * How much of the forecast is the train's own history rather than its
+     * line's: 1 when the line was never consulted, 0 when it is the whole
+     * answer.
+     */
+    val ownShare: Double = 1.0,
 )
 
 /**
  * Combines a train's historical runs with its live state into an arrival
  * delay forecast.
  *
- * Three sources, tried in that order: this train's own past runs at this
- * station; the runs of its *line* there, when the run number is too new to
- * have a history of its own; and finally the Bayesian prior for its class,
- * which knows nothing about the station or the hour.
+ * Two sources, not three. This train's own past runs at this station and the
+ * runs of its *line* there go into one distribution, the train's own taking
+ * `n / (n + 8)` of the weight — so a run number with nothing behind it answers
+ * almost entirely from its line, and one with months of history barely notices
+ * the line is there. Only when even the two together are too thin does the
+ * Bayesian prior for its class answer, which knows neither the station nor the
+ * hour.
  *
- * The middle step is worth having because the last one is weak and common.
- * Over eleven days of collected forecasts a quarter of arrivals fell through
- * to the prior, and `pipeline/backtest_fallback.py`, walking 781,000 archive
- * events across 62 stations, puts the line's answer 0.43 minutes of CRPS ahead
- * of the prior's on exactly that population (95% 0.40..0.46, resampling whole
- * trains), with a shard available for 88% of it. It is a fallback and not a
- * promotion: where the number *does* have a history, its own runs beat its
- * line's by 0.13 minutes, so the line is never consulted there.
+ * That last case used to be a quarter of arrivals: IRIS renumbers a run at
+ * every timetable change, and over eleven days of collected forecasts the
+ * trains that fell through to the prior had a median of two runs at the station
+ * against 106 for the trains that did not. Pooling instead of switching is what
+ * `pipeline/backtest_fallback.py` measured over 781,000 archive events: worth
+ * 0.105 min of CRPS against answering from the line alone (95% 0.094..0.116)
+ * and 0.002 against answering from the number alone (95% 0.002..0.003), where
+ * a *switch* between the two — or any fixed weighting — has to give up one end
+ * to have the other. End to end, 0.025 min against the version with no line at
+ * all (95% 0.023..0.026), and the share of arrivals left to the prior falls
+ * from 4.8% to 0.5%.
  */
 class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
 
@@ -84,56 +97,63 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         val ignored = liveDelayMinutes.takeIf { reported == null }
         val timeOfDay = Instant.ofEpochMilli(plannedTimeMillis).atZone(ZONE).format(HHMM)
 
-        fun usable(from: TrainHistory?): EmpiricalDelay? {
-            val stationHistory = from?.stations?.entries?.firstOrNull { (name, sh) ->
+        fun runsAt(from: TrainHistory?): List<HistoricalRun> =
+            from?.stations?.entries?.firstOrNull { (name, sh) ->
                 sh.eva == stationEva || StationNames.matches(name, stationName)
-            }?.value ?: return null
-            // Draft approximation: the live delay reported for this station
-            // stands in for the delay at the previous stop that historical
-            // runs were annotated with. Replace with the true previous-stop
-            // live delay once the board fetches neighbouring stations.
-            return EmpiricalDelay.build(
-                runs = stationHistory.runs,
+            }?.value?.runs.orEmpty()
+
+        // Draft approximation: the live delay reported for this station stands
+        // in for the delay at the previous stop that historical runs were
+        // annotated with. Replace with the true previous-stop live delay once
+        // the board fetches neighbouring stations.
+        fun build(own: List<HistoricalRun>, line: List<HistoricalRun>) =
+            EmpiricalDelay.build(
+                runs = own,
                 queryTimeOfDay = timeOfDay,
                 queryDate = today,
                 liveDelayAtPreviousStop = reported,
-            )?.takeIf { it.effectiveSampleSize >= EmpiricalDelay.MIN_EFFECTIVE_N }
+                lineRuns = line,
+            )
+
+        val ownRuns = runsAt(history)
+        val alone = build(ownRuns, emptyList())
+        // The line shard is one file per line and station rather than per run
+        // number, so it costs a fetch — and above this much history of its own
+        // a train has nothing to gain from it. Roughly seven predictions in
+        // eight stop here.
+        var fromLine: TrainHistory? = null
+        var empirical = alone
+        if ((alone?.effectiveSampleSize ?: 0.0) < EmpiricalDelay.LINE_CEILING_N) {
+            fromLine = lineHistory()
+            if (fromLine != null) empirical = build(ownRuns, runsAt(fromLine))
         }
 
-        usable(history)?.let { own ->
-            return Forecast(
-                distribution = own,
-                source = if (own.conditionedOnLive) {
-                    ForecastSource.EMPIRICAL_LIVE
-                } else {
-                    ForecastSource.EMPIRICAL
-                },
-                runCount = own.sampleSize,
-                effectiveRuns = own.effectiveSampleSize,
-                cancelProbability = own.cancelProbability,
-                ignoredLiveDelay = ignored,
-            )
-        }
-
-        // Only now is the line shard worth a fetch: it is one file per line
-        // rather than per run, so it is larger, and three quarters of
-        // predictions never need it.
-        val fromLine = lineHistory()
-        usable(fromLine)?.let { line ->
-            return Forecast(
-                distribution = line,
-                source = if (line.conditionedOnLive) {
-                    ForecastSource.EMPIRICAL_LINE_LIVE
-                } else {
-                    ForecastSource.EMPIRICAL_LINE
-                },
-                runCount = line.sampleSize,
-                effectiveRuns = line.effectiveSampleSize,
-                cancelProbability = line.cancelProbability,
-                ignoredLiveDelay = ignored,
-                lineName = fromLine?.trainName,
-            )
-        }
+        empirical?.takeIf { it.effectiveSampleSize >= EmpiricalDelay.MIN_EFFECTIVE_N }
+            ?.let { model ->
+                // Whose history the screens should describe: whichever side
+                // holds most of the weight. The own runs cross a half at
+                // exactly the effective count that used to switch the model.
+                val mostlyOwn = model.ownShare >= 0.5
+                return Forecast(
+                    distribution = model,
+                    source = when {
+                        mostlyOwn && model.conditionedOnLive -> ForecastSource.EMPIRICAL_LIVE
+                        mostlyOwn -> ForecastSource.EMPIRICAL
+                        model.conditionedOnLive -> ForecastSource.EMPIRICAL_LINE_LIVE
+                        else -> ForecastSource.EMPIRICAL_LINE
+                    },
+                    runCount = model.sampleSize,
+                    effectiveRuns = model.effectiveSampleSize,
+                    cancelProbability = model.cancelProbability,
+                    ignoredLiveDelay = ignored,
+                    ownShare = model.ownShare,
+                    // Named whenever it contributed at all, not only when it
+                    // dominates: at eight to thirty runs of its own a train
+                    // still takes a fifth to a half of its answer from its
+                    // line, and the screens should not call that its own.
+                    lineName = fromLine?.trainName?.takeIf { model.ownShare < 1.0 },
+                )
+            }
 
         val trainClass = TrainClass.fromCategory(trainCategory)
         val band = TimeBand.fromEpochMillis(plannedTimeMillis)
