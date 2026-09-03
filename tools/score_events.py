@@ -179,6 +179,7 @@ class Stop:
 
 def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
              cohorts: tuple[int, ...] = (1,),
+             within: tuple[float, float] | None = None,
              ) -> tuple[dict[tuple[str, str], Stop], dict[str, list[float]]]:
     """Stops keyed by (station, trip), plus successful poll times per station.
 
@@ -191,8 +192,21 @@ def read_day(out: Path, day: dt.date, tiers: tuple[int, ...] = (1,),
     after the data was in. And the cohorts were sampled on different axes and
     started on different days, so pooling them would produce a number that
     describes neither.
+
+    `within` (epoch seconds, half-open) narrows a full day to the hours a
+    shorter run would have covered, so a reference computed here is comparable
+    with one collected by a windowed run. It clips `poll` and `obs` — what the
+    run would have seen — but never `plan`: a run starting at 15:00 fetches the
+    plan for everything in its horizon at once, so the plan of a train first
+    listed that morning is present either way. Dropping those would delete
+    every train whose stop was first published before the window and bias the
+    reference towards trains that appeared late.
     """
     records, torn = cf.Journal.read(out / f"forecasts-{day}.jsonl")
+    if within is not None:
+        start, end = within
+        records = [r for r in records
+                   if r["t"] == "plan" or start <= float(r["at"]) < end]
     if torn:
         print(f"note: skipped {torn} torn line(s)", file=sys.stderr)
     roles = cf.roles_of(records)

@@ -93,6 +93,20 @@ HAFAS = "https://v6.db.transport.rest"
 UA = "BayesianBahn/0.1 (F-Droid; FOSS delay prediction; evaluation harness)"
 
 CADENCE_MINUTES = 10
+# The hours a scheduled run covers, German local time. Not used by the loop —
+# the caller decides how long to run for — but it is the definition of the
+# window, and it lives here because it is a property of the collection rather
+# than of any one thing that reads it back. `.github/workflows/
+# collect-forecasts.yml` reads it to decide when to start and stop, and
+# `tools/anchor_drift.py` reads it to clip whole-day journals to the same hours
+# before comparing them. Two copies of these numbers would silently compare a
+# peak-hour curve against an all-day one.
+#
+# The evening peak: the busiest traffic, the fullest trains, and the part of the
+# day a passenger is most likely to be on a platform deciding whether to run.
+# Collecting round the clock is four times the cost for an answer to a question
+# nobody asked at 04:00.
+WINDOW_HOURS = (15, 21)
 # Polling exactly on the ten-minute grid would sample DB at a fixed phase of
 # whatever cycle it regenerates `fchg` on, so any staleness in what we read
 # would be constant rather than averaging out — and scheduled arrivals cluster

@@ -1,0 +1,129 @@
+{
+  "days": [
+    "2026-09-01",
+    "2026-09-02",
+    "2026-09-03"
+  ],
+  "hours": [
+    15,
+    21
+  ],
+  "edges": [
+    0,
+    5,
+    10,
+    15,
+    20,
+    30,
+    45,
+    60,
+    90,
+    120,
+    "inf"
+  ],
+  "events": 76197,
+  "trips": 2887,
+  "bins": [
+    {
+      "label": "0-5",
+      "n": 1464,
+      "width": 3.0,
+      "isotonic": 3.0,
+      "ci": [
+        3.0,
+        3.0
+      ]
+    },
+    {
+      "label": "5-10",
+      "n": 2464,
+      "width": 4.0,
+      "isotonic": 4.0,
+      "ci": [
+        4.0,
+        5.0
+      ]
+    },
+    {
+      "label": "10-15",
+      "n": 2767,
+      "width": 5.0,
+      "isotonic": 5.0,
+      "ci": [
+        4.0,
+        5.0
+      ]
+    },
+    {
+      "label": "15-20",
+      "n": 2687,
+      "width": 6.0,
+      "isotonic": 5.5,
+      "ci": [
+        5.0,
+        6.0
+      ]
+    },
+    {
+      "label": "20-30",
+      "n": 5346,
+      "width": 5.0,
+      "isotonic": 5.5,
+      "ci": [
+        5.0,
+        6.0
+      ]
+    },
+    {
+      "label": "30-45",
+      "n": 7771,
+      "width": 6.0,
+      "isotonic": 6.0,
+      "ci": [
+        5.0,
+        6.0
+      ]
+    },
+    {
+      "label": "45-60",
+      "n": 7316,
+      "width": 6.0,
+      "isotonic": 6.0,
+      "ci": [
+        6.0,
+        7.0
+      ]
+    },
+    {
+      "label": "60-90",
+      "n": 13563,
+      "width": 7.0,
+      "isotonic": 7.0,
+      "ci": [
+        6.0,
+        7.0
+      ]
+    },
+    {
+      "label": "90-120",
+      "n": 11937,
+      "width": 7.0,
+      "isotonic": 7.0,
+      "ci": [
+        7.0,
+        8.0
+      ]
+    },
+    {
+      "label": "120+",
+      "n": 20882,
+      "width": 7.0,
+      "isotonic": 7.0,
+      "ci": [
+        7.0,
+        8.0
+      ]
+    }
+  ],
+  "note": "Provisional: the only days after the rail-replacement blockade ended on 2026-08-31. Re-freeze once CI holds 14 post-blockade days."
+}

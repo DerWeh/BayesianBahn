@@ -1,0 +1,126 @@
+# Watches the one curve the published archive cannot check.
+#
+# The app re-anchors a prediction on DB's live delay report and treats that
+# number as exact. It is not, and `tools/calibrate_live.py` sized the error. A
+# fix means baking a spread-versus-lead curve into the model, and a baked-in
+# curve is a claim about the world that can quietly stop being true — a
+# timetable change, a new interlocking, a different disruption regime.
+#
+# Nothing in the archive can tell us: it stores what trains did, not what DB
+# said they would do. So this reads the collector's own journals instead, and
+# opens an issue when the curve leaves the reference behind. It is meant to say
+# nothing for months at a time. notes/COLLECTOR.md says what to do when it does.
+name: Check live-anchor drift
+
+on:
+  schedule:
+    # Mondays, after Sunday's collection has been published.
+    - cron: "40 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Window to check, as YYYY-MM-DD..YYYY-MM-DD"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  TITLE: "Live-anchor spread has drifted from the reference"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OUT: tools/.forecasts
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: prefix-dev/setup-pixi@v0.10.1
+        with:
+          environments: pipeline
+          activate-environment: pipeline
+          cache: true
+
+      - name: Fetch the fortnight
+        id: window
+        # Through the environment, never interpolated into the script: a
+        # workflow_dispatch input is attacker-controlled text and `${{ }}` is
+        # pasted in before bash ever sees it.
+        env:
+          REQUESTED: ${{ github.event.inputs.days }}
+        run: |
+          mkdir -p "$OUT"
+          # Yesterday backwards, because today's collection has not run yet.
+          last=$(date -d yesterday +%F)
+          first=$(date -d "$last -13 days" +%F)
+          if [ -n "$REQUESTED" ]; then
+            case "$REQUESTED" in
+              ????-??-??..????-??-??) ;;
+              *) echo "--days must be YYYY-MM-DD..YYYY-MM-DD"; exit 1 ;;
+            esac
+            first=${REQUESTED%%..*}
+            last=${REQUESTED##*..}
+          fi
+          echo "days=$first..$last" >> "$GITHUB_OUTPUT"
+          day=$first
+          got=0
+          while [ "$day" \< "$last" ] || [ "$day" = "$last" ]; do
+            if gh release download forecasts -p "forecasts-$day.jsonl.gz" \
+                 -D "$OUT" -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+              gunzip -f "$OUT/forecasts-$day.jsonl.gz"
+              got=$((got + 1))
+            else
+              echo "no journal for $day"
+            fi
+            day=$(date -d "$day +1 day" +%F)
+          done
+          echo "$got day(s) of $first..$last"
+
+      - name: Compare against the reference
+        id: check
+        run: |
+          set +e
+          python tools/anchor_drift.py check \
+            --days "${{ steps.window.outputs.days }}" --out "$OUT" \
+            > report.md 2> summary.txt
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat summary.txt report.md
+          { cat summary.txt; echo; cat report.md; } >> "$GITHUB_STEP_SUMMARY"
+
+      # Exit 2 is "not enough data to judge" — a collector that has been down,
+      # which is a different problem from a curve that moved and must not be
+      # reported as one. It shows in the summary above and fails the run.
+      - name: Not enough data
+        if: steps.check.outputs.status == '2'
+        run: |
+          echo "::error::too little collected data to judge drift"
+          exit 1
+
+      - name: Open or update the drift issue
+        if: steps.check.outputs.status == '1'
+        run: |
+          body=$( { echo "\`tools/anchor_drift.py\` compared **${{ steps.window.outputs.days }}** against \`tools/anchor-reference.json\`."
+                    echo
+                    cat summary.txt
+                    echo
+                    cat report.md
+                    echo
+                    echo "What to do with this is written down in [notes/COLLECTOR.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/notes/COLLECTOR.md#when-the-drift-check-fires)."
+                    echo
+                    echo "_From [this run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})._"; } )
+          # Matched on the exact title rather than through code search, whose
+          # index can be minutes behind and would open a second issue.
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --limit 100 \
+            --json number,title \
+            --jq "[.[] | select(.title == \"$TITLE\")][0].number // empty")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" --body "$body"
+            echo "commented on #$existing"
+          else
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body "$body"
+          fi

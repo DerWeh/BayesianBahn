@@ -1,0 +1,170 @@
+# Records what DB predicted, so the app's use of DB's live number can be checked.
+#
+# This is the one input to the evaluation that cannot be recomputed later. The
+# published archive stores what trains did, not what DB said they would do, so
+# a day nobody collected is a day gone for good — which is why this exists as a
+# job rather than as something someone remembers to start.
+#
+# It runs a six-hour evening window rather than round the clock. The curve it
+# feeds (`tools/anchor_drift.py`) is a peak-hour answer to a peak-hour question,
+# and a quarter of the runner time buys the same answer. See notes/COLLECTOR.md
+# for what to do when it reports drift, and for how to restart this from cold.
+#
+# Journals live as assets on the `forecasts` release, not in git: ~11 MB
+# gzipped a day would be a gigabyte of permanent history a year. Assets can be
+# pruned; commits cannot.
+name: Collect DB forecasts
+
+on:
+  schedule:
+    # 14:50 Berlin — CEST in summer, an hour early in winter, which the window
+    # inside the collector absorbs. GitHub starts scheduled jobs late under
+    # load, so the cron sits ten minutes ahead of the window it has to cover.
+    - cron: "50 12 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to collect for"
+        type: number
+        default: 360
+
+permissions:
+  contents: write
+
+# Never two collectors at once: they would append to the same day and each
+# restore only its own half, so both would re-report every unchanged value.
+concurrency:
+  group: collect-forecasts
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    # The window plus room for a slow start. Well under the six-hour job
+    # ceiling, so the upload below always runs.
+    timeout-minutes: 400
+    env:
+      # The collector names its journal after the local date and reads IRIS
+      # times as German wall clock. On a UTC runner the day would roll over at
+      # 02:00 Berlin, cutting an evening in half and mislabelling both halves.
+      TZ: Europe/Berlin
+      GH_TOKEN: ${{ github.token }}
+      OUT: tools/.forecasts
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # The collector is stdlib-only on purpose — urllib and ElementTree, no
+      # third-party parser — so it needs no environment to speak of. Keeping it
+      # that way is what makes this step three seconds instead of a minute.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the day's journal so far
+        run: |
+          mkdir -p "$OUT"
+          today=$(date +%F)
+          # A run that crosses midnight, or a re-dispatch, appends to a journal
+          # that already exists. Without it the collector restores nothing and
+          # re-reports every value it had already written as a change.
+          for day in "$today" "$(date -d yesterday +%F)"; do
+            if gh release download forecasts -p "forecasts-$day.jsonl.gz" \
+                 -D "$OUT" -R "$GITHUB_REPOSITORY" 2>/dev/null; then
+              gunzip -f "$OUT/forecasts-$day.jsonl.gz"
+              echo "resuming $day ($(wc -l < "$OUT/forecasts-$day.jsonl") lines)"
+            fi
+          done
+
+      # Plan documents for a past hour never change, so a cached one is a
+      # request IRIS does not have to serve. Keyed by run so it always saves;
+      # restored from whatever the last run left.
+      - name: Restore the plan cache
+        uses: actions/cache@v6
+        with:
+          path: tools/.forecasts/plan
+          key: iris-plan-${{ github.run_id }}
+          restore-keys: iris-plan-
+
+      - name: Collect
+        # Through the environment and checked: a dispatch input is text a
+        # stranger can write, and `${{ }}` is pasted in before bash sees it.
+        env:
+          REQUESTED_MINUTES: ${{ github.event.inputs.minutes }}
+        run: |
+          # The window is pinned to the clock, not to when GitHub got round to
+          # starting us — scheduled runs are routinely minutes late under load,
+          # and a window that floats with the delay is a different traffic mix
+          # each day, which is exactly the drift the check is looking for.
+          read -r from until < <(python -c \
+            "import sys; sys.path.insert(0, 'tools'); \
+             from collect_forecasts import WINDOW_HOURS; print(*WINDOW_HOURS)")
+          start=$(date -d "today $from:00" +%s)
+          end=$(date -d "today $until:00" +%s)
+          now=$(date +%s)
+          if [ "$now" -lt "$start" ]; then
+            echo "waiting $(( (start - now) / 60 )) min for $from:00"
+            sleep $(( start - now ))
+            now=$start
+          fi
+          minutes=$(( (end - now) / 60 ))
+          if [ -n "$REQUESTED_MINUTES" ]; then
+            case "$REQUESTED_MINUTES" in
+              ''|*[!0-9]*) echo "minutes must be a number"; exit 1 ;;
+            esac
+            minutes=$REQUESTED_MINUTES
+          fi
+          if [ "$minutes" -lt 1 ]; then
+            echo "::warning::started after $until:00; nothing to collect"
+            exit 0
+          fi
+          echo "collecting $minutes min, to $until:00 $(date +%Z)"
+          python tools/collect_forecasts.py run --minutes "$minutes" --out "$OUT"
+
+      - name: Health
+        if: always()
+        run: |
+          python tools/collect_forecasts.py status --out "$OUT" | tee status.txt
+          { echo '```'; cat status.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # `always()`: a cancelled or timed-out run still holds hours of readings
+      # that cannot be collected again.
+      - name: Publish the journals
+        if: always()
+        run: |
+          gh release view forecasts -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create forecasts -R "$GITHUB_REPOSITORY" \
+                 --notes "Collector journals, one gzipped JSONL per day. Written by .github/workflows/collect-forecasts.yml; read by tools/anchor_drift.py." \
+                 --title "Collector journals"
+          shopt -s nullglob
+          for journal in "$OUT"/forecasts-*.jsonl; do
+            gzip -6 -c "$journal" > "$journal.gz"
+            gh release upload forecasts "$journal.gz" --clobber -R "$GITHUB_REPOSITORY"
+            echo "uploaded $(basename "$journal.gz") ($(du -h "$journal.gz" | cut -f1))"
+          done
+
+      # A rolling window, because the drift check only ever looks back a
+      # fortnight and nothing else reads these. Deleting is deliberate: kept
+      # forever they are ~4 GB a year of assets nobody opens.
+      - name: Prune journals older than 90 days
+        if: always()
+        run: |
+          cutoff=$(date -d "90 days ago" +%F)
+          gh release view forecasts -R "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' \
+          | while read -r name; do
+              day=${name#forecasts-}; day=${day%.jsonl.gz}
+              case "$day" in
+                ????-??-??) [ "$day" \< "$cutoff" ] || continue ;;
+                *) continue ;;
+              esac
+              gh release delete-asset forecasts "$name" -y -R "$GITHUB_REPOSITORY"
+              echo "pruned $name"
+            done
+
+      # The cache is saved on the way out; without this it grows without limit,
+      # since a plan document is never rewritten and never expires.
+      - name: Drop plan documents older than two days
+        if: always()
+        run: |
+          find tools/.forecasts/plan -type f -mtime +2 -delete 2>/dev/null || true
