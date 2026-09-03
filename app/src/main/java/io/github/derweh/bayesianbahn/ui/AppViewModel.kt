@@ -17,6 +17,7 @@ import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.Station
 import io.github.derweh.bayesianbahn.data.UserMessage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -121,9 +122,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         journeyState = JourneyState.Loading
         viewModelScope.launch {
             journeyState = when (
-                val outcome = container.journeyPlanner.plan(
-                    fromQuery, toQuery, departMillis, deutschlandTicketOnly,
-                )
+                val outcome = offMainThread {
+                    container.journeyPlanner.plan(
+                        fromQuery, toQuery, departMillis, deutschlandTicketOnly,
+                    )
+                }
             ) {
                 is JourneyPlanner.Outcome.Error -> JourneyState.Error(outcome.message)
                 is JourneyPlanner.Outcome.Success -> JourneyState.Loaded(outcome)
@@ -150,7 +153,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         query = value
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
-            searchResults = container.stationRepository.search(value)
+            searchResults = offMainThread { container.stationRepository.search(value) }
         }
     }
 
@@ -200,13 +203,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         connectionState = ConnectionState.Loading
         viewModelScope.launch {
             connectionState = when (
-                val outcome = container.connectionPlanner.plan(
-                    feeder = stop,
-                    transferQuery = transferName,
-                    destinationQuery = destinationQuery,
-                    transferMinutes = transferMinutes,
-                    deutschlandTicketOnly = deutschlandTicketOnly,
-                )
+                val outcome = offMainThread {
+                    container.connectionPlanner.plan(
+                        feeder = stop,
+                        transferQuery = transferName,
+                        destinationQuery = destinationQuery,
+                        transferMinutes = transferMinutes,
+                        deutschlandTicketOnly = deutschlandTicketOnly,
+                    )
+                }
             ) {
                 is ConnectionPlanner.Outcome.Error -> ConnectionState.Error(outcome.message)
                 is ConnectionPlanner.Outcome.Success -> ConnectionState.Loaded(outcome)
@@ -251,25 +256,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         routes = routes + Route.Prediction(station, stop)
         predictionState = PredictionState.Loading
         viewModelScope.launch {
-            val history = container.historyRepository.load(
-                category = stop.label.category,
-                number = stop.label.number,
-            )
-            val event = stop.arrival ?: stop.departure
-            val forecast = predictor.forecast(
-                history = history,
-                stationEva = station.eva,
-                stationName = station.name,
-                trainCategory = stop.label.category,
-                plannedTimeMillis = event?.plannedTime ?: System.currentTimeMillis(),
-                liveDelayMinutes = event?.liveDelayMinutes,
-                lineHistory = {
-                    container.historyRepository.loadLine(
-                        stop.label.category, stop.label.line, station.eva, history,
-                    )
-                },
-            )
+            val forecast = offMainThread {
+                val history = container.historyRepository.load(
+                    category = stop.label.category,
+                    number = stop.label.number,
+                )
+                val event = stop.arrival ?: stop.departure
+                predictor.forecast(
+                    history = history,
+                    stationEva = station.eva,
+                    stationName = station.name,
+                    trainCategory = stop.label.category,
+                    plannedTimeMillis = event?.plannedTime ?: System.currentTimeMillis(),
+                    liveDelayMinutes = event?.liveDelayMinutes,
+                    lineHistory = {
+                        container.historyRepository.loadLine(
+                            stop.label.category, stop.label.line, station.eva, history,
+                        )
+                    },
+                )
+            }
             predictionState = PredictionState.Loaded(forecast)
         }
     }
+
+    /**
+     * Runs [work] anywhere but the main thread, and returns to it.
+     *
+     * `viewModelScope` is `Dispatchers.Main.immediate`, so anything a launch
+     * body does not explicitly hand elsewhere runs on the UI thread. Only the
+     * network calls did: the XML parse, the history model and the connection
+     * mixture all stayed on it, and a journey search froze the very spinner it
+     * had set — the work finished, but nothing could draw while it did. Every
+     * state assignment stays on the main thread, where Compose reads it.
+     */
+    private suspend fun <T> offMainThread(work: suspend () -> T): T =
+        withContext(Dispatchers.Default) { work() }
 }

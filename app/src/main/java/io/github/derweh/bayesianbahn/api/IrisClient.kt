@@ -33,21 +33,31 @@ class IrisClient(
      * [hours] hour slices starting at [startMillis] (default: now — IRIS
      * serves plan data days ahead, so future trips work too) with all
      * currently known changes applied.
+     *
+     * On [Dispatchers.Default] as a whole, not just around the requests. Only
+     * the requests used to leave the caller's thread, and parsing is the
+     * larger half: `fchg` for Ulm Hbf is 168 KB against 10.6 KB for an hour of
+     * `plan`, because a station's disruption messages are most of the
+     * document. Every `viewModelScope.launch` that reaches this names no
+     * dispatcher, so all of that ran on the main thread and a journey search —
+     * which opens several boards — froze the spinner it had just started.
      */
     suspend fun board(
         eva: String,
         hours: Int = 2,
         startMillis: Long? = null,
-    ): List<TimetableStop> = coroutineScope {
-        val start = startMillis
-            ?.let { ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(it), ZONE) }
-            ?: ZonedDateTime.now(ZONE)
-        val plans = (0 until hours).map { offset ->
-            async { fetchPlan(eva, start.plusHours(offset.toLong())) }
+    ): List<TimetableStop> = withContext(Dispatchers.Default) {
+        coroutineScope {
+            val start = startMillis
+                ?.let { ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(it), ZONE) }
+                ?: ZonedDateTime.now(ZONE)
+            val plans = (0 until hours).map { offset ->
+                async { fetchPlan(eva, start.plusHours(offset.toLong())) }
+            }
+            val changes = async { fetchChanges(eva) }
+            val stops = plans.flatMap { it.await() }.distinctBy { it.id }
+            IrisParser.merge(stops, changes.await())
         }
-        val changes = async { fetchChanges(eva) }
-        val stops = plans.flatMap { it.await() }.distinctBy { it.id }
-        IrisParser.merge(stops, changes.await())
     }
 
     /**
@@ -75,11 +85,13 @@ class IrisClient(
     }
 
     /** Raw `station/{query}` lookup; the query may be an EVA number or a name. */
-    suspend fun stations(query: String): List<IrisStation> {
-        val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
-        val xml = get("$baseUrl/station/$encoded", notFoundAsEmpty = true) ?: return emptyList()
-        return parser.parseStations(xml)
-    }
+    suspend fun stations(query: String): List<IrisStation> =
+        withContext(Dispatchers.Default) {
+            val encoded = URLEncoder.encode(query, "UTF-8").replace("+", "%20")
+            val xml = get("$baseUrl/station/$encoded", notFoundAsEmpty = true)
+                ?: return@withContext emptyList()
+            parser.parseStations(xml)
+        }
 
     private suspend fun fetchPlan(eva: String, slice: ZonedDateTime): List<TimetableStop> {
         val date = slice.format(DateTimeFormatter.ofPattern("yyMMdd"))
