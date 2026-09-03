@@ -217,6 +217,20 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
+- **The empirical arrival distribution is too wide.** Its nominal 80% interval
+  covers 91.1% of arrivals, and the two 10% tails hold 5.0% and 7.6% — it is
+  over-dispersed on both sides, not merely shifted. That is not free: the
+  connection answer is one number, `P(delay <= slack)`, so mass parked beyond
+  the slack understates the chance of making a change. Measured over ten days,
+  the model says 0.60 where 0.73 of those changes were made, and 0.85 where
+  0.94 were. Users are being warned off connections that work. The line-keyed
+  history is *less* over-dispersed (85.5%, right tail 11.9%) and reliability-
+  dominates the number-keyed one at every band, which is a hint about the cause:
+  with twenty to seventy effective runs the raw empirical quantiles keep
+  outliers at full weight and nothing shrinks them. Fixing the dispersion would
+  sharpen the missed-connection call honestly, rather than by choosing a
+  worse-calibrated input because its errors point the way a one-sided metric
+  rewards.
 - **Re-fit the shrinkage as more data arrives.** `n / (n + 8)` was chosen on
   two windows of one archive, and the sweep that chose it only tried k of 4, 8
   and 16 — 4 is better where the number has almost nothing and 16 is better in
