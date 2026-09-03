@@ -217,20 +217,29 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
-- **The empirical arrival distribution is too wide.** Its nominal 80% interval
-  covers 91.1% of arrivals, and the two 10% tails hold 5.0% and 7.6% — it is
-  over-dispersed on both sides, not merely shifted. That is not free: the
-  connection answer is one number, `P(delay <= slack)`, so mass parked beyond
-  the slack understates the chance of making a change. Measured over ten days,
-  the model says 0.60 where 0.73 of those changes were made, and 0.85 where
-  0.94 were. Users are being warned off connections that work. The line-keyed
-  history is *less* over-dispersed (85.5%, right tail 11.9%) and reliability-
-  dominates the number-keyed one at every band, which is a hint about the cause:
-  with twenty to seventy effective runs the raw empirical quantiles keep
-  outliers at full weight and nothing shrinks them. Fixing the dispersion would
-  sharpen the missed-connection call honestly, rather than by choosing a
-  worse-calibrated input because its errors point the way a one-sided metric
-  rewards.
+- **The live-conditioned forecast is far too narrow.** When DB reports a delay,
+  the model shifts each historical run's last-hop progression onto that report
+  and treats the report itself as exact. It is not: measured over the collected
+  days, `truth - DB's report` has a 10th-to-90th spread of 11-12 minutes and a
+  mean of +2 to +3, while the interval the model issues is a median of **2
+  minutes** wide. 46.9% of those arrivals land above their own 90th percentile.
+  In Bayesian terms the anchor enters as `p(a | report) = delta(report)` when it
+  should be the measured report-to-final residual, and the predictive should
+  marginalise over it.
+
+  The residual has stable structure, which is what makes this fixable rather
+  than merely fittable. Split five days to fit and seven to hold out — the
+  held-out set spanning the end of the replacement-bus blockade, so the two
+  windows differ in composition — the spread by lead time is 6/9/19/46 minutes
+  against 5/9/17/44, and the bias +1.8/+2.5/+5.3/+10.8 against
+  +1.3/+2.1/+4.9/+11.6. Lead time is the driver and it transfers; conditioning
+  on the size of the reported delay also helps but drifts in its thin top bucket
+  (27 against 40 minutes of spread above 20 minutes reported).
+
+  Two cautions before shipping any of it. The table would be estimated from 20
+  stations over a fortnight and nothing yet refreshes it, unlike the shards; and
+  the correction is largest exactly where the sample is thinnest, 395 and 569
+  observations beyond 90 minutes of lead.
 - **Re-fit the shrinkage as more data arrives.** `n / (n + 8)` was chosen on
   two windows of one archive, and the sweep that chose it only tried k of 4, 8
   and 16 — 4 is better where the number has almost nothing and 16 is better in
