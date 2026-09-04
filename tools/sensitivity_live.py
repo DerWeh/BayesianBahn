@@ -44,6 +44,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy import optimize
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -76,51 +77,20 @@ def crps(quantiles: np.ndarray, y: np.ndarray) -> np.ndarray:
     return 2.0 * np.mean(np.where(d >= 0, PS * d, (PS - 1.0) * d), axis=1)
 
 
-def nelder_mead(f, x0, steps, iters: int = 300, tol: float = 1e-8):
-    """Downhill simplex. Written out because the pipeline has no scipy.
+def minimise(f, x0) -> tuple[np.ndarray, float]:
+    """Nelder-Mead, from SciPy.
 
-    Six parameters at most and a loss that is smooth in all of them, so nothing
-    fancier earns its dependency.
+    Derivative-free because the loss goes through `np.quantile` of the
+    standardised residual, which is not differentiable in the parameters; six
+    parameters at most, so a simplex is the right tool. SciPy rather than
+    anything written here: the first version of this was hand-rolled, and it
+    only ever contracted outwards -- towards a direction already known to be
+    worse -- so it stalled instead of shrinking.
     """
-    x0 = np.asarray(x0, float)
-    n = len(x0)
-    simplex = np.vstack([x0] + [x0 + np.eye(n)[i] * steps[i] for i in range(n)])
-    value = np.array([f(p) for p in simplex])
-    for _ in range(iters):
-        order = np.argsort(value)
-        simplex, value = simplex[order], value[order]
-        if abs(value[-1] - value[0]) < tol * (abs(value[0]) + tol):
-            break
-        centre = simplex[:-1].mean(axis=0)
-        reflected = centre - (simplex[-1] - centre)
-        f_reflected = f(reflected)
-        if f_reflected < value[0]:
-            expanded = centre - 2.0 * (simplex[-1] - centre)
-            f_expanded = f(expanded)
-            if f_expanded < f_reflected:
-                simplex[-1], value[-1] = expanded, f_expanded
-            else:
-                simplex[-1], value[-1] = reflected, f_reflected
-        elif f_reflected < value[-2]:
-            simplex[-1], value[-1] = reflected, f_reflected
-        else:
-            # Outside the simplex when the reflection at least beat the point
-            # it replaced, inside when it did not. Contracting outwards in that
-            # second case steps towards a direction already known to be worse,
-            # and the simplex stalls there instead of shrinking.
-            outside = f_reflected < value[-1]
-            towards = reflected if outside else simplex[-1]
-            contracted = centre + 0.5 * (towards - centre)
-            f_contracted = f(contracted)
-            if f_contracted < min(f_reflected, value[-1]):
-                simplex[-1], value[-1] = contracted, f_contracted
-            elif outside:
-                simplex[-1], value[-1] = reflected, f_reflected
-            else:
-                simplex[1:] = simplex[0] + 0.5 * (simplex[1:] - simplex[0])
-                value[1:] = [f(p) for p in simplex[1:]]
-    order = np.argsort(value)
-    return simplex[order][0], float(value[order][0])
+    result = optimize.minimize(f, np.asarray(x0, float), method="Nelder-Mead",
+                               options={"maxiter": 4000, "xatol": 1e-6,
+                                        "fatol": 1e-8})
+    return result.x, float(result.fun)
 
 
 # Widths as a function of lead. Squaring keeps every one of them positive
@@ -179,8 +149,7 @@ def fit(lead: np.ndarray, eps: np.ndarray, form: str, rounds: int = 4) -> dict:
             q = (mean_of(t[:MEAN_PARAMS], lead)[:, None]
                  + z[None, :] * width_of(t[MEAN_PARAMS:], lead)[:, None])
             return float(crps(q, eps).mean())
-        steps = np.where(np.abs(start) > 1e-3, np.abs(start) * 0.5, 0.3)
-        return nelder_mead(loss, start, steps)
+        return minimise(loss, start)
 
     theta, value = refit(shape, theta)
     for _ in range(rounds):
@@ -339,9 +308,9 @@ def report_sweep(models: dict) -> None:
     print(f"\nthe tabulated shape replaced by two numbers")
     print(f"{'shape':<38}{'CRPS':>8}{'cov80':>8}{'above q90':>11}")
     shape = np.asarray(models["linear"]["shape"])
-    fitted, rms = nelder_mead(
+    fitted, _ = minimise(
         lambda b: float(np.mean((asymmetric_laplace(b[0] ** 2, b[1] ** 2) - shape) ** 2)),
-        [0.5, 0.8], [0.2, 0.2])
+        [0.5, 0.8])
     left, right = fitted[0] ** 2, fitted[1] ** 2
     for name, z in (("empirical, %d tabulated points" % len(PS), shape),
                     (f"asymmetric Laplace ({left:.2f}, {right:.2f})",

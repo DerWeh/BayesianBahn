@@ -47,6 +47,10 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+
+# `archive` is the one description of the upstream schema, and both
+# directories read it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOTS = Path(__file__).parent / ".timetable"
 
@@ -218,6 +222,13 @@ def km(a: Station, b: Station) -> float:
 # --- snapshot ----------------------------------------------------------------
 
 
+# What `snapshot` reads out of the archive, apart from the cancellation flag,
+# whose name upstream has changed once already — see pipeline/archive.py.
+ARCHIVE_COLUMNS = ("eva", "train_type", "train_number", "train_line_ride_id",
+                   "train_line_station_num", "arrival_planned_time",
+                   "departure_planned_time")
+
+
 def candidate_files(data_dirs: list[Path], day: dt.date) -> list[Path]:
     """The archive files that can contain `day`.
 
@@ -236,10 +247,14 @@ def snapshot(data_dirs: list[Path], day: dt.date, out: Path) -> None:
     """Extract one day into a small parquet, so `bench` starts in seconds."""
     import polars as pl
 
+    import archive
+
     files = candidate_files(data_dirs, day)
     if not files:
         raise SystemExit(f"no data-*.parquet covering {day} in "
                          f"{[str(d) for d in data_dirs]}")
+    for f in files:
+        archive.require(f, ARCHIVE_COLUMNS)
     # The monthly archive stores ns and build_recent.py us; normalise as
     # build_boards.py does, or the concat of the two rejects the mix.
     unit = pl.Datetime("us")
@@ -247,9 +262,15 @@ def snapshot(data_dirs: list[Path], day: dt.date, out: Path) -> None:
             .fill_null(pl.col("departure_planned_time").cast(unit)))
     frames = [
         pl.scan_parquet(f)
+        # Normalised per file and before the concat, not after: a run holds
+        # monthly files in one spelling of the cancellation column and its own
+        # recent cache in the other, and concatenating those raw fails on the
+        # schema mismatch rather than on anything to do with the query.
         .with_columns(arrival_planned_time=pl.col("arrival_planned_time").cast(unit),
-                      departure_planned_time=pl.col("departure_planned_time").cast(unit))
+                      departure_planned_time=pl.col("departure_planned_time").cast(unit),
+                      **{archive.CANCELLED: archive.either(f)})
         .filter(when.dt.date() == day)
+        .select(*ARCHIVE_COLUMNS, archive.CANCELLED)
         for f in files
     ]
     minutes = 60_000_000  # microseconds
@@ -276,6 +297,8 @@ def snapshot(data_dirs: list[Path], day: dt.date, out: Path) -> None:
 
 def load(path: Path) -> Timetable:
     import polars as pl
+
+    import archive
 
     # Sorting by seq is what turns a bag of observed stops back into a route.
     grouped = (pl.read_parquet(path).sort("ride", "seq")

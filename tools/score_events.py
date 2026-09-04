@@ -41,6 +41,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+# `archive` is the one description of the upstream schema, and both
+# directories read it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pipeline"))
 
 import collect_forecasts as cf  # noqa: E402
 from route_bench import candidate_files  # noqa: E402
@@ -354,6 +357,8 @@ def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
     """
     import polars as pl
 
+    import archive
+
     files = candidate_files(data_dirs, day)
     if not files:
         raise SystemExit(f"no archive file covering {day}; run the pipeline's "
@@ -383,7 +388,7 @@ def load_truth(data_dirs: list[Path], day: dt.date, evas: set[str]) -> dict:
             dep_delay=((pl.col("departure_change_time").cast(unit).cast(pl.Int64)
                         - pl.col("departure_planned_time").cast(unit).cast(pl.Int64))
                        // 60_000_000),
-            cancelled=pl.col("is_canceled"),
+            cancelled=archive.either(f),
         )
         for f in files
     ]

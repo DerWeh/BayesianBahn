@@ -42,6 +42,8 @@ from pathlib import Path
 
 import polars as pl
 
+import archive
+
 # Delays outside this range are data glitches (e.g. day-crossing rewrites).
 MIN_DELAY, MAX_DELAY = -30, 360
 
@@ -66,7 +68,6 @@ COLUMNS = [
     "arrival_change_time",
     "departure_planned_time",
     "departure_change_time",
-    "is_canceled",
 ]
 
 
@@ -127,7 +128,8 @@ def prepare_month(
     """
     minutes = lambda a, b: (pl.col(a) - pl.col(b)).dt.total_minutes()  # noqa: E731
 
-    lf = pl.scan_parquet(file).select(COLUMNS).with_columns(
+    archive.require(file, COLUMNS, what="the monthly archive")
+    lf = pl.scan_parquet(file).select(*COLUMNS, archive.either(file)).with_columns(
         # piebro zero-pads EVA numbers; IRIS and the app use unpadded ones.
         eva=pl.col("eva").str.strip_chars_start("0"),
         identity=pl.col("train_type") + " " + pl.col("train_number"),

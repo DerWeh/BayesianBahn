@@ -35,15 +35,6 @@ def test_crps_rewards_a_sharper_forecast_that_is_still_right():
     assert sl.crps(tight, y)[0] < sl.crps(loose, y)[0]
 
 
-def test_the_optimiser_finds_a_known_minimum():
-    """Rosenbrock: curved valley, minimum at (1, 1), a standard trap."""
-    def f(x):
-        return (1 - x[0]) ** 2 + 100 * (x[1] - x[0] ** 2) ** 2
-    best, value = sl.nelder_mead(f, [-1.2, 1.0], [0.5, 0.5], iters=4000)
-    assert value < 1e-6
-    assert np.allclose(best, [1.0, 1.0], atol=1e-2)
-
-
 def test_every_width_form_is_positive_and_only_one_ignores_the_lead():
     lead = np.array([0.0, 1.0, 30.0, 500.0])
     for name, (n_params, width_of) in sl.FORMS.items():

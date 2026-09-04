@@ -52,6 +52,8 @@ import holidays as holidays_lib
 import numpy as np
 import polars as pl
 
+import archive
+
 GERMAN_HOLIDAYS = holidays_lib.country_holidays("DE") | holidays_lib.country_holidays(
     "DE", subdiv="BY"
 )
@@ -326,7 +328,7 @@ def load_month(file: Path, station_evas: list[str]) -> pl.DataFrame:
         "arrival_change_time",
         "departure_planned_time",
         "departure_change_time",
-        "is_canceled",
+        archive.either(file),
     ).with_columns(
         eva=pl.col("eva").str.strip_chars_start("0"),
         identity=pl.col("train_type") + " " + pl.col("train_number"),
