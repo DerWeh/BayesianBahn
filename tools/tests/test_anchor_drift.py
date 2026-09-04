@@ -145,8 +145,14 @@ def test_the_residual_is_the_settled_delay_minus_what_db_said(tmp_path):
     assert lead.max() <= 190
 
 
-def test_a_stop_db_never_mentions_counts_as_a_forecast_of_on_time(tmp_path):
-    """`fchg` leaving a stop out means the timetable stands, not "no data"."""
+def test_silence_is_a_forecast_of_on_time_and_the_monitor_skips_it(tmp_path):
+    """`fchg` leaving a stop out means the timetable stands, not "no data".
+
+    `build_events` is right to score that as a forecast of zero — but a
+    forecast of zero is one the app never anchors on, so `residuals` drops it.
+    Both halves are asserted together because the second only makes sense given
+    the first.
+    """
     planned = wall(18)
     out = journal(tmp_path, polls("8000001", epoch(15), epoch(21)) + [
         {"t": "plan", "at": epoch(16), "eva": "8000001", "id": "quiet",
@@ -156,12 +162,14 @@ def test_a_stop_db_never_mentions_counts_as_a_forecast_of_on_time(tmp_path):
         {"t": "obs", "at": epoch(17), "eva": "8000001", "id": "quiet",
          "ar": planned + 6, "dp": None, "arc": False, "dpc": False, "msg": []},
     ])
+    stops, station_polls = se.read_day(out, DAY, within=ad.window_of(DAY))
+    events = se.build_events(stops, station_polls, horizons=ad.PROBES)
+    early = [e for e in events if e["lead"] > 65]
+    assert early and all(e["db"] == 0 and not e["db_explicit"] for e in early)
+
     lead, err, _ = ad.residuals(tmp_path, [DAY])
-    long_lead = err[lead > 65]
-    assert long_lead.size > 0
-    assert set(long_lead.tolist()) == {6.0}, \
-        "silence before 17:00 is a forecast of on time, and it settles at 6"
-    assert set(err[lead < 55].tolist()) == {0.0}, "afterwards DB has it right"
+    assert set(err[lead < 55].tolist()) == {0.0}, "once reported, DB has it right"
+    assert lead.size and lead.max() < 65, "the silent stretch is not a residual"
 
 
 def test_a_stop_db_never_mentions_at_all_supplies_no_truth(tmp_path):
@@ -332,3 +340,31 @@ def test_the_drift_workflow_checks_at_least_the_days_a_curve_needs():
     assert back, "the default window is set by a `date -d` offset"
     # "-13 days" back from yesterday inclusive is a fortnight.
     assert 13 + 1 >= ad.MIN_DAYS
+
+
+# --- the population the monitor watches --------------------------------------
+
+def test_only_stops_the_app_would_anchor_on_are_counted(tmp_path):
+    """A report under a minute is the timetable restated, not evidence.
+
+    `LiveReport.informative` returns null for it and the app never anchors, so
+    including it here would measure the error of a forecast the model does not
+    make. It also swamps the sample: on-time stops are the overwhelming
+    majority, and their residual barely widens with lead.
+    """
+    out = journal(tmp_path,
+                  polls("8000001", epoch(15), epoch(21))
+                  + train("quiet", 18, forecast=0, final=8, first_seen=epoch(15))
+                  + train("late", 19, forecast=4, final=9, first_seen=epoch(15)))
+    _, err, _ = ad.residuals(tmp_path, [DAY])
+    assert err.size > 0
+    assert set(err.tolist()) == {5.0}, "only the reported-late train counts"
+
+
+def test_the_threshold_matches_the_one_the_app_enforces():
+    """Drift guard: the app's rule lives in Kotlin, and this must follow it."""
+    kotlin = (TOOLS.parent / "app/src/main/java/io/github/derweh/bayesianbahn"
+              / "model/LiveReport.kt").read_text()
+    line = next(l for l in kotlin.splitlines()
+                if "MIN_INFORMATIVE_DELAY_MINUTES" in l and "const" in l)
+    assert float(line.split("=")[1].strip()) == ad.MIN_REPORT

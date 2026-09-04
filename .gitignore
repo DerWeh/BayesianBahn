@@ -33,3 +33,4 @@ keystore.properties
 
 # Signed APKs staged for a GitHub release; the release is the copy that counts
 dist/
+tools/.sensitivity/

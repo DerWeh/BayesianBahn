@@ -52,6 +52,16 @@ import score_events as se  # noqa: E402
 
 REFERENCE = Path(__file__).parent / "anchor-reference.json"
 
+# Below this the app does not anchor on the report at all: `fchg` states a stop
+# in four shapes and three of them are the timetable restated, so a reported
+# delay under a minute is not evidence (`LiveReport.MIN_INFORMATIVE_DELAY`).
+# Conditioning on it here is not a detail. The unconditional residual is
+# dominated by the 96% of stops DB calls on time, and its spread saturates
+# around 9 minutes by an hour out; the residual DB is *actually anchored on*
+# keeps widening past 50. A monitor watching the first would sit still through a
+# regime change in the second.
+MIN_REPORT = 1.0
+
 # The hours the collector covers, from the collector, so that clipping a
 # whole-day journal here reproduces what a scheduled run would have seen. A
 # second copy of these numbers is the one way this comparison goes quietly
@@ -106,9 +116,9 @@ def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
     """(lead, residual, trip index) over `days`, from settled truth.
 
     The residual is DB's error in the sense the model needs it: final delay
-    minus the delay DB was reporting `lead` minutes out. A stop that DB never
-    mentioned counts as a forecast of on time, which is what `fchg` means by
-    leaving it out — see `score_events.build_events`.
+    minus the delay DB was reporting `lead` minutes out, over the stops the app
+    would actually anchor on — those DB called at least [MIN_REPORT] minute
+    late.
 
     Truth is the settled forecast, not the archive: the archive lands weeks
     later and this has to be answerable the morning after a run. Settling is
@@ -116,14 +126,12 @@ def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
     well past the predicted arrival — so a train the window cut off simply does
     not appear.
 
-    Two selections come with that truth and neither is a defect to fix here.
-    `Stop.settled` reads DB's forecast half an hour after the predicted arrival,
-    so a stop DB never mentioned has nothing to read and drops out: these are
-    residuals for trains DB had an opinion about. And settled truth is DB's own
-    final number rather than the train's real arrival, which makes these widths
-    narrower than the ones `calibrate_live.py` fits against the archive — 4 to
-    10 minutes here against 6 to 45 there. The monitor therefore watches the
-    curve *move*; it does not restate the calibration.
+    Truth being DB's own last word rather than the train's real arrival still
+    makes these widths narrower than the ones fitted against the archive, since
+    DB's last word sits closer to DB's earlier word than the arrival does. The
+    monitor therefore watches the curve *move*; it does not restate the
+    calibration, and constants to ship should be fitted by
+    `tools/sensitivity_live.py` against archive truth.
     """
     leads, errs, trips = [], [], []
     index: dict[str, int] = {}
@@ -133,6 +141,8 @@ def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
             continue
         for event in se.build_events(stops, polls, horizons=PROBES):
             if event["cancelled"] or event["settled"] is None:
+                continue
+            if event["db"] < MIN_REPORT:
                 continue
             key = f"{day}:{event['trip']}"
             leads.append(event["lead"])

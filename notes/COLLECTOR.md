@@ -9,12 +9,16 @@ memory of building it.
 ## Why any of this exists
 
 The app takes DB's live delay report and re-anchors its prediction on that
-number, treating it as exact. It is not. The central 80% of (final delay minus
-what DB was saying) spans 4 to 10 minutes over the blockade fortnight
-2026-08-18..08-31, and 3 to 7 in the three days after that blockade ended —
-widening with lead time in both. The model states an 80% interval about two
-minutes wide. That is its worst-calibrated part, and it is worst exactly when a
-passenger is on a platform deciding whether to run.
+number, treating it as exact. It is not. On the stops it actually anchors on —
+those DB called at least a minute late, 4% of all stops — the central 80% of
+(final delay minus what DB was saying) runs from 4 minutes at a five-minute
+lead to 45 at two hours. The model states an interval about two minutes wide,
+and **40% of arrivals land above its own 90th percentile**. That is its
+worst-calibrated part, and it is worst exactly when a passenger is on a
+platform deciding whether to run.
+
+`tools/sensitivity_live.py` measured what fixing it is worth: CRPS 4.08 -> 3.37
+and 40.1% -> 6.6% above the 90th percentile, on days the fit never saw.
 
 Fixing it means baking a *spread-versus-lead* curve into the model. A baked-in
 curve is a claim about the world, and claims about the world go stale:
@@ -40,6 +44,7 @@ remembers to start.
 | `tools/anchor-reference.json` | the frozen curve, regenerated deliberately |
 | `.github/workflows/anchor-drift.yml` | Mondays: rebuild the curve on the last fortnight, open an issue if it moved |
 | `tools/calibrate_live.py` | the one-off that sized the problem in the first place |
+| `tools/sensitivity_live.py` | fits the width against archive truth, and shows how wrong it may be and still pay |
 
 ## The two decisions worth knowing before you touch anything
 
@@ -51,13 +56,22 @@ are defined once, in `collect_forecasts.WINDOW_HOURS`; both the workflow and
 the analysis read them from there, and `tools/tests/test_anchor_drift.py` fails
 if either grows its own copy.
 
+**Only stops DB called at least a minute late are counted.** Below that the app
+does not anchor at all (`LiveReport.MIN_INFORMATIVE_DELAY_MINUTES`), so the
+residual of a forecast it never makes is not evidence about it — and the
+unconditional residual is a different animal: dominated by the 96% of stops
+called on time, it saturates around 9 minutes an hour out, while the one the
+model depends on keeps widening past 50. A monitor watching the first would sit
+still through a regime change in the second.
+
 **Truth is DB's *settled* forecast, not the train's real arrival.** The archive
 would be better and lands weeks too late to be a watchdog. Two consequences,
 both real and neither a bug to fix in a hurry:
 
-* The widths here (3–10 min) are narrower than `calibrate_live.py`'s
-  archive-truth widths (6–45 min) — settled truth is DB's own final number, and
-  DB's last word is closer to DB's earlier word than the train's real arrival is. **This monitor watches the curve move; it
+* The widths here are narrower than the archive-truth ones
+  `tools/sensitivity_live.py` fits, because DB's last word sits closer to DB's
+  earlier word than the train's real arrival does. Constants to ship are fitted
+  there, against the archive; this only watches for movement. **This monitor watches the curve move; it
   does not restate the calibration.** If you ship calibration constants, size
   them with `calibrate_live.py`, not with `anchor-reference.json`.
 * A stop DB never mentioned before it settles has no truth to read, so it drops
@@ -133,10 +147,33 @@ journal to rebuild what it had already reported. So:
 * **A shorter check window.** Below a fortnight the week-to-week swing above
   swamps the signal; `anchor_drift.MIN_DAYS` warns when either side is thinner.
 
-## Two things about the CI move that were never tested here
+## Is this a permitted use of Actions? Yes
 
-Both are unknowable without a push, so they are written down rather than
-guessed at.
+Worth writing down, because it looks like the kind of thing that should not be.
+The rule for GitHub-hosted runners prohibits "any other activity unrelated to
+the production, testing, deployment, or publication of the software project
+associated with the repository", alongside named bans on cryptomining, CDN and
+serverless use, reselling Actions, and "any activity that places a burden on
+our servers... disproportionate to the benefits provided to users".
+
+These journals are the test data for the model this repository ships, and
+nothing else reads them. That is testing the software project associated with
+the repository — the permitted case, not an exception to it. Six hours a day of
+one standard runner on a public repo, next to a nightly pipeline job that
+already runs here, is not a disproportionate burden.
+
+What would change the answer: collecting stations the app's evaluation does not
+use, keeping the journals for something other than this repository, or growing
+the window without a use for the data. If the window ever has to shrink, shrink
+the *window* and not the cadence — a shorter window costs sample size in a way
+the code already understands (`MIN_EVENTS`, `MIN_DAYS`), while a longer cadence
+changes what a lead time means and invalidates the reference.
+
+Source: [GitHub Terms for Additional Products and
+Features](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features),
+read 2026-09-04.
+
+## One thing about the CI move that was never tested here
 
 * **IRIS from a GitHub runner.** Every reading so far was taken from a domestic
   German connection. IRIS publishes no rate limit and no terms, but a
@@ -144,14 +181,6 @@ guessed at.
   `HTTPError 403` in the Health step — which `error_name` records precisely so
   that this case is distinguishable from an outage. If that happens, the
   fallback is a small always-on machine rather than a runner.
-* **Whether this is what Actions is for.** GitHub asks that Actions serve the
-  repository's own software. This is the project's evaluation harness and its
-  output feeds the model that ships, so the case is good — but it is six hours
-  of runner a day, indefinitely, and that is worth being honest about rather
-  than discovering in an email. Reduce the window before reducing the
-  cadence: a shorter window costs sample size in a way the code understands
-  (`MIN_EVENTS`, `MIN_DAYS`); a longer cadence changes what a "lead time" means
-  and invalidates the reference.
 
 ## Known state, 2026-09-04
 
@@ -163,4 +192,8 @@ and it is a one-line command plus a commit.
 
 The calibration itself has not shipped. `DelayModel.LIVE_SHRINKAGE = 0.4` and
 `MIN_LIVE_SCALE = 1.2` are still what the app uses, and they were not fitted to
-this curve.
+anything. `tools/sensitivity_live.py` has done the work that decides whether
+they should be replaced; what it found, in one line: the width may be wrong by
+a factor of two either way and the fix still beats what ships, so the risk of
+shipping it is small and the risk of not shipping it is 40% of arrivals landing
+above their stated 90th percentile.
