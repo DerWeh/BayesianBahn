@@ -4,6 +4,7 @@ import io.github.derweh.bayesianbahn.model.HistoricalRun
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -143,6 +144,21 @@ class PredictorTest {
         assertEquals(0.0, f.ignoredLiveDelay!!, 1e-9)
         assertTrue("the prior for a regional train is not zero",
             f.distribution.quantile(0.5) > 0.0)
+    }
+
+    @Test
+    fun `a live answer still carries the cancellation rate from history`() {
+        // The delay comes from the report; whether the train runs at all does
+        // not, and cannot. Losing this put "n/a" on the cancellation tile for
+        // every train DB had said something about — which is every train
+        // anybody was looking at.
+        val f = forecast(live = 9.0, history = history(20))
+        assertEquals(ForecastSource.LIVE_ANCHORED, f.source)
+        assertNotNull("the screen shows n/a when this is null", f.cancelProbability)
+        // Forty runs, none cancelled: zero is an answer, "not available" is not.
+        assertEquals(0.0, f.cancelProbability!!, 1e-9)
+        assertTrue("the run count should survive too", f.runCount > 0)
+        assertEquals(9.0, f.distribution.quantile(0.5), 2.0)
     }
 
     @Test

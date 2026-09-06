@@ -107,29 +107,6 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         val reported = LiveReport.informative(liveDelayMinutes)
         val ignored = liveDelayMinutes.takeIf { reported == null }
 
-        // A live report is an observation with a measured error, not a fact.
-        // Anchoring on it and admitting that error beats every history-based
-        // answer on the stops where DB has said something: CRPS 3.25 against
-        // 3.93, and the stated 80% interval covers 89% where the old one
-        // covered 44%. See notes and `tools/sensitivity_live.py`.
-        //
-        // It throws the train's own history away, which is the known cost and
-        // the reason this is a floor rather than the finished model — but a
-        // floor that wins, on the 8% of predictions closest to departure.
-        if (reported != null) {
-            return Forecast(
-                distribution = AnchoredDelay(
-                    report = reported,
-                    leadMinutes = leadMinutes(nowMillis, plannedTimeMillis),
-                    shape = ResidualShape.ARRIVAL,
-                ),
-                source = ForecastSource.LIVE_ANCHORED,
-                runCount = 0,
-                effectiveRuns = 0.0,
-                cancelProbability = null,
-                ignoredLiveDelay = null,
-            )
-        }
         val timeOfDay = Instant.ofEpochMilli(plannedTimeMillis).atZone(ZONE).format(HHMM)
 
         fun runsAt(from: TrainHistory?): List<HistoricalRun> =
@@ -151,6 +128,43 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
             )
 
         val ownRuns = runsAt(history)
+
+        // A live report is an observation with a measured error, not a fact.
+        // Anchoring on it and admitting that error beats every history-based
+        // answer on the stops where DB has said something: CRPS 3.26 against
+        // 3.95, and the stated 80% interval covers 89% where the old one
+        // covered 46%. No class of train is worse off. See
+        // `tools/sensitivity_live.py`.
+        //
+        // The *delay* comes from the report alone; the history still supplies
+        // what the report says nothing about. Cancellation is the one that
+        // matters: it is a property of the train, not of today's delay, and
+        // leaving it out put "n/a" on the cancellation tile for exactly the
+        // trains someone is standing on a platform looking at.
+        //
+        // The line shard is deliberately not fetched here. It exists to widen
+        // a thin delay history, and the delay no longer comes from history at
+        // all, so it would be a network round trip for nothing.
+        if (reported != null) {
+            val own = EmpiricalDelay.build(
+                runs = ownRuns,
+                queryTimeOfDay = timeOfDay,
+                queryDate = today,
+            )
+            return Forecast(
+                distribution = AnchoredDelay(
+                    report = reported,
+                    leadMinutes = leadMinutes(nowMillis, plannedTimeMillis),
+                    shape = ResidualShape.ARRIVAL,
+                ),
+                source = ForecastSource.LIVE_ANCHORED,
+                runCount = own?.sampleSize ?: 0,
+                effectiveRuns = own?.effectiveSampleSize ?: 0.0,
+                cancelProbability = own?.cancelProbability,
+                ignoredLiveDelay = null,
+            )
+        }
+
         val alone = build(ownRuns, emptyList())
         // The line shard is one file per line and station rather than per run
         // number, so it costs a fetch — and above this much history of its own

@@ -228,11 +228,24 @@ Cross-check with DB's own apps before relying on any of it.
   result. Left here because the underlying observation is still true and a
   better-posed version might pay; `tools/sensitivity_live.py changes` scores it
   as a row, so re-checking costs one command.
+- **Condition the anchored width on the train class.** This is the largest
+  known gap and the cheapest to close. The app carries one residual for every
+  train, but an S-Bahn reported five minutes late is not an ICE reported five
+  minutes late: the 10th-to-90th width at 20-45 minutes' lead is 8 minutes for
+  an S-Bahn, 11-12 for RB and RE, 15 for an ICE and 22 for a rail-replacement
+  bus, against the single 15.3 the app issues. Fitting the same six numbers per
+  class is worth **-7.9% of CRPS** on held-out days and fixes a systematic
+  over-coverage: S-Bahn intervals cover 95% where they claim 80%, and 77% once
+  conditioned. Needs a fallback to the pooled fit for thin classes — only four
+  had enough fit-day data to stand alone.
 - **Combine the anchor with the train's own history.** When DB reports a delay
-  the app now answers from the report and its measured residual alone, and
-  throws the history away. That beats what came before it, but it is a floor: a
-  train with fifty runs of its own knows something the population residual does
-  not. A proper two-source model should beat both.
+  the app answers the *delay* from the report and its residual alone; only
+  cancellation still comes from the train's record. That beats what came before
+  it on every train class measured, but a train with fifty runs of its own
+  knows something a population residual does not. Worth noting that most of
+  what the old history-based path was contributing appears to be train class,
+  above, which is recoverable with two dozen numbers rather than a two-source
+  model — so do that first and re-measure what is left.
 - **Done, 2026-09-06: the live-conditioned forecast was far too narrow.** When
   DB reported a delay the model shifted each historical run's last-hop
   progression onto that report and treated the report as exact. It is not:
