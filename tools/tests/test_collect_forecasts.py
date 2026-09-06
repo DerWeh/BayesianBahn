@@ -409,6 +409,47 @@ def test_health_notices_a_station_that_never_answers() -> None:
     assert got["stops"] == 200, "a failed poll contributes no stops"
 
 
+def test_health_counts_sweeps_completed_not_slots_touched() -> None:
+    """A sweep slower than the cadence lands in two slots and is counted twice.
+
+    This is how 2026-09-05 reported "20 rounds" off 15 sweeps of 281 stations:
+    walking the list took 13 minutes against a 10-minute cadence, so the
+    degradation showed up as more rounds rather than fewer.
+    """
+    records = [{"t": "poll", "at": at, "eva": eva, "ok": True, "stops": 1}
+               for sweep in range(3)
+               for at, eva in ((sweep * 840, "a"), (sweep * 840 + 660, "b"))]
+    got = cf.health(records, expected_stations=2)
+    assert got["sweeps"] == 3
+    assert got["rounds"] == 4, "the slots overstate it, which is the point"
+    assert got["span_minutes"] == pytest.approx(39.0)
+
+
+def test_health_of_an_empty_journal_reports_no_sweeps() -> None:
+    got = cf.health([], expected_stations=20)
+    assert got["sweeps"] == 0 and got["span_minutes"] == 0.0
+
+
+def test_status_says_so_when_a_run_covered_part_of_the_window(
+        tmp_path: Path, capsys) -> None:
+    """The first CI run collected 55% of the window and was reported clean.
+
+    A short run is not comparable with a whole one — `anchor_drift` drops it —
+    so the health report has to name it rather than leave it looking like an
+    ordinary day.
+    """
+    # The warning is about the span, not about where in the day it sits.
+    start = 1787000000.0
+    journal = cf.Journal(tmp_path / "forecasts-2026-09-05.jsonl")
+    for step in range(12):
+        journal.append({"t": "poll", "at": start + step * 600,
+                        "eva": "8000001", "ok": True, "stops": 1})
+    journal.close()
+    cf.status(tmp_path, TOOLS, now=lambda: start + 7200)
+    out = capsys.readouterr().out
+    assert "of the 360-min window" in out and "(31%)" in out
+
+
 def test_health_of_an_empty_journal_is_not_an_error() -> None:
     got = cf.health([], expected_stations=20)
     assert got["rounds"] == 0 and got["missed_slots"] == 0 and got["last_at"] is None

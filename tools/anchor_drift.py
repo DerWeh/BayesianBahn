@@ -68,6 +68,7 @@ MIN_REPORT = 1.0
 # wrong: a peak-hour curve measured against an all-day one differs by more than
 # any drift it is looking for.
 WINDOW_HOURS = cf.WINDOW_HOURS
+MIN_COVERAGE = cf.MIN_COVERAGE
 
 # Lead-time bins, minutes — the grid `calibrate_live.py` fitted on, kept
 # identical so the two are directly comparable.
@@ -111,7 +112,18 @@ def window_of(day: dt.date, hours: tuple[int, int] = WINDOW_HOURS
             dt.datetime.combine(day, dt.time(end), se.BERLIN).timestamp())
 
 
+def covered(polls: dict[str, list[float]], window: tuple[float, float]) -> float:
+    """Fraction of `window` the day's successful polls actually span."""
+    times = [t for ts in polls.values() for t in ts]
+    if len(times) < 2:
+        return 0.0
+    start, end = window
+    return (max(times) - min(times)) / (end - start)
+
+
 def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
+              min_coverage: float = 0.0,
+              coverage: dict[dt.date, float] | None = None,
               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(lead, residual, trip index) over `days`, from settled truth.
 
@@ -126,6 +138,12 @@ def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
     well past the predicted arrival — so a train the window cut off simply does
     not appear.
 
+    `min_coverage` drops days that cover less than that fraction of the window
+    -- see [MIN_COVERAGE]. It defaults to off here because this is the raw
+    reading and a caller may want an uncensored look at a single short day;
+    `curve` turns it on, which is what everything that compares two windows
+    goes through.
+
     Truth being DB's own last word rather than the train's real arrival still
     makes these widths narrower than the ones fitted against the archive, since
     DB's last word sits closer to DB's earlier word than the arrival does. The
@@ -136,8 +154,14 @@ def residuals(out: Path, days: list[dt.date], hours=WINDOW_HOURS,
     leads, errs, trips = [], [], []
     index: dict[str, int] = {}
     for day in days:
-        stops, polls = se.read_day(out, day, within=window_of(day, hours))
+        window = window_of(day, hours)
+        stops, polls = se.read_day(out, day, within=window)
         if not stops:
+            continue
+        got = covered(polls, window)
+        if coverage is not None:
+            coverage[day] = got
+        if got < min_coverage:
             continue
         for event in se.build_events(stops, polls, horizons=PROBES):
             if event["cancelled"] or event["settled"] is None:
@@ -238,18 +262,26 @@ def _offsets(sizes: np.ndarray) -> np.ndarray:
     return np.cumsum(out)
 
 
-def curve(out: Path, days: list[dt.date], hours=WINDOW_HOURS, seed: int = 0
-          ) -> dict:
-    lead, err, trips = residuals(out, days, hours)
+def curve(out: Path, days: list[dt.date], hours=WINDOW_HOURS, seed: int = 0,
+          min_coverage: float = MIN_COVERAGE) -> dict:
+    coverage: dict[dt.date, float] = {}
+    lead, err, trips = residuals(out, days, hours, min_coverage, coverage)
+    # Only the days that got in. A day the collector cut short is reported
+    # separately rather than counted towards [MIN_DAYS], so a fortnight of
+    # truncated runs reads as too little data instead of as a narrowing curve.
+    used = [d for d in days if coverage.get(d, 0.0) >= min_coverage]
+    short = {str(d): round(c, 3) for d, c in sorted(coverage.items())
+             if c < min_coverage}
     if lead.size == 0:
-        return {"days": [str(d) for d in days], "hours": list(hours),
-                "events": 0, "trips": 0, "bins": []}
+        return {"days": [str(d) for d in used], "hours": list(hours),
+                "short": short, "events": 0, "trips": 0, "bins": []}
     bins = bin_of(lead)
     counts = [int((bins == i).sum()) for i in range(len(EDGE_LABELS))]
     raw = widths(err, bins)
     return {
-        "days": [str(d) for d in days],
+        "days": [str(d) for d in used],
         "hours": list(hours),
+        "short": short,
         "edges": list(EDGES[:-1]) + ["inf"],
         "events": int(lead.size),
         "trips": int(len(set(trips.tolist()))),
@@ -327,6 +359,10 @@ def main() -> int:
     print(f"{now['events']} events over {now['trips']} trips, "
           f"{len(now['days'])} day(s), {now['hours'][0]}:00-{now['hours'][1]}:00",
           file=sys.stderr)
+    if now.get("short"):
+        print("dropped, collection cut short: "
+              + ", ".join(f"{d} ({c:.0%} of the window)"
+                          for d, c in now["short"].items()), file=sys.stderr)
 
     if args.command == "reference":
         now["note"] = args.note
@@ -344,6 +380,12 @@ def main() -> int:
         if len(window["days"]) < MIN_DAYS:
             print(f"\nNote: {name} covers {len(window['days'])} day(s), "
                   f"fewer than the {MIN_DAYS} a stable curve needs.")
+    if now.get("short"):
+        print(f"\n{len(now['short'])} day(s) dropped for covering less than "
+              f"{MIN_COVERAGE:.0%} of {now['hours'][0]}:00-{now['hours'][1]}:00: "
+              + ", ".join(f"{d} ({c:.0%})" for d, c in now["short"].items())
+              + ". A short day censors the long-lead bins, so it is left out "
+              "rather than averaged in; see notes/COLLECTOR.md.")
     if reference.get("note"):
         print(f"\nReference note: {reference['note']}")
     drifted = [v for v in verdicts if v["state"] == "drift"]

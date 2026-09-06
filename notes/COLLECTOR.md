@@ -173,22 +173,88 @@ Source: [GitHub Terms for Additional Products and
 Features](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features),
 read 2026-09-04.
 
-## One thing about the CI move that was never tested here
+## What the first CI run actually did, 2026-09-05
 
-* **IRIS from a GitHub runner.** Every reading so far was taken from a domestic
-  German connection. IRIS publishes no rate limit and no terms, but a
-  datacentre IP is not a domestic one, and a block would show up as a wall of
-  `HTTPError 403` in the Health step — which `error_name` records precisely so
-  that this case is distinguishable from an outage. If that happens, the
-  fallback is a small always-on machine rather than a runner.
+Both open questions got answered, one of them the wrong way.
 
-## Known state, 2026-09-04
+* **IRIS answers a GitHub runner.** All 281 stations, no `403`, 18 MB of
+  journal. This was the risk that would have sent the whole thing back to a
+  small always-on machine, and it is closed.
+* **But GitHub started the job 2h46m late.** Cron is 12:50 UTC; the run was
+  created at 15:36 UTC. The window logic did its job at the far end — it
+  clamped collection to 21:00 Berlin rather than letting it run six hours from
+  whenever it woke — but nothing can recover a start that late. The day covers
+  17:40–20:58: 55% of the window.
+* **Sweeps run slower here than at home.** 13.2 minutes to walk 281 stations
+  against a 10-minute cadence, versus 10.0 locally. IRIS is simply slower to a
+  datacentre. Not fatal — the probe grid is 5 minutes and the bins are wide —
+  but a full window will yield about 27 sweeps where the local machine got 36.
+
+The dangerous part was the second one, and it is worth being clear about why.
+**A short day is not a small day, it is a censored one.** Observing DB's error
+at lead *L* needs a poll *L* minutes before an arrival that still settles
+inside the window, so the longest lead a day can speak about scales with the
+span it covered. Measured on 09-01..09-03 by re-running the reference over
+18:00–21:00 instead of 15:00–21:00:
+
+| lead (min) | whole window | started at 18:00 |
+|---|---:|---:|
+| 45-60 | 15.0 | 15.0 |
+| 60-90 | 21.0 | 13.0 |
+| 90-120 | 33.0 | 13.0 |
+| 120+ | 45.0 | *no events at all* |
+
+A third to two thirds narrower in exactly the long-lead bins, and long lead is
+the connection case — the whole reason any of this exists. A fortnight of late
+starts would have reported that as drift, and re-freezing the reference from
+such days would have baked the censoring in permanently.
+
+Two guards were added for it:
+
+* `cf.MIN_COVERAGE` (0.9), read by `anchor_drift.curve`, drops any day spanning
+  less than 90% of the window. Dropped days are named in the check output and
+  do not count towards `MIN_DAYS`, so a fortnight of truncated runs reads as
+  *too little data* (exit 2) rather than as a narrowing curve (exit 1).
+* The health report now judges the span instead of merely printing it, and
+  counts **sweeps completed** rather than 10-minute slots touched. That day
+  reported "20 rounds ... (clean)" off 15 sweeps — a sweep that overruns the
+  cadence lands in two slots, so the slip showed up as *more* rounds. It now
+  says `198 min of the 360-min window (55%), 14.1 min per sweep, cadence is 10`.
+
+**What was deliberately not changed: the cron.** The obvious reaction is to
+move it earlier so the sleep-until-15:00 absorbs the delay, but slack is not
+free — the job idles on a paid runner for exactly as long as the slack it is
+given, and 2h46m of slack would add half again to a six-hour job and weaken the
+"not a disproportionate burden" argument in the section above. Against that,
+this is **one observation**. GitHub's documented behaviour is that scheduled
+runs are delayed under load and may be dropped; how often it is this bad here
+is unknown. The guard makes a late day harmless, so the cheap move is to let a
+week run and count how many days survive:
+
+```
+python tools/anchor_drift.py check --days <a fortnight> --out tools/.forecasts
+```
+
+The "dropped, collection cut short" line lists them. If most days survive,
+change nothing. If most are dropped, buy slack — 60–90 minutes first, and
+`test_the_collector_starts_early_enough_to_cover_the_window` has to have its
+bound widened deliberately, because it exists to stop exactly that number
+drifting by accident.
+
+## Known state, 2026-09-06
 
 `tools/anchor-reference.json` is **provisional**: it covers 2026-09-01..09-03,
 the only three days after the blockade ended. Three days is below `MIN_DAYS`,
 and the check will say so on every run. **Re-freeze it once CI has collected 14
-post-blockade days** (around 2026-09-18) — that is the first thing to do here,
-and it is a one-line command plus a commit.
+post-blockade days** — that is the first thing to do here, and it is a one-line
+command plus a commit. Count from days that *survive the coverage guard*, not
+from the calendar: 09-05 was collected and does not count, so 09-18 is the
+earliest possible date rather than the expected one.
+
+Until then the Monday drift check exits 2 and the workflow turns that into a
+failed run. That is the warm-up showing as a red X, not a fault: it means
+"fewer than 14 usable days", which is true and will stay true for a fortnight.
+Worth knowing before someone debugs it.
 
 The calibration itself has not shipped. `DelayModel.LIVE_SHRINKAGE = 0.4` and
 `MIN_LIVE_SCALE = 1.2` are still what the app uses, and they were not fitted to

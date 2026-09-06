@@ -107,6 +107,18 @@ CADENCE_MINUTES = 10
 # Collecting round the clock is four times the cost for an answer to a question
 # nobody asked at 04:00.
 WINDOW_HOURS = (15, 21)
+# How much of that window a day has to cover before it may be compared with
+# another. A short day is not a thin day, it is a censored one: observing DB's
+# error at lead L needs a poll L minutes before an arrival that still settles
+# inside the window, so the longest lead a day can speak about scales with the
+# span it actually covered. 2026-09-05 started 2h46m late -- GitHub delayed the
+# scheduled run -- and its 60-90 min bin came out at 14.2 against a reference
+# 21.0, and its 120+ bin at 3.0 against 45.0, purely because only the trains
+# seen far out *and* settled early survived. That reads exactly like the drift
+# this is all here to detect. Lives beside the window for the same reason the
+# window lives here: one definition, read back by the health report and by
+# `tools/anchor_drift.py`.
+MIN_COVERAGE = 0.9
 # Polling exactly on the ten-minute grid would sample DB at a fixed phase of
 # whatever cycle it regenerates `fchg` on, so any staleness in what we read
 # would be constant rather than averaging out — and scheduled arrivals cluster
@@ -590,8 +602,16 @@ def health(records: list[dict], expected_stations: int, cadence: int = CADENCE_M
     polls = [r for r in records if r["t"] == "poll"]
     slots = sorted({r["at"] // (cadence * 60) for r in polls})
     stations = {r["eva"] for r in polls}
+    times = [r["at"] for r in polls]
     return {
         "rounds": len(slots),
+        # Sweeps completed, which is not `rounds`: a sweep that overruns the
+        # cadence straddles two ten-minute slots, so it is counted twice there
+        # and the slip is invisible. The most-polled station has been round
+        # exactly as many times as the collector has.
+        "sweeps": max(collections.Counter(r["eva"] for r in polls).values(),
+                      default=0),
+        "span_minutes": (max(times) - min(times)) / 60 if len(times) > 1 else 0.0,
         # Slots between the first and the last that produced no poll at all: a
         # crash, a suspend, or a machine that was asleep.
         "missed_slots": (slots[-1] - slots[0] + 1 - len(slots)) if slots else 0,
@@ -640,6 +660,18 @@ def status(out: Path, directory: Path | None = None, now=time.time) -> None:
             warn.append(f"{h['missed_slots']} missed slots")
         if expected and h["stations_seen"] < expected:
             warn.append(f"only {h['stations_seen']}/{expected} stations")
+        # Two ways a run can look healthy and still not be comparable with
+        # another: it covered less of the window than the analysis assumes, or
+        # it kept up appearances by sweeping more slowly than the cadence.
+        want = (WINDOW_HOURS[1] - WINDOW_HOURS[0]) * 60
+        if 0 < h["span_minutes"] < MIN_COVERAGE * want:
+            warn.append(f"{h['span_minutes']:.0f} min of the {want:.0f}-min "
+                        f"window ({h['span_minutes'] / want:.0%})")
+        if h["sweeps"] > 1:
+            pace = h["span_minutes"] / (h["sweeps"] - 1)
+            if pace > 1.25 * CADENCE_MINUTES:
+                warn.append(f"{pace:.1f} min per sweep, cadence is "
+                            f"{CADENCE_MINUTES}")
         print(f"  {h['rounds']} rounds, {h['stops']} stops seen"
               + (("  ** " + ", ".join(warn)) if warn else "  (clean)"))
         age = (now() - h["last_at"]) / 60 if h["last_at"] else None

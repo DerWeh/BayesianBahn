@@ -131,6 +131,73 @@ def test_a_train_the_window_cuts_off_has_no_settled_truth(tmp_path):
     assert err.size == 0
 
 
+# --- days the collector cut short --------------------------------------------
+
+def test_covered_reports_the_fraction_of_the_window_the_polls_span():
+    window = ad.window_of(DAY)
+    whole = {"8000001": [epoch(15), epoch(18), epoch(21)]}
+    half = {"8000001": [epoch(18), epoch(21)]}
+    assert ad.covered(whole, window) == pytest.approx(1.0)
+    assert ad.covered(half, window) == pytest.approx(0.5)
+    assert ad.covered({"8000001": [epoch(18)]}, window) == 0.0, \
+        "one poll spans nothing, however well placed"
+
+
+def test_a_day_that_started_late_is_dropped_rather_than_averaged_in(tmp_path):
+    """The failure this guard exists for, and it is not a thin-data failure.
+
+    2026-09-05 was the collector's first CI run and GitHub started it 2h46m
+    late. It collected 17:40-20:58, published a journal like any other, and the
+    health report called it clean. Averaged into a fortnight it would have
+    reported the long-lead bins as having narrowed by a third — which is the
+    shape of the one alarm this monitor is built to raise.
+    """
+    out = journal(tmp_path,
+                  polls("8000001", epoch(18), epoch(21))
+                  + train("late-start", 19, forecast=2, final=6,
+                          first_seen=epoch(18)))
+    got = ad.curve(out, [DAY])
+    assert got["days"] == [], "a 50% day must not count towards MIN_DAYS"
+    assert list(got["short"]) == [str(DAY)]
+    assert got["short"][str(DAY)] == pytest.approx(170 / 360, abs=0.01)
+    assert got["events"] == 0
+
+
+def test_a_day_that_covers_the_window_is_kept(tmp_path):
+    out = journal(tmp_path,
+                  polls("8000001", epoch(15), epoch(21))
+                  + train("on-time-start", 18, forecast=2, final=6,
+                          first_seen=epoch(15)))
+    got = ad.curve(out, [DAY])
+    assert got["days"] == [str(DAY)] and not got["short"]
+
+
+def test_a_short_day_cannot_see_the_long_leads_a_whole_one_can(tmp_path):
+    """Why a short day is censored rather than merely small.
+
+    A residual at lead L needs a poll L minutes before an arrival that still
+    settles inside the window. Starting late removes the early polls, so the
+    long leads are not sampled sparsely — they are not sampled at all, and the
+    bin is left describing whichever trains happened to settle quickest.
+    """
+    # Inside the window: an observation before 15:00 is clipped away, and
+    # then DB has said nothing either journal can be scored against.
+    arrival, seen = 19, epoch(15)
+    (tmp_path / "whole").mkdir()
+    (tmp_path / "short").mkdir()
+    whole = journal(tmp_path / "whole",
+                    polls("8000001", epoch(15), epoch(21))
+                    + train("t", arrival, forecast=2, final=6, first_seen=seen))
+    short = journal(tmp_path / "short",
+                    polls("8000001", epoch(18), epoch(21))
+                    + train("t", arrival, forecast=2, final=6, first_seen=seen))
+    long_whole, _, _ = ad.residuals(whole, [DAY])
+    long_short, _, _ = ad.residuals(short, [DAY])
+    assert long_whole.max() >= 120, "a full window reaches the connection leads"
+    assert long_short.max() < long_whole.max(), \
+        "the late start truncates the lead range it can speak about"
+
+
 # --- the residual ------------------------------------------------------------
 
 def test_the_residual_is_the_settled_delay_minus_what_db_said(tmp_path):
