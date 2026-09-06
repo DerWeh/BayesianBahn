@@ -69,7 +69,7 @@ class PredictorTest {
     @Test
     fun `a reported delay is used`() {
         val f = forecast(live = 12.0)
-        assertEquals(ForecastSource.EMPIRICAL_LIVE, f.source)
+        assertEquals(ForecastSource.LIVE_ANCHORED, f.source)
         assertNull("a report we acted on is not an ignored one", f.ignoredLiveDelay)
     }
 
@@ -95,7 +95,7 @@ class PredictorTest {
 
     @Test
     fun `a delay of exactly one minute is evidence`() {
-        assertEquals(ForecastSource.EMPIRICAL_LIVE, forecast(live = 1.0).source)
+        assertEquals(ForecastSource.LIVE_ANCHORED, forecast(live = 1.0).source)
     }
 
     @Test
@@ -146,11 +146,15 @@ class PredictorTest {
     }
 
     @Test
-    fun `the prior fallback still uses a reported delay`() {
+    fun `a reported delay answers on its own, with no history at all`() {
+        // The prior fallback is not reached: a train DB has said something
+        // about is answered from the report and the measured error of such
+        // reports, which beats anything a category prior contributes.
         val f = forecast(live = 15.0, history = null)
-        assertEquals(ForecastSource.PRIOR, f.source)
+        assertEquals(ForecastSource.LIVE_ANCHORED, f.source)
         assertNull(f.ignoredLiveDelay)
         assertEquals(15.0, f.distribution.quantile(0.5), 2.0)
+        assertEquals(0, f.runCount)
     }
 
     // --- the line fallback -------------------------------------------------
@@ -214,12 +218,13 @@ class PredictorTest {
     }
 
     @Test
-    fun `a line forecast still conditions on a reported delay`() {
+    fun `a reported delay outranks the line's history too`() {
+        // This used to be EMPIRICAL_LINE_LIVE, the line's runs shifted onto the
+        // report. The report plus its own residual is the better answer, and it
+        // does not need the line shard fetched to give it.
         val f = forecast(live = 12.0, history = null, line = history(3))
-        assertEquals(ForecastSource.EMPIRICAL_LINE_LIVE, f.source)
-        // Delta model: the line's runs each arrived at the delay they left
-        // with, so a report of 12 shifts the whole support to 12.
-        assertEquals(12.0, f.distribution.quantile(0.5), 1e-9)
+        assertEquals(ForecastSource.LIVE_ANCHORED, f.source)
+        assertEquals(12.0, f.distribution.quantile(0.5), 2.0)
     }
 
     @Test

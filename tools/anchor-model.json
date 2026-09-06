@@ -1,0 +1,44 @@
+{
+  "fitted_on": {
+    "days": [
+      "2026-08-17",
+      "2026-08-18",
+      "2026-08-19",
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-23",
+      "2026-08-24",
+      "2026-08-25"
+    ],
+    "arrivals": 82482,
+    "changes": 28448,
+    "changes_with_a_departure_report": 5314
+  },
+  "residuals": {
+    "arrival": {
+      "width_intercept": 7.470888,
+      "width_per_minute": 0.244365,
+      "centre_intercept": -0.76809,
+      "centre_per_sqrt_minute": 0.344203,
+      "left": 0.155641,
+      "right": 0.534142
+    },
+    "departure_reported": {
+      "width_intercept": 22.525412,
+      "width_per_minute": 0.08932,
+      "centre_intercept": 2.832335,
+      "centre_per_sqrt_minute": 0.199934,
+      "left": 0.290929,
+      "right": 0.49434
+    },
+    "departure_silent": {
+      "width_intercept": 15.0,
+      "width_per_minute": 0.0,
+      "centre_intercept": 1.0,
+      "centre_per_sqrt_minute": 0.0,
+      "left": 0.034148,
+      "right": 0.733683
+    }
+  }
+}

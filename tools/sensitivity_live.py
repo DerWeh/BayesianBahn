@@ -55,6 +55,9 @@ CACHE = Path(__file__).parent / ".sensitivity/dense.npz"
 FORMS_OUT = Path(__file__).parent / ".sensitivity/forms.json"
 REGIMES_OUT = Path(__file__).parent / ".sensitivity/regimes.json"
 CHANGES_OUT = Path(__file__).parent / ".sensitivity/changes.json"
+# Committed, not cached: this is what the app ships, and the Kotlin constants
+# are drift-guarded against it.
+MODEL_OUT = Path(__file__).parent / "anchor-model.json"
 
 # Days with both a collector journal and an extracted archive day. The split is
 # by date and not at random: the rail-replacement blockade ended on 2026-08-31,
@@ -227,7 +230,16 @@ def load(cache: Path, days: list[dt.date]) -> tuple[np.ndarray, np.ndarray]:
     return d["lead"][keep], (d["truth"] - d["db"])[keep]
 
 
-def scored(days: list[dt.date], blind: bool = False) -> np.ndarray:
+# What the app answered, by which app. "live" is whatever the working tree
+# builds now; "shipped-live" is the snapshot taken from v0.3.0's own harness run
+# before the model was replaced. Both are the real Kotlin, which is the point:
+# no baseline in this study is a Python reimplementation of something.
+SHIPPED = "shipped-live"
+CURRENT = "live"
+
+
+def scored(days: list[dt.date], blind: bool = False,
+           variant: str = CURRENT) -> np.ndarray:
     """Held-out arrivals as the app itself answered them.
 
     Columns: lead, report, truth, the shipped model's CRPS, and its stated 10th
@@ -237,15 +249,19 @@ def scored(days: list[dt.date], blind: bool = False) -> np.ndarray:
     rows = []
     for day in days:
         live = {}
-        path = Path(__file__).parent / f".scored/{day}/arrivals-live.jsonl"
+        path = Path(__file__).parent / f".scored/{day}/arrivals-{variant}.jsonl"
         for line in path.open():
             r = json.loads(line)
-            if r["source"] != "EMPIRICAL_LIVE":
+            # The population is the data's, not either model's: every stop DB
+            # called at least a minute late. Selecting on a `source` label would
+            # have compared the two models on different events, since the new
+            # one anchors stops the old one answered from a prior.
+            if r["db"] < ad.MIN_REPORT:
                 continue
             live[(r["eva"], r["num"], r["planned"], r["tau"])] = r
         other = {}
         if blind:
-            path = Path(__file__).parent / f".scored/{day}/arrivals-blind.jsonl"
+            path = Path(__file__).parent / f".scored/{day}/arrivals-shipped-blind.jsonl"
             for line in path.open():
                 r = json.loads(line)
                 other[(r["eva"], r["num"], r["planned"], r["tau"])] = r
@@ -259,7 +275,7 @@ def scored(days: list[dt.date], blind: bool = False) -> np.ndarray:
 
 
 CHANGE_COLUMNS = ("lead", "lead_dep", "db", "conn_db", "margin",
-                  "resid", "resid_dep", "caught", "shipped", "db_catch")
+                  "resid", "resid_dep", "caught", "shipped", "app", "db_catch")
 
 
 def changes(days: list[dt.date]) -> dict[str, np.ndarray]:
@@ -285,12 +301,14 @@ def changes(days: list[dt.date]) -> dict[str, np.ndarray]:
     """
     rows = []
     for day in days:
-        live = {}
-        path = Path(__file__).parent / f".scored/{day}/connections-live.jsonl"
-        if path.exists():
+        answers: dict[str, dict] = {}
+        for variant in (SHIPPED, CURRENT):
+            path = Path(__file__).parent / f".scored/{day}/connections-{variant}.jsonl"
+            if not path.exists():
+                continue
             for line in path.open():
                 r = json.loads(line)
-                live[_change_key(r)] = r
+                answers.setdefault(_change_key(r), {})[variant] = r
         path = Path(__file__).parent / f".scored/{day}/connections.jsonl"
         if not path.exists():
             continue
@@ -298,8 +316,8 @@ def changes(days: list[dt.date]) -> dict[str, np.ndarray]:
             r = json.loads(line)
             if r["cancelled"] or r["db"] < ad.MIN_REPORT:
                 continue
-            shipped = live.get(_change_key(r))
-            if shipped is None or shipped["source"] != "EMPIRICAL_LIVE":
+            both = answers.get(_change_key(r))
+            if both is None or SHIPPED not in both or CURRENT not in both:
                 continue
             lead = (se.wall_to_epoch(r["planned"]) - r["read_at"]) / 60
             if lead < 0:
@@ -307,7 +325,8 @@ def changes(days: list[dt.date]) -> dict[str, np.ndarray]:
             rows.append((lead, r["conn_lead"], r["db"], r["conn_db"],
                          r["threshold"] - r["db"], r["archive"] - r["db"],
                          r["conn_truth"] - r["conn_db"], float(r["caught"]),
-                         shipped["p_catch"], float(r["db_catch"])))
+                         both[SHIPPED]["p_catch"], both[CURRENT]["p_catch"],
+                         float(r["db_catch"])))
     a = np.array(rows, float) if rows else np.empty((0, len(CHANGE_COLUMNS)))
     return dict(zip(CHANGE_COLUMNS, a.T))
 
@@ -504,15 +523,17 @@ def report_regimes(cache: Path) -> dict:
     print(head)
     print(f"{'':<42}" + "".join(f"{'CRPS  cov80  >q90':>26}" for _ in REGIMES))
     rows: dict[str, list] = {}
-    for name in ["DB point forecast", "as shipped", *candidates]:
+    for name in ["DB point forecast", "as shipped (v0.3.0 app)",
+                 "the app, as it now stands", *candidates]:
         cells = []
         for days in REGIMES.values():
-            a = scored(days)
+            variant = CURRENT if name == "the app, as it now stands" else SHIPPED
+            a = scored(days, variant=variant)
             lead_r, db, truth, shipped, q10, q90 = a[:, :6].T
             if name == "DB point forecast":
                 cell = (float(np.abs(db - truth).mean()), None,
                         float((truth > db).mean()))
-            elif name == "as shipped":
+            elif name.startswith("as shipped") or name.startswith("the app"):
                 cell = (float(shipped.mean()),
                         float(((truth >= q10) & (truth <= q90)).mean()),
                         float((truth > q90).mean()))
@@ -527,7 +548,7 @@ def report_regimes(cache: Path) -> dict:
     for i, key in enumerate(REGIMES):
         out["regimes"][key] = {
             "days": [str(d) for d in REGIMES[key]],
-            "n": int(len(scored(REGIMES[key]))),
+            "n": int(len(scored(REGIMES[key], variant=SHIPPED))),
             "models": {name: {"crps": c[i][0], "cov80": c[i][1],
                               "above_q90": c[i][2]}
                        for name, c in rows.items()}}
@@ -588,12 +609,13 @@ def report_changes(cache: Path) -> dict:
         answers = {
             "always the base rate": np.full(len(caught), float(caught.mean())),
             "DB: yes or no": c["db_catch"],
-            "as shipped": c["shipped"],
+            "as shipped (v0.3.0 app)": c["shipped"],
+            "the app, as it now stands": c["app"],
             "arrival marginalised, departure exact":
                 cdf_at(q_general, margin),
-            "both marginalised":
+            "both marginalised (this study)":
                 p_difference(q_general, q_dep, margin),
-            "both marginalised, feeder-specific arrival":
+            "... with a feeder-specific arrival fit":
                 p_difference(q_feeder, q_dep, margin),
         }
         print(f"\n{key}: {len(caught)} live-anchored changes, "
@@ -684,6 +706,53 @@ def why_changes_miss(c: dict, answers: dict) -> dict:
                 for name, p in answers.items()}}
 
 
+def freeze_model(cache: Path) -> dict:
+    """Write the constants the app ships, so one file is the definition.
+
+    Three residuals, each a width, a centre and a two-number shape. The app
+    carries them as Kotlin constants because six numbers do not deserve a
+    parser, and `tools/tests/test_anchor_model.py` fails if the two ever
+    disagree -- which is the only thing standing between a study and an app
+    that quietly stopped implementing it.
+    """
+    lead, eps = load(cache, FIT_DAYS)
+    fitc = changes(FIT_DAYS)
+    reported = fitc["conn_db"] >= ad.MIN_REPORT
+    out = {"fitted_on": {"days": [str(d) for d in FIT_DAYS],
+                         "arrivals": int(len(eps)),
+                         "changes": int(len(fitc["caught"])),
+                         "changes_with_a_departure_report": int(reported.sum())},
+           "residuals": {}}
+    for name, model in (
+            ("arrival", laplace_fit(lead, eps)),
+            ("departure_reported", laplace_fit(fitc["lead_dep"][reported],
+                                               fitc["resid_dep"][reported])),
+            ("departure_silent", laplace_fit(fitc["lead_dep"][~reported],
+                                             fitc["resid_dep"][~reported]))):
+        theta = np.asarray(model["theta"])
+        shape = np.asarray(model["shape"])
+        # The shape is an asymmetric Laplace, so its two rates are readable off
+        # it exactly rather than refitted here.
+        left = float(shape[np.searchsorted(PS, 0.25)] / np.log(2 * PS[np.searchsorted(PS, 0.25)]))
+        right = float(-shape[np.searchsorted(PS, 0.75)]
+                      / np.log(2 * (1 - PS[np.searchsorted(PS, 0.75)])))
+        out["residuals"][name] = {
+            "width_intercept": round(float(theta[2] ** 2), 6),
+            "width_per_minute": round(float(theta[3] ** 2), 6),
+            "centre_intercept": round(float(theta[0]), 6),
+            "centre_per_sqrt_minute": round(float(theta[1]), 6),
+            "left": round(left, 6), "right": round(right, 6),
+        }
+        r = out["residuals"][name]
+        print(f"{name:<20} s(L) = {r['width_intercept']:6.3f} + "
+              f"{r['width_per_minute']:.4f} L   m(L) = {r['centre_intercept']:6.3f} + "
+              f"{r['centre_per_sqrt_minute']:.4f} sqrt(L)   "
+              f"laplace({r['left']:.4f}, {r['right']:.4f})")
+    MODEL_OUT.write_text(json.dumps(out, indent=2) + "\n")
+    print(f"\nwrote {MODEL_OUT}")
+    return out
+
+
 def report_controls(cache: Path, models: dict) -> None:
     a = scored(TEST_DAYS, blind=True)
     lead, db, truth, shipped, q10, q90, bcrps, bq10, bq90 = a.T
@@ -734,7 +803,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["dataset", "forms", "sweep", "controls",
-                                        "regimes", "changes"])
+                                        "regimes", "changes", "freeze"])
     ap.add_argument("--cache", type=Path, default=CACHE)
     ap.add_argument("--journals", type=Path,
                     default=Path(__file__).parent / ".forecasts")
@@ -751,6 +820,9 @@ def main() -> int:
         return 0
     if args.command == "changes":
         report_changes(args.cache)
+        return 0
+    if args.command == "freeze":
+        freeze_model(args.cache)
         return 0
     models = (json.loads(FORMS_OUT.read_text()) if FORMS_OUT.exists()
               else report_forms(args.cache))

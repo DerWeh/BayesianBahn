@@ -13,6 +13,15 @@ interface DelayDistribution {
 
     /** Delay in minutes at cumulative probability [p]. */
     fun quantile(p: Double): Double
+
+    /**
+     * P(delay >= x) — a connecting train still being at the platform.
+     *
+     * The default is the complement of [cdf], exact for a continuous
+     * distribution and off by the mass exactly at `x` for a discrete one.
+     * [AnchoredDelay] overrides it with a closed form.
+     */
+    fun survival(x: Double): Double = 1.0 - cdf(x)
 }
 
 /** [StudentT] already provides cdf/quantile; adapt it to the shared interface. */

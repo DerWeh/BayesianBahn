@@ -98,9 +98,11 @@ class ConnectionModelTest {
     }
 
     @Test
-    fun `live departure delay keeps a train catchable and shifts its arrival`() {
-        // A reported +20: a feeder 15 late still catches it; arrival uses the
-        // delta model on A's historical dep->arr residuals (+2 on the leg).
+    fun `a live departure delay makes a train very likely, not certain`() {
+        // A reported +20 with the passenger ready at +20: the train is still
+        // there unless it leaves earlier than DB says, which the departure
+        // residual allows for and the old hard gate did not. Arrival still
+        // uses the delta model on A's historical dep->arr residuals (+2).
         val runsA = List(20) { ConnectionModel.JointRun(5.0, 7.0, 1.0) }
         val result = ConnectionModel.propagate(
             feederArrival = feeder(15.0),
@@ -108,8 +110,54 @@ class ConnectionModelTest {
             transferMinutes = 5,
             candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runsA, liveDep = 20.0)),
         )!!
-        assertEquals(1.0, result.candidates[0].boardProbability, 1e-9)
+        // Likely, not certain, and the bound is deliberately loose: how
+        // likely is a fitted constant, and a test that pins it to three
+        // decimals fails on every refit for no reason.
+        val p = result.candidates[0].boardProbability
+        assertTrue("a comfortable margin should be likely: $p", p > 0.85)
+        assertTrue("but never certain: $p", p < 1.0)
         assertEquals(22.0, result.distribution.quantile(0.5), 1e-9)
+    }
+
+    @Test
+    fun `a train reported gone is unlikely rather than impossible`() {
+        // The mirror of the test above, and the reason the gate had to go. The
+        // passenger is ready at +8 and DB says A leaves at +8: on the old hard
+        // comparison that was a coin flip decided by a rounding, and either way
+        // it was answered with certainty. A departure report is a forecast, so
+        // the honest answer is a probability in between.
+        val runs = List(20) { ConnectionModel.JointRun(0.0, 0.0, 1.0) }
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(13.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runs, liveDep = 8.0)),
+            nowMillis = t0,
+        )!!
+        // Arriving exactly when DB says the train leaves is not a coin flip
+        // and not a certainty: departures slip, so it is comfortably better
+        // than even, and the old hard comparison answered it with a 0 or a 1
+        // decided by a rounding.
+        val p = result.candidates[0].boardProbability
+        assertTrue("a marginal change should not be hopeless: $p", p > 0.4)
+        assertTrue("nor a sure thing: $p", p < 0.9)
+    }
+
+    @Test
+    fun `pruning tiny contributions never removes the last one`() {
+        // The mass floor exists to stop a near-certain candidate's successors
+        // filling the point list. It must not be able to leave nothing behind:
+        // a change that is merely very unlikely still has an arrival.
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(90.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, liveDep = 1.0)),
+            nowMillis = t0,
+        )
+        assertTrue("a distribution should still exist", result != null)
+        assertTrue(result!!.candidates[0].boardProbability > 0.0)
+        assertTrue(result.distribution.quantile(0.5).isFinite())
     }
 
     @Test
@@ -195,9 +243,10 @@ class ConnectionModelTest {
     }
 
     @Test
-    fun `a reported delay is still taken as fact`() {
-        // Ready at +25; A is reported 30 late, so it is certainly still there
-        // even though it usually leaves on time.
+    fun `a reported delay outweighs a history of leaving on time`() {
+        // Ready at +25; A is reported 30 late, so it is almost certainly still
+        // there even though it usually leaves on time. "Almost": the report is
+        // a forecast, and five minutes of margin is not many.
         val runs = List(20) { ConnectionModel.JointRun(0.0, 0.0, 1.0) }
         val result = ConnectionModel.propagate(
             feederArrival = feeder(20.0),
@@ -205,7 +254,7 @@ class ConnectionModelTest {
             transferMinutes = 5,
             candidates = listOf(candidate("A", depAfterFeeder = 10, runs = runs, liveDep = 30.0)),
         )!!
-        assertEquals(1.0, result.candidates[0].boardProbability, 1e-9)
+        assertTrue(result.candidates[0].boardProbability > 0.85)
     }
 
     @Test
@@ -234,7 +283,7 @@ class ConnectionModelTest {
             candidates = listOf(candidate("A", depAfterFeeder = 10, runs = emptyList(), liveDep = 8.0)),
         )!!
         assertEquals(listOf("A"), result.candidates.map { it.candidate.id })
-        assertEquals(1.0, result.candidates[0].boardProbability, 1e-9)
+        assertTrue(result.candidates[0].boardProbability > 0.85)
     }
 
     @Test

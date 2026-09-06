@@ -84,6 +84,7 @@
     <string name="not_available">n/a</string>
     <string name="percent">%1$d %%</string>
     <string name="plan_connection_from_train">Plan a connection from this train</string>
+    <string name="forecast_live_anchored">Live: DB reports this delay, shown with the spread such reports usually turn out to have at this notice.</string>
     <plurals name="forecast_empirical_live">
         <item quantity="one">Empirical: %1$d past run of this train here, reweighted to match its current live delay (%2$s).</item>
         <item quantity="other">Empirical: %1$d past runs of this train here, reweighted to match its current live delay (%2$s).</item>

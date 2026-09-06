@@ -1,11 +1,14 @@
 package io.github.derweh.bayesianbahn.data
 
+import io.github.derweh.bayesianbahn.model.AnchoredDelay
 import io.github.derweh.bayesianbahn.model.DelayDistribution
 import io.github.derweh.bayesianbahn.model.DelayModel
 import io.github.derweh.bayesianbahn.model.EmpiricalDelay
 import io.github.derweh.bayesianbahn.model.HistoricalRun
 import io.github.derweh.bayesianbahn.model.LiveReport
+import io.github.derweh.bayesianbahn.model.ResidualShape
 import io.github.derweh.bayesianbahn.model.StudentTDelay
+import io.github.derweh.bayesianbahn.model.leadMinutes
 import io.github.derweh.bayesianbahn.model.TimeBand
 import io.github.derweh.bayesianbahn.model.TrainClass
 import java.time.Instant
@@ -14,6 +17,13 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 enum class ForecastSource {
+    /**
+     * DB's live report, plus the measured error of such reports at this lead.
+     * No history: on a train DB has said something about, the report and its
+     * residual beat anything the train's own record adds.
+     */
+    LIVE_ANCHORED,
+
     /** Empirical distribution conditioned on the train's live delay. */
     EMPIRICAL_LIVE,
 
@@ -91,10 +101,35 @@ class Predictor(private val fallbackModel: DelayModel = DelayModel()) {
         plannedTimeMillis: Long,
         liveDelayMinutes: Double?,
         today: LocalDate = LocalDate.now(ZONE),
+        nowMillis: Long = System.currentTimeMillis(),
         lineHistory: suspend () -> TrainHistory? = { null },
     ): Forecast {
         val reported = LiveReport.informative(liveDelayMinutes)
         val ignored = liveDelayMinutes.takeIf { reported == null }
+
+        // A live report is an observation with a measured error, not a fact.
+        // Anchoring on it and admitting that error beats every history-based
+        // answer on the stops where DB has said something: CRPS 3.25 against
+        // 3.93, and the stated 80% interval covers 89% where the old one
+        // covered 44%. See notes and `tools/sensitivity_live.py`.
+        //
+        // It throws the train's own history away, which is the known cost and
+        // the reason this is a floor rather than the finished model — but a
+        // floor that wins, on the 8% of predictions closest to departure.
+        if (reported != null) {
+            return Forecast(
+                distribution = AnchoredDelay(
+                    report = reported,
+                    leadMinutes = leadMinutes(nowMillis, plannedTimeMillis),
+                    shape = ResidualShape.ARRIVAL,
+                ),
+                source = ForecastSource.LIVE_ANCHORED,
+                runCount = 0,
+                effectiveRuns = 0.0,
+                cancelProbability = null,
+                ignoredLiveDelay = null,
+            )
+        }
         val timeOfDay = Instant.ofEpochMilli(plannedTimeMillis).atZone(ZONE).format(HHMM)
 
         fun runsAt(from: TrainHistory?): List<HistoricalRun> =

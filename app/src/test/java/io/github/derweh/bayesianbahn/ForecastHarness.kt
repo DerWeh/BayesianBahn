@@ -4,7 +4,11 @@ import io.github.derweh.bayesianbahn.data.HistoryRepository
 import io.github.derweh.bayesianbahn.data.Predictor
 import io.github.derweh.bayesianbahn.data.StationHistory
 import io.github.derweh.bayesianbahn.data.TrainHistory
+import io.github.derweh.bayesianbahn.model.AnchoredDelay
+import io.github.derweh.bayesianbahn.model.ConnectionModel
 import io.github.derweh.bayesianbahn.model.DelayDistribution
+import io.github.derweh.bayesianbahn.model.LiveReport
+import io.github.derweh.bayesianbahn.model.ResidualShape
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -102,6 +106,12 @@ val histories = ShardStore(shards, day)
                         // "now" would make the same input score differently on a
                         // rerun and destroy the regression yardstick.
                         today = day,
+                        // The moment the question was asked. The residual model
+                        // is a function of how far ahead that is, so passing
+                        // the wall clock here would score every event at a lead
+                        // of zero and quietly report a much sharper model than
+                        // the app has.
+                        nowMillis = (event.dbl("read_at")!! * 1000).toLong(),
                         lineHistory = {
                             histories.loadLine(
                                 event.str("cat")!!, event.str("line"),
@@ -127,11 +137,15 @@ val histories = ShardStore(shards, day)
                             """"q10":${d.quantile(0.1)},"q50":${d.quantile(0.5)},""" +
                             """"q90":${d.quantile(0.9)},"source":${q(forecast.source.name)},""" +
                             // Connection events carry the feeder arrival delay at
-                            // which the change stops working. P(catch) is then just
-                            // the model's own CDF there — the distribution answering
-                            // the question DB answers with a yes or a no.
+                            // which the change stops working. P(catch) used to be
+                            // read straight off this distribution's CDF there,
+                            // which silently assumed the connecting train departs
+                            // exactly when DB last said — the same point mass the
+                            // feeder's own anchor was fixed for. It goes through
+                            // [ConnectionModel.catchProbability] now, the code the
+                            // app itself uses, so the study cannot drift from it.
                             (event.int("threshold")?.let {
-                                """"threshold":$it,"p_catch":${d.cdf(it.toDouble())},""" +
+                                """"threshold":$it,"p_catch":${catchProbability(event, d)},""" +
                                     """"db_catch_p":${if (event.bool("db_catch") == true) 1 else 0},""" +
                                     """"caught":${event.bool("caught")},""" +
                                     """"slack":${event.int("slack")},"""
@@ -303,6 +317,37 @@ val histories = ShardStore(shards, day)
                 total += diff * diff
             }
             return total
+        }
+
+        /**
+         * The change, answered the way the app answers it.
+         *
+         * The connecting train gets a distribution rather than a promise: the
+         * residual DB's departure report carries where it made one, and the
+         * silent-departure residual where it did not — which is 87% of them,
+         * and they leave a median minute late rather than on time.
+         *
+         * `slack` is planned minus planned minus the transfer, so the feeder's
+         * arrival delay less the slack is the departure delay at which the
+         * change breaks. That is exactly what [ConnectionModel.propagate] walks
+         * per candidate; this calls the same function.
+         */
+        fun catchProbability(event: JsonObject, feeder: DelayDistribution): Double {
+            val report = LiveReport.informative(event.dbl("conn_db"))
+            val departure = AnchoredDelay(
+                report = report ?: 0.0,
+                leadMinutes = maxOf(0.0, event.dbl("conn_lead") ?: 0.0),
+                shape = if (report != null) {
+                    ResidualShape.DEPARTURE_REPORTED
+                } else {
+                    ResidualShape.DEPARTURE_SILENT
+                },
+            )
+            return ConnectionModel.catchProbability(
+                feederArrival = feeder,
+                departure = departure,
+                slackMinutes = (event.int("slack") ?: 0).toDouble(),
+            )
         }
 
         fun q(s: String?) = if (s == null) "null" else "\"$s\""

@@ -79,6 +79,7 @@
     <string name="not_available">k. A.</string>
     <string name="percent">%1$d %%</string>
     <string name="plan_connection_from_train">Anschluss ab diesem Zug planen</string>
+    <string name="forecast_live_anchored">Live: Die Bahn meldet diese Verspätung, dargestellt mit der Streuung, die solche Meldungen zu dieser Vorlaufzeit erfahrungsgemäß haben.</string>
     <plurals name="forecast_empirical_live">
         <item quantity="one">Empirisch: %1$d frühere Fahrt dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>
         <item quantity="other">Empirisch: %1$d frühere Fahrten dieses Zuges hier, neu gewichtet auf seine aktuelle Live-Verspätung (%2$s).</item>

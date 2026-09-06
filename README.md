@@ -217,29 +217,42 @@ Cross-check with DB's own apps before relying on any of it.
   station list.
 - Condition on the *true* previous-stop live delay instead of the current
   station's report.
-- **The live-conditioned forecast is far too narrow.** When DB reports a delay,
-  the model shifts each historical run's last-hop progression onto that report
-  and treats the report itself as exact. It is not: measured over the collected
-  days, `truth - DB's report` has a 10th-to-90th spread of 11-12 minutes and a
-  mean of +2 to +3, while the interval the model issues is a median of **2
-  minutes** wide. 46.9% of those arrivals land above their own 90th percentile.
-  In Bayesian terms the anchor enters as `p(a | report) = delta(report)` when it
-  should be the measured report-to-final residual, and the predictive should
-  marginalise over it.
+- **A feeder-specific arrival residual — measured, and not currently worth it.**
+  Feeder trains at interchanges are a different population from stops at large,
+  so a residual fitted only on them looked like a free improvement to the change
+  decision. On the population the app actually applies it to it is a
+  *regression*: Brier 0.082 against 0.073 after the shift and 0.090 against
+  0.082 within one regime, with roughly half again the calibration error. The
+  earlier apparent gain came from fitting and scoring on a subset six times
+  narrower than the real one, which is a caution worth keeping as much as the
+  result. Left here because the underlying observation is still true and a
+  better-posed version might pay; `tools/sensitivity_live.py changes` scores it
+  as a row, so re-checking costs one command.
+- **Combine the anchor with the train's own history.** When DB reports a delay
+  the app now answers from the report and its measured residual alone, and
+  throws the history away. That beats what came before it, but it is a floor: a
+  train with fifty runs of its own knows something the population residual does
+  not. A proper two-source model should beat both.
+- **Done, 2026-09-06: the live-conditioned forecast was far too narrow.** When
+  DB reported a delay the model shifted each historical run's last-hop
+  progression onto that report and treated the report as exact. It is not:
+  `truth - DB's report` has a 10th-to-90th spread of 11-12 minutes, while the
+  interval issued was a median of two, and 42% of those arrivals landed above
+  their own 90th percentile.
 
-  The residual has stable structure, which is what makes this fixable rather
-  than merely fittable. Split five days to fit and seven to hold out — the
-  held-out set spanning the end of the replacement-bus blockade, so the two
-  windows differ in composition — the spread by lead time is 6/9/19/46 minutes
-  against 5/9/17/44, and the bias +1.8/+2.5/+5.3/+10.8 against
-  +1.3/+2.1/+4.9/+11.6. Lead time is the driver and it transfers; conditioning
-  on the size of the reported delay also helps but drifts in its thin top bucket
-  (27 against 40 minutes of spread above 20 minutes reported).
+  `AnchoredDelay` replaces it with the measured residual — six numbers, an
+  asymmetric Laplace whose width and centre grow with the lead. Held out on
+  four days after the rail-replacement blockade ended, so the fit had to survive
+  a change in what was running: CRPS 3.25 against 3.93, and the stated 80%
+  interval covers 89% where the old one covered 44%.
 
-  Two cautions before shipping any of it. The table would be estimated from 20
-  stations over a fortnight and nothing yet refreshes it, unlike the shards; and
-  the correction is largest exactly where the sample is thinnest, 395 and 569
-  observations beyond 90 minutes of lead.
+  The same point mass was in `ConnectionModel.propagate`, where a live
+  *departure* report boarded or lost a train with certainty. Fixing only the
+  arrival made changes worse — the two errors had been partly cancelling — so
+  both went together. `tools/sensitivity_live.py` is the study;
+  `tools/anchor-model.json` is what was fitted and `tools/tests/
+  test_anchor_model.py` fails if the app drifts from it.
+
 - **Re-fit the shrinkage as more data arrives.** `n / (n + 8)` was chosen on
   two windows of one archive, and the sweep that chose it only tried k of 4, 8
   and 16 — 4 is better where the number has almost nothing and 16 is better in

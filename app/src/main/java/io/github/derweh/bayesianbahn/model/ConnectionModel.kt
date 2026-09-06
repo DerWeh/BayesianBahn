@@ -112,6 +112,16 @@ object ConnectionModel {
     /** Number of equal-mass samples drawn from the feeder's arrival distribution. */
     const val FEEDER_SAMPLES = 80
 
+    /**
+     * Weight below which a candidate's arrival points are dropped.
+     *
+     * They still count towards its board probability, which is exact and cheap;
+     * what is dropped is their contribution to the shape of the arrival
+     * distribution, and a millionth of the mass cannot move a quantile that is
+     * read at one part in a hundred.
+     */
+    const val MASS_FLOOR = 1e-6
+
     /** One historical run of a candidate: delays at transfer and destination. */
     data class JointRun(
         val departureDelay: Double,
@@ -148,27 +158,89 @@ object ConnectionModel {
         val missProbability: Double,
     )
 
+    /**
+     * P(the change works), composing both trains' distributions.
+     *
+     * Extracted so that nothing computes this twice. [propagate] uses the same
+     * arithmetic inline over its candidate walk, and `ForecastHarness` calls
+     * this directly — which is the point: the number in the study and the
+     * number on the screen come from one piece of code, so they cannot drift.
+     *
+     * The change works when the feeder arrives early enough that the connecting
+     * train has not yet left:
+     *
+     *     feeder arrival delay - slack <= the connecting train's departure delay
+     *
+     * so for each equal-mass sample of the feeder's arrival, the answer is the
+     * departure's survival at that point. Independence between the two is
+     * assumed and costs almost nothing — measured, they correlate at 0.1.
+     */
+    fun catchProbability(
+        feederArrival: DelayDistribution,
+        departure: DelayDistribution,
+        slackMinutes: Double,
+        samples: Int = FEEDER_SAMPLES,
+    ): Double {
+        var total = 0.0
+        for (i in 0 until samples) {
+            val p = (i + 0.5) / samples
+            total += departure.survival(feederArrival.quantile(p) - slackMinutes)
+        }
+        return total / samples
+    }
+
     fun propagate(
         feederArrival: DelayDistribution,
         feederPlannedArrivalMillis: Long,
         transferMinutes: Int,
         candidates: List<Candidate>,
+        nowMillis: Long = System.currentTimeMillis(),
     ): Result? {
-        // A live departure report is taken as fact below — if the train is
-        // reported later than the passenger can arrive it is missed, otherwise
-        // it is caught, with no distribution in between. That is only defensible
-        // for a report that is an observation, and DB reports "on time" for
-        // almost every train until shortly before departure (see [LiveReport]).
-        // Believing those turned a train with a history of leaving late into a
-        // certainty. The gate is applied here rather than in the callers so no
-        // caller can omit it, and before the filter below so that a candidate
-        // left with neither history nor a report is dropped rather than reaching
-        // the weighting with an empty run list.
+        // A change is two trains, and this used to model one of them. The
+        // feeder's arrival was a distribution; the connecting train's departure
+        // was whatever DB last said, believed exactly — `if (live >= threshold)`
+        // boards it and anything else loses it. That is the same point mass the
+        // arrival anchor was criticised for, one train along, and correcting
+        // only the arrival made changes *worse*: the two errors had been partly
+        // cancelling.
+        //
+        // Both are marginalised now. Whether a change works is
+        //
+        //     feeder arrival error - connecting departure error <= margin
+        //
+        // which holds exactly on the scored days, so the answer is a difference
+        // of two residuals rather than one of them and a guess. Held out after
+        // the blockade ended: Brier 0.077 against 0.092 as shipped, and 0.160
+        // against 0.196 on the changes tight enough to be in doubt.
+        //
+        // [LiveReport.informative] still decides which residual applies. A
+        // train DB has said nothing about is not on time — those leave a median
+        // minute and a mean three minutes late, and that slack is what the old
+        // threshold threw away.
         val usable = candidates
             .map { it.copy(liveDepartureDelay = LiveReport.informative(it.liveDepartureDelay)) }
             .filter { it.cancelledLive || it.runs.isNotEmpty() || it.liveDepartureDelay != null }
             .sortedBy { it.plannedDepartureMillis }
         val reference = usable.firstOrNull { !it.cancelledLive } ?: return null
+
+        // One distribution per candidate, built here rather than inside the
+        // loop: the loop asks each of them [FEEDER_SAMPLES] times, and building
+        // is the only arithmetic there is — a square root and two products.
+        // Asking is a branch and one exp.
+        //
+        // Only where DB has reported. A candidate without one keeps the
+        // history path below, which was never the bug: it already spreads the
+        // departure over the train's own runs.
+        val departure = arrayOfNulls<AnchoredDelay>(usable.size)
+        for ((k, cand) in usable.withIndex()) {
+            val live = cand.liveDepartureDelay
+            if (cand.cancelledLive || live == null) continue
+            departure[k] = AnchoredDelay(
+                report = live,
+                leadMinutes = leadMinutes(nowMillis, cand.plannedDepartureMillis),
+                shape = ResidualShape.DEPARTURE_REPORTED,
+            )
+        }
 
         val points = ArrayList<Pair<Double, Double>>()
         val boardProbability = DoubleArray(usable.size)
@@ -191,25 +263,38 @@ object ConnectionModel {
                 val pGone: Double
                 if (cand.cancelledLive) {
                     pGone = 1.0
-                } else if (cand.liveDepartureDelay != null) {
-                    val live = cand.liveDepartureDelay
-                    if (live >= threshold) {
-                        // Known to still be there: board it; arrival = delta model.
+                } else if (departure[k] != null) {
+                    // Still at the platform with probability P(departure delay
+                    // >= threshold), not with certainty either way.
+                    val live = cand.liveDepartureDelay ?: 0.0
+                    val pBoard = (1 - cand.cancelRate) * departure[k]!!.survival(threshold)
+                    boardProbability[k] += reachMass * pBoard
+                    // Points, unlike the probability above, are only worth
+                    // carrying when they weigh something. A departure that is
+                    // now a distribution never returns exactly zero, so the
+                    // walk no longer stops at the first certain train and every
+                    // later candidate would otherwise contribute a run apiece
+                    // at a millionth of the weight — several thousand points to
+                    // sort for a change in the sixth decimal.
+                    // `points.isEmpty()` keeps the floor from ever being the
+                    // reason there is no distribution at all: the first thing
+                    // that can be boarded is always carried, however unlikely,
+                    // and only what comes after it is pruned.
+                    if (reachMass * pBoard > MASS_FLOOR || points.isEmpty()) {
+                        // Arrival given it was boarded: the delta model as
+                        // before, around the departure the passenger caught.
                         val runs = cand.runs
                         if (runs.isEmpty()) {
-                            points += (arrivalBase + live) to reachMass
+                            points += (arrivalBase + live) to reachMass * pBoard
                         } else {
                             val w = runs.sumOf { it.weight }
                             for (r in runs) {
                                 points += (arrivalBase + live + (r.arrivalDelay - r.departureDelay)) to
-                                    reachMass * r.weight / w
+                                    reachMass * pBoard * r.weight / w
                             }
                         }
-                        boardProbability[k] += reachMass
-                        pGone = 0.0
-                    } else {
-                        pGone = 1.0
                     }
+                    pGone = 1.0 - pBoard
                 } else {
                     val total = cand.runs.sumOf { it.weight }
                     val staying = cand.runs.filter { it.departureDelay >= threshold }

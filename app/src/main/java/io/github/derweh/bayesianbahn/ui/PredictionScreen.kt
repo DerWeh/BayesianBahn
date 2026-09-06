@@ -206,6 +206,8 @@ private fun PredictionContent(
 
         Text(
             when (forecast.source) {
+                ForecastSource.LIVE_ANCHORED ->
+                    stringResource(R.string.forecast_live_anchored)
                 ForecastSource.EMPIRICAL_LIVE -> {
                     val effective = forecast.effectiveRuns.roundToInt()
                     pluralStringResource(
