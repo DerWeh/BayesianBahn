@@ -135,13 +135,16 @@ a { color: var(--series-1); }
   day the archive says when each train really arrived, and both forecasts are
   scored against that.</p>
   <p>The model is the app’s own prediction code at commit
-  <code>ccaf460de3bc</code>, which declares version 0.3.0
+  <code>01ef42de6b09</code>, which declares version 0.3.0
   (versionCode 7). <strong>That commit does not identify the code that ran:</strong> 1 uncommitted file(s) under app/src/main, tools/ or pipeline/ were present, so these figures cannot be reproduced from the commit alone. It is only ever shown history
   from before the day it predicts. It appears twice:
-  <strong>as shipped</strong>, which adjusts DB’s live number using past runs
-  <em>when DB actually reports a delay</em> and leans on the history alone when
-  it does not, and <strong>history only</strong>, which never looks at the live
-  number at all.</p>
+  <strong>as shipped</strong>, which <em>when DB actually reports a delay</em>
+  anchors on that report and widens it by the error such reports are measured to
+  carry at that much notice, and leans on the train’s own past runs when DB says
+  nothing; and <strong>history only</strong>, which never looks at the live
+  number at all. The same treatment is given to the connecting train’s departure
+  report, so a change is the difference of two admitted errors rather than one
+  distribution and one promise.</p>
   <p>Two kinds of answer are scored, and they correspond to the two kinds of
   journey the app plans. For a journey without a change the answer is an arrival
   time, scored as a distribution against the arrival that happened. For a journey
@@ -167,7 +170,7 @@ a { color: var(--series-1); }
   individual predictions. Where the interval crosses zero, the collected days
   are not enough to claim anything, however suggestive the middle number
   looks.</p>
-<div class="scroll"><table><thead><tr><th>Comparison</th><th>Predictions</th><th>Score</th><th>Ours − DB</th><th>95% interval</th><th>Reading</th></tr></thead><tbody><tr><td>Arrival time, as shipped</td><td>296,619</td><td>CRPS, minutes</td><td>-0.695</td><td>-0.732 to -0.659</td><td>BayesianBahn lower</td></tr><tr><td>Arrival time, history only</td><td>296,619</td><td>CRPS, minutes</td><td>-0.435</td><td>-0.465 to -0.405</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, as shipped</td><td>395,401</td><td>Brier</td><td>-0.005</td><td>-0.006 to -0.005</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, history only</td><td>395,401</td><td>Brier</td><td>0.000</td><td>-0.001 to 0.001</td><td>not separated</td></tr><tr><td>Missed connections, as shipped</td><td>14,835</td><td>Brier</td><td>-0.242</td><td>-0.256 to -0.227</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, history only</td><td>14,835</td><td>Brier</td><td>-0.120</td><td>-0.150 to -0.088</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, as shipped</td><td>60,826</td><td>CRPS, minutes</td><td>-1.815</td><td>-1.952 to -1.679</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, history only</td><td>60,826</td><td>CRPS, minutes</td><td>-1.797</td><td>-1.949 to -1.649</td><td>BayesianBahn lower</td></tr></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Comparison</th><th>Predictions</th><th>Score</th><th>Ours − DB</th><th>95% interval</th><th>Reading</th></tr></thead><tbody><tr><td>Arrival time, as shipped</td><td>296,619</td><td>CRPS, minutes</td><td>-0.695</td><td>-0.732 to -0.659</td><td>BayesianBahn lower</td></tr><tr><td>Arrival time, history only</td><td>296,619</td><td>CRPS, minutes</td><td>-0.435</td><td>-0.465 to -0.405</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, as shipped</td><td>395,401</td><td>Brier</td><td>-0.005</td><td>-0.006 to -0.005</td><td>BayesianBahn lower</td></tr><tr><td>Every connection, history only</td><td>395,401</td><td>Brier</td><td>0.000</td><td>-0.001 to 0.001</td><td>not separated</td></tr><tr><td>Missed connections, as shipped</td><td>14,835</td><td>Brier</td><td>-0.242</td><td>-0.256 to -0.227</td><td>BayesianBahn lower</td></tr><tr><td>Missed connections, history only</td><td>14,835</td><td>Brier</td><td>-0.120</td><td>-0.150 to -0.088</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, as shipped</td><td>60,561</td><td>CRPS, minutes</td><td>-1.758</td><td>-1.919 to -1.611</td><td>BayesianBahn lower</td></tr><tr><td>Journey with a change, history only</td><td>60,561</td><td>CRPS, minutes</td><td>-1.795</td><td>-1.955 to -1.650</td><td>BayesianBahn lower</td></tr></tbody></table></div>
 </section>
 
 <section>
@@ -304,14 +307,14 @@ a { color: var(--series-1); }
   the arrival of whichever train its own forecasts say the passenger catches;
   ours answers with a distribution over the arrival, which includes missing the
   planned connection and taking a later train — it puts
-  0.7% of its weight on catching none of the candidates
+  0.8% of its weight on catching none of the candidates
   at all. The truth is the arrival of whichever train was actually caught.</p>
   <p><strong>Truth is not held to that list.</strong> A passenger who misses
   every train the app offered waits for the next one that runs, and the
   forecast is then wrong by however long that took — so the walk to the train
   actually boarded goes on past the end of the list, and both forecasters are
   charged for the difference. That happens on
-  28.1% of the journeys here. Scoring only the ones that
+  28.2% of the journeys here. Scoring only the ones that
   fit inside the list would drop exactly the answers that were most wrong: it
   raised this model's margin over DB by about 0.8 minutes of CRPS while
   discarding a third of the evidence.</p>
@@ -322,14 +325,14 @@ a { color: var(--series-1); }
   answered.</strong> They do not answer the same set: a connecting train with
   too little shared history can be carried by a live report and cannot be
   carried without one, so the shipped model answers
-  63,967 journeys against the blinded model's
-  62,563, and 60,826 are answered by both.
+  63,720 journeys against the blinded model's
+  62,563, and 60,561 are answered by both.
   Measuring each over its own set would put answers to different questions in
   one row — it made the live number look worth four times what it is worth on
   the journeys both answered. Answering more journeys is a real advantage of
   the shipped model, but it is a difference in coverage and is counted here
   rather than folded into a score.</p>
-<div class="scroll"><table><thead><tr><th>Before departure</th><th>Journeys</th><th>Boarded past the list</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>3,018</td><td>23%</td><td>3.67</td><td>3.40</td><td>3.12</td><td>72%</td><td>68%</td></tr><tr><td>10-20m</td><td>8,582</td><td>23%</td><td>3.82</td><td>3.40</td><td>3.22</td><td>72%</td><td>70%</td></tr><tr><td>20-45m</td><td>27,014</td><td>46%</td><td>6.10</td><td>4.75</td><td>4.70</td><td>76%</td><td>73%</td></tr><tr><td>45-90m</td><td>15,380</td><td>13%</td><td>7.92</td><td>6.12</td><td>6.14</td><td>71%</td><td>69%</td></tr><tr><td>1.5-3h</td><td>6,475</td><td>0%</td><td>17.82</td><td>11.93</td><td>12.30</td><td>70%</td><td>68%</td></tr><tr><td>&gt;3h</td><td>357</td><td>0%</td><td>20.48</td><td>13.65</td><td>13.73</td><td>66%</td><td>65%</td></tr></tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Before departure</th><th>Journeys</th><th>Boarded past the list</th><th>DB</th><th>History only</th><th>As shipped</th><th>80% range, history</th><th>80% range, shipped</th></tr></thead><tbody><tr><td>&lt;10m</td><td>3,020</td><td>23%</td><td>3.67</td><td>3.44</td><td>3.78</td><td>72%</td><td>75%</td></tr><tr><td>10-20m</td><td>8,583</td><td>23%</td><td>3.82</td><td>3.40</td><td>3.48</td><td>72%</td><td>76%</td></tr><tr><td>20-45m</td><td>26,902</td><td>46%</td><td>6.11</td><td>4.76</td><td>4.76</td><td>76%</td><td>77%</td></tr><tr><td>45-90m</td><td>15,342</td><td>13%</td><td>7.92</td><td>6.12</td><td>6.17</td><td>71%</td><td>71%</td></tr><tr><td>1.5-3h</td><td>6,362</td><td>0%</td><td>17.99</td><td>12.02</td><td>11.99</td><td>71%</td><td>70%</td></tr><tr><td>&gt;3h</td><td>352</td><td>0%</td><td>20.55</td><td>13.65</td><td>13.21</td><td>66%</td><td>67%</td></tr></tbody></table></div>
 </section>
 
 <section>
@@ -494,7 +497,7 @@ pixi run -e evaluate evaluate 2026-08-17 2026-08-18 2026-08-19 2026-08-20 2026-0
 
 <footer>
   Generated 2026-09-06 from 2026-08-17, 2026-08-18, 2026-08-19, 2026-08-20, 2026-08-21, 2026-08-22, 2026-08-23, 2026-08-24, 2026-08-25, 2026-08-29, 2026-08-30, 2026-08-31, 2026-09-01, 2026-09-02, 2026-09-03, 2026-09-04, by
-  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit ccaf460de3bcdabfa5b19e58f1da2d73f2c1439d.
+  <a href="https://github.com/DerWeh/BayesianBahn">BayesianBahn</a> at commit 01ef42de6b0926fb28b996c0340c15274c60af01.
   MIT-licensed; delay data is CC BY 4.0 by Deutsche Bahn via the
   piebro/deutsche-bahn-data archive. Not affiliated with Deutsche Bahn.
 </footer>

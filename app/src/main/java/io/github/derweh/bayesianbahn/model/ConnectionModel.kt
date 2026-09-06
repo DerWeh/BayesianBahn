@@ -280,7 +280,13 @@ object ConnectionModel {
                     // reason there is no distribution at all: the first thing
                     // that can be boarded is always carried, however unlikely,
                     // and only what comes after it is pruned.
-                    if (reachMass * pBoard > MASS_FLOOR || points.isEmpty()) {
+                    //
+                    // `pBoard > 0` guards that exception. `survival` underflows
+                    // to exactly zero for a threshold far enough out, and
+                    // without this the first such candidate contributes its
+                    // whole run list at weight zero -- a PointDistribution of
+                    // total weight zero, whose cdf is NaN rather than absent.
+                    if (pBoard > 0 && (reachMass * pBoard > MASS_FLOOR || points.isEmpty())) {
                         // Arrival given it was boarded: the delta model as
                         // before, around the departure the passenger caught.
                         val runs = cand.runs

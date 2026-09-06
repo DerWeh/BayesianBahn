@@ -144,6 +144,26 @@ class ConnectionModelTest {
     }
 
     @Test
+    fun `a hopeless change is declined, not answered with NaN`() {
+        // `survival` underflows to exactly zero once the threshold is far
+        // enough out. The floor's "always carry the first one" exception then
+        // carried a whole run list at weight zero, and a PointDistribution
+        // whose weights sum to zero answers NaN rather than not answering.
+        val result = ConnectionModel.propagate(
+            feederArrival = feeder(600.0),
+            feederPlannedArrivalMillis = t0,
+            transferMinutes = 5,
+            candidates = listOf(candidate("A", depAfterFeeder = 10, liveDep = 1.0)),
+            nowMillis = t0,
+        )
+        if (result != null) {
+            assertTrue("a distribution must be a number",
+                result.distribution.quantile(0.5).isFinite())
+            assertTrue(result.candidates.all { it.boardProbability.isFinite() })
+        }
+    }
+
+    @Test
     fun `pruning tiny contributions never removes the last one`() {
         // The mass floor exists to stop a near-certain candidate's successors
         // filling the point list. It must not be able to leave nothing behind:
