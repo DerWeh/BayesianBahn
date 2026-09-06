@@ -524,7 +524,11 @@ def build_connections(stops: dict, polls: dict, truth: dict, *,
                     ("dep", eva, conn.cat, conn.num, conn.planned_dep))
                 if conn_truth is None or conn_truth["cancelled"]:
                     continue
-                db_departure = conn.departure_forecast_at(read_at) or 0
+                # Kept apart from the `or 0` default below: "DB said nothing"
+                # and "DB said on time" are different states, and the whole
+                # question here is what a report is worth.
+                conn_report = conn.departure_forecast_at(read_at)
+                db_departure = conn_report or 0
                 # The feeder's arrival delay at which the change stops working,
                 # using DB's own forecast for the connecting train so both
                 # forecasters see the same information.
@@ -544,6 +548,17 @@ def build_connections(stops: dict, polls: dict, truth: dict, *,
                     "threshold": threshold,
                     "db_catch": db_arrival <= threshold,
                     "caught": caught,
+                    # The connecting train's own half of the question. The
+                    # threshold above is built from `conn_db`, DB's forecast of
+                    # this departure, and treats it as exact -- the same point
+                    # mass the arrival anchor was criticised for. These record
+                    # what it was worth: whether DB said anything at all, how
+                    # far ahead, and what the train in fact did.
+                    "conn_reported": conn_report is not None,
+                    "conn_db": db_departure,
+                    "conn_lead": round(
+                        (wall_to_epoch(conn.planned_dep) - read_at) / 60, 1),
+                    "conn_truth": conn_truth["dep_delay"],
                     "archive": feeder_truth["delay"],
                     "archive_dep": feeder_truth["dep_delay"],
                     "cancelled": False,

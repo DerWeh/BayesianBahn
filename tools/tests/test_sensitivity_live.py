@@ -182,3 +182,59 @@ def test_the_three_day_sets_are_disjoint_and_in_order():
     assert sl.TEST_DAYS == sl.HELD_PRE + sl.HELD_POST
     assert min(sl.HELD_POST) > dt.date(2026, 8, 31), \
         "the shift is the blockade ending on 2026-08-31"
+
+
+# --- the change is two trains ------------------------------------------------
+
+def test_a_change_is_the_difference_of_two_report_errors():
+    """The identity the whole connection analysis rests on.
+
+    A change works when the feeder's arrival error, minus the connecting
+    train's departure error, is inside the margin. Modelling only the first
+    term is the shipped bug; modelling neither is what came before it.
+    """
+    rng = np.random.default_rng(3)
+    margin = rng.normal(5, 8, 500)
+    a, d = rng.normal(2, 6, 500), rng.normal(1, 4, 500)
+    caught = (margin >= a - d)
+    # Stated the other way round, as `build_connections` computes it.
+    assert np.array_equal(caught, (a - margin <= d))
+
+
+def test_p_difference_reduces_to_the_plain_cdf_when_the_departure_is_certain():
+    """A point mass at zero is exactly what the shipped model assumes."""
+    q = np.linspace(-20.0, 20.0, len(sl.PS))[None, :].repeat(4, axis=0)
+    zero = np.zeros_like(q)
+    margin = np.array([-10.0, 0.0, 5.0, 12.0])
+    assert np.allclose(sl.p_difference(q, zero, margin),
+                       sl.cdf_at(q, margin), atol=1.0 / len(sl.PS) + 1e-9)
+
+
+def test_a_late_connecting_train_makes_the_change_easier():
+    """It hands back slack, so every probability must rise, never fall."""
+    q = np.linspace(-20.0, 20.0, len(sl.PS))[None, :].repeat(3, axis=0)
+    margin = np.array([-5.0, 0.0, 5.0])
+    certain = sl.p_difference(q, np.zeros_like(q), margin)
+    late = sl.p_difference(q, np.full_like(q, 3.0), margin)
+    assert np.all(late >= certain)
+    assert np.any(late > certain), "a three-minute gift changed nothing"
+
+
+def test_p_difference_is_chunk_independent():
+    """The chunking is a memory device and must not touch the answer."""
+    rng = np.random.default_rng(1)
+    q = np.sort(rng.normal(0, 5, (37, len(sl.PS))), axis=1)
+    d = np.sort(rng.normal(1, 3, (37, len(sl.PS))), axis=1)
+    margin = rng.normal(0, 4, 37)
+    assert np.allclose(sl.p_difference(q, d, margin, chunk=5),
+                       sl.p_difference(q, d, margin, chunk=1000))
+
+
+def test_the_laplace_fit_carries_a_two_number_shape():
+    rng = np.random.default_rng(2)
+    lead = rng.uniform(0, 120, 1500)
+    eps = rng.laplace(0.0, 1.0 + 0.02 * lead)
+    model = sl.laplace_fit(lead, eps)
+    shape = np.asarray(model["shape"])
+    assert shape.shape == sl.PS.shape
+    assert np.all(np.diff(shape) >= -1e-9), "a shape must be non-decreasing"

@@ -258,35 +258,90 @@ def scored(days: list[dt.date], blind: bool = False) -> np.ndarray:
     return np.array(rows, float)
 
 
-def changes(days: list[dt.date]) -> np.ndarray:
-    """Live-anchored one-change journeys, as the app itself answered them.
+CHANGE_COLUMNS = ("lead", "lead_dep", "db", "conn_db", "margin",
+                  "resid", "resid_dep", "caught", "shipped", "db_catch")
 
-    Columns: lead to the feeder's scheduled arrival, DB's reported delay, the
-    margin (how much later than DB says the feeder may be and still make the
-    change), the shipped model's catch probability, DB's yes-or-no, whether it
-    was in fact caught, and the feeder's own realised residual.
 
-    The lead is recomputed rather than taken from the record: `build_connections`
-    stores minutes until the feeder *sets off*, which is the decision moment,
-    while the residual model is indexed by minutes until it *arrives*, which is
-    what the forecast is about.
+def changes(days: list[dt.date]) -> dict[str, np.ndarray]:
+    """Live-anchored one-change journeys, as columns.
+
+    Joined from two files: `connections.jsonl` carries both trains' reports and
+    what they in fact did, `connections-live.jsonl` carries the shipped model's
+    own answer, and the join is on the pair of trains plus the threshold that
+    separates them.
+
+    The identity that makes this checkable, with `resid` the feeder's arrival
+    error and `resid_dep` the connecting train's departure error:
+
+        caught  <=>  resid - resid_dep <= margin
+
+    It holds exactly, which is worth knowing: the change is a statement about
+    the *difference* of two report errors, and the shipped model marginalises
+    over neither of them.
+
+    Leads are recomputed rather than taken from the records: `build_connections`
+    stores minutes until the feeder sets off, which is the decision moment,
+    while each residual is indexed by minutes until the event it describes.
     """
     rows = []
     for day in days:
+        live = {}
         path = Path(__file__).parent / f".scored/{day}/connections-live.jsonl"
+        if path.exists():
+            for line in path.open():
+                r = json.loads(line)
+                live[_change_key(r)] = r
+        path = Path(__file__).parent / f".scored/{day}/connections.jsonl"
         if not path.exists():
             continue
         for line in path.open():
             r = json.loads(line)
-            if r["source"] != "EMPIRICAL_LIVE" or r["db"] < ad.MIN_REPORT:
+            if r["cancelled"] or r["db"] < ad.MIN_REPORT:
+                continue
+            shipped = live.get(_change_key(r))
+            if shipped is None or shipped["source"] != "EMPIRICAL_LIVE":
                 continue
             lead = (se.wall_to_epoch(r["planned"]) - r["read_at"]) / 60
             if lead < 0:
                 continue
-            rows.append((lead, r["db"], r["threshold"] - r["db"],
-                         r["p_catch"], float(r["db_catch_p"]),
-                         float(r["caught"]), r["archive"] - r["db"]))
-    return np.array(rows, float) if rows else np.empty((0, 7))
+            rows.append((lead, r["conn_lead"], r["db"], r["conn_db"],
+                         r["threshold"] - r["db"], r["archive"] - r["db"],
+                         r["conn_truth"] - r["conn_db"], float(r["caught"]),
+                         shipped["p_catch"], float(r["db_catch"])))
+    a = np.array(rows, float) if rows else np.empty((0, len(CHANGE_COLUMNS)))
+    return dict(zip(CHANGE_COLUMNS, a.T))
+
+
+def _change_key(r: dict) -> tuple:
+    return (r["eva"], r["cat"], r["num"], r["planned"], r["planned_dep"],
+            r["threshold"], r["slack"])
+
+
+def laplace_fit(lead: np.ndarray, eps: np.ndarray, form: str = "linear") -> dict:
+    """A width, a centre and a two-number shape -- the shippable model."""
+    model = fit(np.asarray(lead, float), np.asarray(eps, float), form)
+    shape = np.asarray(model["shape"])
+    two, _ = minimise(lambda b: float(np.mean(
+        (asymmetric_laplace(b[0] ** 2, b[1] ** 2) - shape) ** 2)), [0.5, 0.8])
+    return dict(model, shape=asymmetric_laplace(two[0] ** 2, two[1] ** 2).tolist())
+
+
+def p_difference(arrival: np.ndarray, departure: np.ndarray,
+                 margin: np.ndarray, chunk: int = 1500) -> np.ndarray:
+    """P(arrival residual - departure residual <= margin), independent.
+
+    Both are given as quantiles on the [PS] grid, so the difference is the
+    equally-weighted outer difference of the two grids. Independence costs
+    almost nothing here -- the two residuals correlate at 0.1 -- and it is what
+    `ConnectionModel.propagate` can actually compute, since it already walks
+    the feeder's quantiles one at a time.
+    """
+    out = np.empty(len(margin))
+    for i in range(0, len(margin), chunk):
+        lo = arrival[i:i + chunk][:, :, None]
+        hi = departure[i:i + chunk][:, None, :]
+        out[i:i + chunk] = ((lo - hi) <= margin[i:i + chunk][:, None, None]).mean((1, 2))
+    return out
 
 
 def measure(q: np.ndarray, truth: np.ndarray) -> tuple[float, float, float]:
@@ -482,55 +537,74 @@ def report_regimes(cache: Path) -> dict:
 
 
 def report_changes(cache: Path) -> dict:
-    """Does any of this fix the answer a passenger actually asks?
+    """Does marginalising *both* reports fix the change, as it fixed arrivals?
 
-    An arrival distribution is a means; "will I make my change" is the end, and
-    it is a probability, so it is checkable in a way CRPS is not. DB answers
-    yes or no. The shipped model answers with a number that is almost always 0
-    or 1 anyway, because a two-minute interval leaves no room for doubt. A
-    calibrated anchor should be able to say 70% and be right 70% of the time.
+    The shipped model treats DB's arrival report as exact, which this study set
+    out to fix. It also treats the connecting train's departure report as
+    exact, in the same line of code shape -- `if live >= threshold` boards it
+    and anything else loses it. Fixing only the first makes the change *worse*,
+    because the two errors partly cancelled: the anchor was over-confident and
+    the connecting train quietly handed back slack nobody predicted.
     """
     lead, eps = load(cache, FIT_DAYS)
-    table = tabulate(lead, eps)
-    linear = fit(lead, eps, "linear")
-    shape = np.asarray(linear["shape"])
-    two, _ = minimise(
-        lambda b: float(np.mean((asymmetric_laplace(b[0] ** 2, b[1] ** 2) - shape) ** 2)),
-        [0.5, 0.8])
-    laplace = dict(linear, shape=asymmetric_laplace(two[0] ** 2, two[1] ** 2).tolist())
+    general = laplace_fit(lead, eps)
+    fitc = changes(FIT_DAYS)
+    reported = fitc["conn_db"] >= ad.MIN_REPORT
+    models = {
+        # The feeder's own arrivals, which are not arrivals at large: a train
+        # about to leave its origin for a station someone changes at is a more
+        # predictable animal than the average stop.
+        "feeder": laplace_fit(fitc["lead"], fitc["resid"]),
+        # The connecting train's departure, split on whether DB said anything
+        # worth hearing. Silence is not "on time": those trains leave a median
+        # minute and a mean three minutes late.
+        "dep_reported": laplace_fit(fitc["lead_dep"][reported],
+                                    fitc["resid_dep"][reported]),
+        "dep_silent": laplace_fit(fitc["lead_dep"][~reported],
+                                  fitc["resid_dep"][~reported]),
+    }
+    print(f"fitted on {len(fitc['caught'])} changes over {len(FIT_DAYS)} days "
+          f"({int(reported.sum())} with an informative departure report)")
+    for name, m in (("arrivals at large", general), ("feeder arrivals", models["feeder"]),
+                    ("departure, reported", models["dep_reported"]),
+                    ("departure, silent", models["dep_silent"])):
+        t = np.asarray(m["theta"])
+        print(f"    {name:<22} s(L) = {t[2] ** 2:5.2f} + {t[3] ** 2:.3f} L"
+              f"     m(L) = {t[0]:6.2f} + {t[1]:.3f} sqrt(L)")
 
     out: dict = {"regimes": {}}
     for key, days in (("held out, after the shift", HELD_POST),
                       ("held out, same regime", HELD_PRE)):
-        a = changes(days)
-        if not len(a):
+        c = changes(days)
+        if not len(c["caught"]):
             continue
-        lead_c, db, margin, shipped_p, db_p, caught, resid = a.T
-        answers = {
-            # Nine changes in ten work, so a model that has learnt nothing but
-            # that still scores well. Without this line a Brier score of 0.07
-            # reads as skill when it is the base rate.
-            "always the base rate": np.full(len(a), float(caught.mean())),
-            "DB: yes or no": db_p,
-            "as shipped": shipped_p,
-            "parameter-free (tabulated per bin)":
-                cdf_at(quantiles_of(table, lead_c), margin),
-            "fitted width, Laplace shape (6 numbers)":
-                cdf_at(quantiles_of(laplace, lead_c), margin),
-        }
-        # The changes where the answer is actually in doubt: DB's own number
-        # already puts the feeder within ten minutes of losing it. The rest are
-        # caught whatever anyone predicts, and they dominate every average.
+        caught, margin = c["caught"], c["margin"]
         tight = margin <= 10
+        q_general = quantiles_of(general, c["lead"])
+        q_feeder = quantiles_of(models["feeder"], c["lead"])
+        q_dep = np.where((c["conn_db"] >= ad.MIN_REPORT)[:, None],
+                         quantiles_of(models["dep_reported"], c["lead_dep"]),
+                         quantiles_of(models["dep_silent"], c["lead_dep"]))
+        answers = {
+            "always the base rate": np.full(len(caught), float(caught.mean())),
+            "DB: yes or no": c["db_catch"],
+            "as shipped": c["shipped"],
+            "arrival marginalised, departure exact":
+                cdf_at(q_general, margin),
+            "both marginalised":
+                p_difference(q_general, q_dep, margin),
+            "both marginalised, feeder-specific arrival":
+                p_difference(q_feeder, q_dep, margin),
+        }
+        print(f"\n{key}: {len(caught)} live-anchored changes, "
+              f"{caught.mean():.1%} caught; {int(tight.sum())} tight, "
+              f"{caught[tight].mean():.1%} caught\n")
+        print(f"{'answer':<44}{'Brier':>8}{'ECE':>8}{'wrong':>8}{'Brier/t':>9}"
+              f"   reliability: said -> was")
         out["regimes"][key] = {
-            "n": int(len(a)), "base": float(caught.mean()),
+            "n": int(len(caught)), "base": float(caught.mean()),
             "n_tight": int(tight.sum()), "base_tight": float(caught[tight].mean()),
             "days": [str(d) for d in days], "models": {}}
-        print(f"\n{key}: {len(a)} live-anchored changes, "
-              f"{caught.mean():.1%} caught; {int(tight.sum())} of them tight "
-              f"(within 10 min), {caught[tight].mean():.1%} caught\n")
-        print(f"{'answer':<42}{'Brier':>8}{'ECE':>8}{'wrong':>8}"
-              f"{'Brier/t':>9}{'wrong/t':>9}  reliability: said -> was")
         for name, p in answers.items():
             edges = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0001])
             idx = np.searchsorted(edges[1:-1], p, side="right")
@@ -543,31 +617,22 @@ def report_changes(cache: Path) -> dict:
                 ece += m.mean() * abs(p[m].mean() - caught[m].mean())
                 curve.append({"n": int(m.sum()), "said": float(p[m].mean()),
                               "was": float(caught[m].mean())})
-            stats = {
-                "brier": float(np.mean((p - caught) ** 2)),
-                "ece": float(ece),
-                "wrong": float(np.mean((p >= 0.5) != (caught > 0.5))),
-                "brier_tight": float(np.mean((p[tight] - caught[tight]) ** 2)),
-                "wrong_tight": float(np.mean(
-                    (p[tight] >= 0.5) != (caught[tight] > 0.5))),
-                "curve": curve}
+            stats = {"brier": float(np.mean((p - caught) ** 2)), "ece": float(ece),
+                     "wrong": float(np.mean((p >= 0.5) != (caught > 0.5))),
+                     "brier_tight": float(np.mean((p[tight] - caught[tight]) ** 2)),
+                     "curve": curve}
             out["regimes"][key]["models"][name] = stats
-            shown = "  ".join("  -  " if c is None
-                              else f"{c['said']:.2f}->{c['was']:.2f}"
-                              for c in curve)
-            print(f"{name:<42}{stats['brier']:>8.3f}{stats['ece']:>8.3f}"
-                  f"{stats['wrong']:>8.1%}{stats['brier_tight']:>9.3f}"
-                  f"{stats['wrong_tight']:>9.1%}  {shown}")
-        out["regimes"][key]["why"] = why_changes_miss(
-            lead_c, db, margin, resid, caught, answers)
+            shown = "  ".join("  -  " if x is None
+                              else f"{x['said']:.2f}->{x['was']:.2f}" for x in curve)
+            print(f"{name:<44}{stats['brier']:>8.3f}{stats['ece']:>8.3f}"
+                  f"{stats['wrong']:>8.1%}{stats['brier_tight']:>9.3f}   {shown}")
+        out["regimes"][key]["why"] = why_changes_miss(c, answers)
     CHANGES_OUT.parent.mkdir(parents=True, exist_ok=True)
     CHANGES_OUT.write_text(json.dumps(out, indent=2) + "\n")
     return out
 
 
-def why_changes_miss(lead: np.ndarray, db: np.ndarray, margin: np.ndarray,
-                     resid: np.ndarray, caught: np.ndarray,
-                     answers: dict) -> dict:
+def why_changes_miss(c: dict, answers: dict) -> dict:
     """Two reasons a fixed arrival distribution still misjudges a change.
 
     Worth separating, because one of them is this model's fault and the other
@@ -577,7 +642,11 @@ def why_changes_miss(lead: np.ndarray, db: np.ndarray, margin: np.ndarray,
     #    feeder's arrival with the connecting train's *realised* departure,
     #    while the margin was set from DB's forecast of it. A connecting train
     #    that is itself late hands back slack nobody predicted.
+    lead, db, margin = c["lead"], c["db"], c["margin"]
+    caught, resid, resid_dep = c["caught"], c["resid"], c["resid_dep"]
     feeder_only = (resid <= margin).astype(float)
+    assert np.array_equal(caught, (resid - resid_dep <= margin).astype(float)), \
+        "caught is not (arrival error - departure error <= margin)"
     both_ways = {"rescued": float(np.mean((feeder_only == 0) & (caught == 1))),
                  "lost anyway": float(np.mean((feeder_only == 1) & (caught == 0)))}
     print(f"\n  why: the change is two trains, and only one is modelled")
@@ -593,7 +662,8 @@ def why_changes_miss(lead: np.ndarray, db: np.ndarray, margin: np.ndarray,
     print(f"    {'reported delay':>16}{'n':>8}{'said':>8}{'feeder made it':>16}")
     tail = []
     for name, p in answers.items():
-        if not name.startswith("fitted"):
+        # The half-fix, which is the one whose pessimism this explains.
+        if name != "arrival marginalised, departure exact":
             continue
         low = p < 0.2
         for lo, hi in ((1, 6), (6, 12), (12, 25), (25, 1e9)):
