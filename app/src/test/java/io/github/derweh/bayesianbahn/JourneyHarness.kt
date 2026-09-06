@@ -86,6 +86,12 @@ class JourneyHarness {
                         plannedTimeMillis = feederPlanned,
                         liveDelayMinutes = if (blind) null else event.dbl("db"),
                         today = day,
+                        // The moment the question was asked. Both the arrival
+                        // residual and the departure residual are functions of
+                        // how far ahead that is, and the default — the wall
+                        // clock — would put every recorded event at a lead of
+                        // zero and score a model far sharper than the app is.
+                        nowMillis = (event.dbl("read_at")!! * 1000).toLong(),
                         lineHistory = {
                             histories.loadLine(
                                 event.str("cat")!!, event.str("line"),
@@ -131,6 +137,7 @@ class JourneyHarness {
                         feederPlannedArrivalMillis = feederPlanned,
                         transferMinutes = TRANSFER_MINUTES,
                         candidates = candidates,
+                        nowMillis = (event.dbl("read_at")!! * 1000).toLong(),
                     )
                     if (result == null) {
                         noFeeder++

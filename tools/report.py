@@ -1302,10 +1302,13 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
   <code>{prov["short"]}</code>, which declares version {prov["version"]}
   (versionCode {prov["code"]}). {release_note} It is only ever shown history
   from before the day it predicts. It appears twice:
-  <strong>as shipped</strong>, which adjusts DB’s live number using past runs
-  <em>when DB actually reports a delay</em> and leans on the history alone when
-  it does not, and <strong>history only</strong>, which never looks at the live
-  number at all.</p>
+  <strong>as shipped</strong>, which <em>when DB actually reports a delay</em>
+  anchors on that report and widens it by the error such reports are measured to
+  carry at that much notice, and leans on the train’s own past runs when DB says
+  nothing; and <strong>history only</strong>, which never looks at the live
+  number at all. The same treatment is given to the connecting train’s departure
+  report, so a change is the difference of two admitted errors rather than one
+  distribution and one promise.</p>
   <p>Two kinds of answer are scored, and they correspond to the two kinds of
   journey the app plans. For a journey without a change the answer is an arrival
   time, scored as a distribution against the arrival that happened. For a journey

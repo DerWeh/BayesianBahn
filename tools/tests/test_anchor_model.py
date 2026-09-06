@@ -77,3 +77,37 @@ def test_the_right_tail_is_the_long_one_everywhere():
     """Trains lose more time than they win back, arriving and departing."""
     for name, r in frozen().items():
         assert r["right"] > r["left"], f"{name} leans the wrong way"
+
+
+# --- the harnesses must ask at the time the question was asked ---------------
+
+HARNESSES = {
+    "ForecastHarness": ROOT / "app/src/test/java/io/github/derweh/bayesianbahn/ForecastHarness.kt",
+    "JourneyHarness": ROOT / "app/src/test/java/io/github/derweh/bayesianbahn/JourneyHarness.kt",
+}
+
+
+@pytest.mark.parametrize("name", sorted(HARNESSES))
+def test_the_harness_pins_now_to_when_the_event_was_read(name):
+    """Otherwise every scored event is at a lead of zero.
+
+    `Predictor.forecast` and `ConnectionModel.propagate` both default
+    `nowMillis` to the wall clock, which is right in the app and silently wrong
+    in a harness replaying last week. The residual is a function of the lead, so
+    the default would score the sharpest model the parameters can describe and
+    report it as the app's. Nothing else would look broken.
+    """
+    text = HARNESSES[name].read_text()
+    assert "nowMillis" in text, f"{name} never pins nowMillis"
+    for call in re.finditer(r"nowMillis = ([^\n,]+)", text):
+        assert "read_at" in call.group(1), \
+            f"{name} pins nowMillis to {call.group(1)!r}, not to the read time"
+
+
+def test_every_call_that_takes_a_lead_gets_one_from_the_harness():
+    """Both entry points, not just whichever was remembered."""
+    text = HARNESSES["JourneyHarness"].read_text()
+    for entry in ("predictor.forecast(", "ConnectionModel.propagate("):
+        start = text.index(entry)
+        call = text[start:text.index("\n                    )", start)]
+        assert "nowMillis" in call, f"{entry} in JourneyHarness has no nowMillis"
