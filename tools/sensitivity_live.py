@@ -53,13 +53,25 @@ import score_events as se  # noqa: E402
 
 CACHE = Path(__file__).parent / ".sensitivity/dense.npz"
 FORMS_OUT = Path(__file__).parent / ".sensitivity/forms.json"
+REGIMES_OUT = Path(__file__).parent / ".sensitivity/regimes.json"
+CHANGES_OUT = Path(__file__).parent / ".sensitivity/changes.json"
 
 # Days with both a collector journal and an extracted archive day. The split is
 # by date and not at random: the rail-replacement blockade ended on 2026-08-31,
 # so fitting on the first block and scoring on the second asks the model to
 # survive a regime change rather than to interpolate inside one.
 FIT_DAYS = [dt.date(2026, 8, d) for d in range(17, 26)]
-TEST_DAYS = [dt.date(2026, 8, d) for d in (29, 30, 31)] + [dt.date(2026, 9, 1)]
+# Held out twice over, because "does it generalise" is two questions with
+# different answers. HELD_PRE is unseen days in the same regime: what the fit
+# costs by being a fit. HELD_POST is the other side of the blockade's end: what
+# it costs by the world changing underneath it. A model can pass the first and
+# fail the second, and only the second is the risk worth worrying about.
+HELD_PRE = [dt.date(2026, 8, d) for d in (29, 30, 31)]
+HELD_POST = [dt.date(2026, 9, d) for d in range(1, 5)]
+TEST_DAYS = HELD_PRE + HELD_POST
+REGIMES = {"fit (in-sample)": FIT_DAYS,
+           "held out, same regime": HELD_PRE,
+           "held out, after the shift": HELD_POST}
 
 # Lead times probed, minutes. Dense, because the width is a function of lead
 # and the point is to fit the function.
@@ -246,6 +258,37 @@ def scored(days: list[dt.date], blind: bool = False) -> np.ndarray:
     return np.array(rows, float)
 
 
+def changes(days: list[dt.date]) -> np.ndarray:
+    """Live-anchored one-change journeys, as the app itself answered them.
+
+    Columns: lead to the feeder's scheduled arrival, DB's reported delay, the
+    margin (how much later than DB says the feeder may be and still make the
+    change), the shipped model's catch probability, DB's yes-or-no, whether it
+    was in fact caught, and the feeder's own realised residual.
+
+    The lead is recomputed rather than taken from the record: `build_connections`
+    stores minutes until the feeder *sets off*, which is the decision moment,
+    while the residual model is indexed by minutes until it *arrives*, which is
+    what the forecast is about.
+    """
+    rows = []
+    for day in days:
+        path = Path(__file__).parent / f".scored/{day}/connections-live.jsonl"
+        if not path.exists():
+            continue
+        for line in path.open():
+            r = json.loads(line)
+            if r["source"] != "EMPIRICAL_LIVE" or r["db"] < ad.MIN_REPORT:
+                continue
+            lead = (se.wall_to_epoch(r["planned"]) - r["read_at"]) / 60
+            if lead < 0:
+                continue
+            rows.append((lead, r["db"], r["threshold"] - r["db"],
+                         r["p_catch"], float(r["db_catch_p"]),
+                         float(r["caught"]), r["archive"] - r["db"]))
+    return np.array(rows, float) if rows else np.empty((0, 7))
+
+
 def measure(q: np.ndarray, truth: np.ndarray) -> tuple[float, float, float]:
     """CRPS, coverage of the stated 80% interval, and the tail that matters.
 
@@ -258,6 +301,51 @@ def measure(q: np.ndarray, truth: np.ndarray) -> tuple[float, float, float]:
     return (float(crps(q, truth).mean()),
             float(((truth >= lo) & (truth <= hi)).mean()),
             float((truth > hi).mean()))
+
+
+# --- the parameter-free alternative ------------------------------------------
+
+def tabulate(lead: np.ndarray, eps: np.ndarray) -> dict:
+    """The residual's own quantiles, per lead bin. No functional form at all.
+
+    This is what `tools/calibrate_live.py` proposed and what the report
+    described first: bin by lead, keep the empirical distribution of
+    (truth - report) in each bin, and read the answer off it. It has no
+    parameters to misfit, which is its whole appeal -- and one table row per
+    bin per quantile level to carry, keep fresh, and hope stays true, which is
+    the cost. Bins are `anchor_drift.EDGES`, the same ones the drift monitor
+    watches, so a change there cannot silently split the two.
+    """
+    b = ad.bin_of(lead)
+    rows = []
+    for i in range(len(ad.EDGE_LABELS)):
+        v = eps[b == i]
+        rows.append(np.quantile(v, PS) if v.size >= 30 else None)
+    # A bin too thin to speak for itself borrows the nearest one that can,
+    # which is what any deployed version of this would have to do too.
+    have = [i for i, r in enumerate(rows) if r is not None]
+    if not have:
+        raise SystemExit("no lead bin has enough residuals to tabulate")
+    filled = [rows[i] if rows[i] is not None
+              else rows[min(have, key=lambda j: abs(j - i))]
+              for i in range(len(rows))]
+    return {"kind": "tabulated", "rows": [r.tolist() for r in filled]}
+
+
+def predict_table(table: dict, lead: np.ndarray) -> np.ndarray:
+    return np.asarray(table["rows"], float)[ad.bin_of(lead)]
+
+
+def quantiles_of(model: dict, lead: np.ndarray) -> np.ndarray:
+    """Predictive residual quantiles from either kind of model."""
+    return (predict_table(model, lead) if model.get("kind") == "tabulated"
+            else predict(model, lead))
+
+
+def cdf_at(q: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """P(residual <= x) per row, read off quantiles stated at [PS]."""
+    return np.array([np.interp(xi, qi, PS, left=0.0, right=1.0)
+                     for qi, xi in zip(q, x)])
 
 
 # --- the three reports -------------------------------------------------------
@@ -320,6 +408,212 @@ def report_sweep(models: dict) -> None:
         print(f"{name:<38}{c:>8.2f}{cov:>8.1%}{over:>11.1%}")
 
 
+def report_regimes(cache: Path) -> dict:
+    """Every candidate, on the fit days and on both kinds of unseen day.
+
+    The question this answers is not "which scores best" -- that was settled --
+    but "which of them stops working when the world changes". A tabulated model
+    has a row per bin and can track anything; a two-parameter width cannot bend
+    to a regime it never saw. Whether that rigidity costs or saves is the whole
+    argument for shipping six numbers instead of a table, and it is decidable.
+    """
+    lead, eps = load(cache, FIT_DAYS)
+    table = tabulate(lead, eps)
+    linear = fit(lead, eps, "linear")
+    shape = np.asarray(linear["shape"])
+    two, _ = minimise(
+        lambda b: float(np.mean((asymmetric_laplace(b[0] ** 2, b[1] ** 2) - shape) ** 2)),
+        [0.5, 0.8])
+    left, right = two[0] ** 2, two[1] ** 2
+    laplace = dict(linear, shape=asymmetric_laplace(left, right).tolist())
+    theta = np.asarray(linear["theta"])
+    candidates = {
+        "parameter-free (tabulated per bin)": table,
+        "fitted width, tabulated shape": linear,
+        "fitted width, Laplace shape (6 numbers)": laplace,
+    }
+
+    print(f"fitted on {len(eps)} residuals over {len(FIT_DAYS)} days "
+          f"before the shift\n")
+    print(f"    s(L) = {theta[2] ** 2:.2f} + {theta[3] ** 2:.3f} * L")
+    print(f"    m(L) = {theta[0]:.2f} + {theta[1]:.3f} * sqrt(L)")
+    print(f"    shape = asymmetric Laplace({left:.2f}, {right:.2f})")
+    print(f"    the table it replaces: {len(ad.EDGE_LABELS)} bins x {len(PS)} "
+          f"levels = {len(ad.EDGE_LABELS) * len(PS)} numbers\n")
+
+    out: dict = {"model": {"s0": theta[2] ** 2, "s1": theta[3] ** 2,
+                           "m0": theta[0], "m1": theta[1],
+                           "left": left, "right": right},
+                 "regimes": {}}
+    head = f"{'model':<42}" + "".join(f"{name:>26}" for name in REGIMES)
+    print(head)
+    print(f"{'':<42}" + "".join(f"{'CRPS  cov80  >q90':>26}" for _ in REGIMES))
+    rows: dict[str, list] = {}
+    for name in ["DB point forecast", "as shipped", *candidates]:
+        cells = []
+        for days in REGIMES.values():
+            a = scored(days)
+            lead_r, db, truth, shipped, q10, q90 = a[:, :6].T
+            if name == "DB point forecast":
+                cell = (float(np.abs(db - truth).mean()), None,
+                        float((truth > db).mean()))
+            elif name == "as shipped":
+                cell = (float(shipped.mean()),
+                        float(((truth >= q10) & (truth <= q90)).mean()),
+                        float((truth > q90).mean()))
+            else:
+                q = db[:, None] + quantiles_of(candidates[name], lead_r)
+                cell = measure(q, truth)
+            cells.append(cell)
+        rows[name] = cells
+        print(f"{name:<42}" + "".join(
+            f"{c[0]:>10.2f}{'-' if c[1] is None else format(c[1], '.0%'):>7}"
+            f"{c[2]:>9.1%}" for c in cells))
+    for i, key in enumerate(REGIMES):
+        out["regimes"][key] = {
+            "days": [str(d) for d in REGIMES[key]],
+            "n": int(len(scored(REGIMES[key]))),
+            "models": {name: {"crps": c[i][0], "cov80": c[i][1],
+                              "above_q90": c[i][2]}
+                       for name, c in rows.items()}}
+    REGIMES_OUT.parent.mkdir(parents=True, exist_ok=True)
+    REGIMES_OUT.write_text(json.dumps(out, indent=2) + "\n")
+    return {"table": table, "linear": linear, "laplace": laplace, **out}
+
+
+def report_changes(cache: Path) -> dict:
+    """Does any of this fix the answer a passenger actually asks?
+
+    An arrival distribution is a means; "will I make my change" is the end, and
+    it is a probability, so it is checkable in a way CRPS is not. DB answers
+    yes or no. The shipped model answers with a number that is almost always 0
+    or 1 anyway, because a two-minute interval leaves no room for doubt. A
+    calibrated anchor should be able to say 70% and be right 70% of the time.
+    """
+    lead, eps = load(cache, FIT_DAYS)
+    table = tabulate(lead, eps)
+    linear = fit(lead, eps, "linear")
+    shape = np.asarray(linear["shape"])
+    two, _ = minimise(
+        lambda b: float(np.mean((asymmetric_laplace(b[0] ** 2, b[1] ** 2) - shape) ** 2)),
+        [0.5, 0.8])
+    laplace = dict(linear, shape=asymmetric_laplace(two[0] ** 2, two[1] ** 2).tolist())
+
+    out: dict = {"regimes": {}}
+    for key, days in (("held out, after the shift", HELD_POST),
+                      ("held out, same regime", HELD_PRE)):
+        a = changes(days)
+        if not len(a):
+            continue
+        lead_c, db, margin, shipped_p, db_p, caught, resid = a.T
+        answers = {
+            # Nine changes in ten work, so a model that has learnt nothing but
+            # that still scores well. Without this line a Brier score of 0.07
+            # reads as skill when it is the base rate.
+            "always the base rate": np.full(len(a), float(caught.mean())),
+            "DB: yes or no": db_p,
+            "as shipped": shipped_p,
+            "parameter-free (tabulated per bin)":
+                cdf_at(quantiles_of(table, lead_c), margin),
+            "fitted width, Laplace shape (6 numbers)":
+                cdf_at(quantiles_of(laplace, lead_c), margin),
+        }
+        # The changes where the answer is actually in doubt: DB's own number
+        # already puts the feeder within ten minutes of losing it. The rest are
+        # caught whatever anyone predicts, and they dominate every average.
+        tight = margin <= 10
+        out["regimes"][key] = {
+            "n": int(len(a)), "base": float(caught.mean()),
+            "n_tight": int(tight.sum()), "base_tight": float(caught[tight].mean()),
+            "days": [str(d) for d in days], "models": {}}
+        print(f"\n{key}: {len(a)} live-anchored changes, "
+              f"{caught.mean():.1%} caught; {int(tight.sum())} of them tight "
+              f"(within 10 min), {caught[tight].mean():.1%} caught\n")
+        print(f"{'answer':<42}{'Brier':>8}{'ECE':>8}{'wrong':>8}"
+              f"{'Brier/t':>9}{'wrong/t':>9}  reliability: said -> was")
+        for name, p in answers.items():
+            edges = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0001])
+            idx = np.searchsorted(edges[1:-1], p, side="right")
+            ece, curve = 0.0, []
+            for i in range(len(edges) - 1):
+                m = idx == i
+                if not m.any():
+                    curve.append(None)
+                    continue
+                ece += m.mean() * abs(p[m].mean() - caught[m].mean())
+                curve.append({"n": int(m.sum()), "said": float(p[m].mean()),
+                              "was": float(caught[m].mean())})
+            stats = {
+                "brier": float(np.mean((p - caught) ** 2)),
+                "ece": float(ece),
+                "wrong": float(np.mean((p >= 0.5) != (caught > 0.5))),
+                "brier_tight": float(np.mean((p[tight] - caught[tight]) ** 2)),
+                "wrong_tight": float(np.mean(
+                    (p[tight] >= 0.5) != (caught[tight] > 0.5))),
+                "curve": curve}
+            out["regimes"][key]["models"][name] = stats
+            shown = "  ".join("  -  " if c is None
+                              else f"{c['said']:.2f}->{c['was']:.2f}"
+                              for c in curve)
+            print(f"{name:<42}{stats['brier']:>8.3f}{stats['ece']:>8.3f}"
+                  f"{stats['wrong']:>8.1%}{stats['brier_tight']:>9.3f}"
+                  f"{stats['wrong_tight']:>9.1%}  {shown}")
+        out["regimes"][key]["why"] = why_changes_miss(
+            lead_c, db, margin, resid, caught, answers)
+    CHANGES_OUT.parent.mkdir(parents=True, exist_ok=True)
+    CHANGES_OUT.write_text(json.dumps(out, indent=2) + "\n")
+    return out
+
+
+def why_changes_miss(lead: np.ndarray, db: np.ndarray, margin: np.ndarray,
+                     resid: np.ndarray, caught: np.ndarray,
+                     answers: dict) -> dict:
+    """Two reasons a fixed arrival distribution still misjudges a change.
+
+    Worth separating, because one of them is this model's fault and the other
+    is the same fault one train further along.
+    """
+    # 1. The change does not depend on the feeder alone. `caught` compares the
+    #    feeder's arrival with the connecting train's *realised* departure,
+    #    while the margin was set from DB's forecast of it. A connecting train
+    #    that is itself late hands back slack nobody predicted.
+    feeder_only = (resid <= margin).astype(float)
+    both_ways = {"rescued": float(np.mean((feeder_only == 0) & (caught == 1))),
+                 "lost anyway": float(np.mean((feeder_only == 1) & (caught == 0)))}
+    print(f"\n  why: the change is two trains, and only one is modelled")
+    print(f"    caught in fact                    {caught.mean():>7.1%}")
+    print(f"    caught if the feeder were all     {feeder_only.mean():>7.1%}")
+    print(f"    the connecting train rescued      {both_ways['rescued']:>7.1%}")
+    print(f"    ... and cost                      {both_ways['lost anyway']:>7.1%}")
+
+    # 2. The residual is indexed by lead alone. Its left tail is not: a train
+    #    already reported half an hour late has half an hour it can win back,
+    #    and one reported two minutes late has two.
+    print(f"\n  why: the left tail scales with the delay, not just the lead")
+    print(f"    {'reported delay':>16}{'n':>8}{'said':>8}{'feeder made it':>16}")
+    tail = []
+    for name, p in answers.items():
+        if not name.startswith("fitted"):
+            continue
+        low = p < 0.2
+        for lo, hi in ((1, 6), (6, 12), (12, 25), (25, 1e9)):
+            m = low & (db >= lo) & (db < hi)
+            if m.sum() < 30:
+                continue
+            row = {"delay": f"{lo}-{'' if hi > 1e8 else int(hi)}",
+                   "n": int(m.sum()), "said": float(p[m].mean()),
+                   "was": float(feeder_only[m].mean())}
+            tail.append(row)
+            print(f"    {row['delay']:>16}{row['n']:>8}{row['said']:>8.2f}"
+                  f"{row['was']:>16.2f}")
+    return {"caught": float(caught.mean()),
+            "feeder_only": float(feeder_only.mean()),
+            **both_ways, "pessimistic_bucket": tail,
+            "feeder_only_scores": {
+                name: {"brier": float(np.mean((p - feeder_only) ** 2))}
+                for name, p in answers.items()}}
+
+
 def report_controls(cache: Path, models: dict) -> None:
     a = scored(TEST_DAYS, blind=True)
     lead, db, truth, shipped, q10, q90, bcrps, bq10, bq90 = a.T
@@ -369,7 +663,8 @@ def report_controls(cache: Path, models: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["dataset", "forms", "sweep", "controls"])
+    ap.add_argument("command", choices=["dataset", "forms", "sweep", "controls",
+                                        "regimes", "changes"])
     ap.add_argument("--cache", type=Path, default=CACHE)
     ap.add_argument("--journals", type=Path,
                     default=Path(__file__).parent / ".forecasts")
@@ -380,6 +675,12 @@ def main() -> int:
         return 0
     if args.command == "forms":
         report_forms(args.cache)
+        return 0
+    if args.command == "regimes":
+        report_regimes(args.cache)
+        return 0
+    if args.command == "changes":
+        report_changes(args.cache)
         return 0
     models = (json.loads(FORMS_OUT.read_text()) if FORMS_OUT.exists()
               else report_forms(args.cache))

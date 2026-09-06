@@ -10,10 +10,12 @@ quadratic.
 
 from __future__ import annotations
 
+import datetime as dt
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
@@ -126,3 +128,57 @@ def test_the_population_is_the_one_the_app_anchors_on(tmp_path):
     lead, eps = sl.load(cache, [dt.date.fromordinal(1)])
     assert lead.tolist() == [20.0, 30.0]
     assert eps.tolist() == [3.0 - ad.MIN_REPORT, 4.0]
+
+
+# --- the parameter-free alternative and the change question ------------------
+
+def test_the_tabulated_model_is_the_empirical_quantiles_of_its_own_bin():
+    """No form, no fit: each bin answers with the residuals it was given."""
+    rng = np.random.default_rng(0)
+    lead = np.concatenate([np.full(500, 7.0), np.full(500, 100.0)])
+    eps = np.concatenate([rng.normal(1.0, 2.0, 500), rng.normal(9.0, 20.0, 500)])
+    q = sl.predict_table(sl.tabulate(lead, eps), np.array([7.0, 100.0]))
+    assert np.allclose(q[0], np.quantile(eps[:500], sl.PS))
+    assert np.allclose(q[1], np.quantile(eps[500:], sl.PS))
+
+
+def test_a_bin_too_thin_to_speak_borrows_the_nearest_one_that_can():
+    """The failure mode a table has and a fitted curve does not.
+
+    Every deployed tabulation needs this rule, so the comparison has to include
+    it rather than quietly scoring a model that answers `None` beyond an hour.
+    """
+    lead = np.concatenate([np.full(400, 7.0), np.full(5, 100.0)])
+    eps = np.concatenate([np.linspace(-3, 3, 400), np.full(5, 40.0)])
+    table = sl.tabulate(lead, eps)
+    near, far = sl.predict_table(table, np.array([7.0, 100.0]))
+    assert np.allclose(near, far), "the thin bin did not borrow"
+    assert far.max() < 40.0, "it borrowed, so it cannot report the thin sample"
+
+
+def test_cdf_at_reads_a_probability_off_the_quantiles():
+    q = np.linspace(-10.0, 10.0, len(sl.PS))[None, :]
+    got = sl.cdf_at(np.repeat(q, 3, axis=0), np.array([-10.0, 0.0, 10.0]))
+    assert got[0] == pytest.approx(sl.PS[0])
+    assert got[1] == pytest.approx(0.5, abs=0.02)
+    assert got[2] == pytest.approx(sl.PS[-1])
+
+
+def test_cdf_at_saturates_outside_the_stated_quantiles():
+    """A margin beyond every quantile is a certainty, not an extrapolation."""
+    q = np.linspace(-5.0, 5.0, len(sl.PS))[None, :]
+    assert sl.cdf_at(q, np.array([-99.0]))[0] == 0.0
+    assert sl.cdf_at(q, np.array([99.0]))[0] == 1.0
+
+
+def test_the_three_day_sets_are_disjoint_and_in_order():
+    """Fit, then unseen days in the same regime, then unseen days after it.
+
+    The order carries the argument: if the middle column holds and the right
+    one does not, the model did not overfit — the world moved.
+    """
+    assert max(sl.FIT_DAYS) < min(sl.HELD_PRE) < max(sl.HELD_PRE) < min(sl.HELD_POST)
+    assert not set(sl.FIT_DAYS) & set(sl.HELD_PRE) & set(sl.HELD_POST)
+    assert sl.TEST_DAYS == sl.HELD_PRE + sl.HELD_POST
+    assert min(sl.HELD_POST) > dt.date(2026, 8, 31), \
+        "the shift is the blockade ending on 2026-08-31"
