@@ -20,6 +20,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -58,6 +60,51 @@ def stations(*paths: Path) -> str:
 # on from. Mirrored rather than imported because `pipeline/` is a separate
 # environment; a test asserts the two agree.
 NOT_PUBLISHED = 2
+
+
+# Every scored file is written by whatever app code is on disk at the moment
+# its stage runs, and a run can stop half way — a timeout, a Ctrl-C, a targeted
+# re-run of one stage. What is left is a directory holding files from two
+# different models, which no count and no eyeball catches: the page renders,
+# every number is plausible, and a comparison between a `-live` file and a
+# `-blind` file that were scored weeks apart is not a comparison of anything.
+# That happened to the two-leg journey rows, and it was the row the page had
+# singled out as the one result that got worse.
+MANIFEST = "scored-by.json"
+
+
+def app_fingerprint() -> str:
+    """A hash of the app source as it stands on disk, dirty tree included.
+
+    The commit is the wrong identity here: the harness runs the working tree,
+    so an uncommitted edit changes the model without changing HEAD. Hashing the
+    files answers the question actually being asked — is this the same code
+    that wrote the other file?
+    """
+    digest = hashlib.sha256()
+    root = ROOT / "app/src/main"
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def record(out: Path, name: str, fingerprint: str) -> None:
+    """Stamp one scored file with the model that produced it.
+
+    Written per stage rather than once per day, because the failure being
+    guarded against is a run that stops between two stages.
+    """
+    path = out / MANIFEST
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    data[name] = fingerprint
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
 
 
 def run(command: list[str], *, env: dict[str, str] | None = None,
@@ -150,6 +197,9 @@ def score_day(day: str, scored: Path, station_list: str,
                str(out / "arrivals.jsonl"), str(out / "connections.jsonl"),
                str(out / "journeys.jsonl")))
 
+    # Read once for the whole day: the app code cannot change mid-run, and
+    # re-hashing it per stage would only invite the two to disagree.
+    fingerprint = app_fingerprint()
     for kind in ("arrivals", "connections"):
         for mode in ("live", "blind"):
             print(f"== {day}: scoring {kind} ({mode})")
@@ -163,6 +213,7 @@ def score_day(day: str, scored: Path, station_list: str,
                 env["HARNESS_BLIND"] = "1"
             run([gradle_wrapper(), "testDebugUnitTest", "--tests",
                  "*ForecastHarness", "-q"], env=env)
+            record(out, f"{kind}-{mode}", fingerprint)
 
     # Skipped rather than run empty: a day before the second tier existed has
     # no journeys at all, and a gradle round trip per mode to discover that
@@ -182,6 +233,7 @@ def score_day(day: str, scored: Path, station_list: str,
             env["HARNESS_BLIND"] = "1"
         run([gradle_wrapper(), "testDebugUnitTest", "--tests",
              "*JourneyHarness", "-q"], env=env)
+        record(out, f"journeys-{mode}", fingerprint)
     return True
 
 

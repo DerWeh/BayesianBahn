@@ -1151,6 +1151,61 @@ def num(x, digits=2):
 
 
 
+MANIFEST = "scored-by.json"
+
+# The six files this page compares against each other. `-shipped-` snapshots are
+# deliberately older and are not among them; nothing here reads one.
+SCORED = ("arrivals-live", "arrivals-blind", "connections-live",
+          "connections-blind", "journeys-live", "journeys-blind")
+
+
+def one_model(scored_dir: Path, days: list[str]) -> str:
+    """The model that scored every file this page reads, or a refusal.
+
+    A run can stop between stages, and what it leaves behind is a directory of
+    files scored by two different models. Nothing downstream can see that: the
+    counts are right, the page renders, and a `-live` column is quietly held
+    against a `-blind` column produced weeks earlier. The published journey
+    rows were exactly that, and the page reported the artefact as the model's
+    one regression.
+
+    Returns the shared fingerprint. Raises when the set is mixed, or when a
+    file predates the stamping and cannot say what wrote it — an unstamped file
+    is not evidence of agreement, which is the whole failure being guarded.
+    """
+    seen: dict[str, list[str]] = {}
+    missing = []
+    for day in days:
+        stamps = {}
+        try:
+            stamps = json.loads((scored_dir / day / MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        for name in SCORED:
+            path = scored_dir / day / f"{name}.jsonl"
+            if not path.exists() or path.stat().st_size == 0:
+                continue
+            if name not in stamps:
+                missing.append(f"{day}/{name}")
+            else:
+                seen.setdefault(stamps[name], []).append(f"{day}/{name}")
+    if missing:
+        raise SystemExit(
+            "these scored files do not say which model wrote them, so the page "
+            "cannot claim they are comparable — rescore them:\n  "
+            + "\n  ".join(missing[:20])
+            + (f"\n  ... and {len(missing) - 20} more" if len(missing) > 20 else ""))
+    if len(seen) > 1:
+        detail = "\n".join(
+            f"  {fp[:12]}: {len(files)} file(s), e.g. {', '.join(sorted(files)[:3])}"
+            for fp, files in sorted(seen.items(), key=lambda kv: -len(kv[1])))
+        raise SystemExit(
+            "the scored files were written by more than one version of the app, "
+            "so nothing on this page would be a like-for-like comparison:\n"
+            + detail + "\nrescore every day before publishing.")
+    return next(iter(seen), "")
+
+
 def provenance() -> dict:
     """Which code produced these numbers.
 
@@ -1901,6 +1956,10 @@ def main() -> None:
             if frame.height:
                 frames.append(frame.with_columns(pl.lit(day).alias("day")))
         return pl.concat(frames, how="diagonal_relaxed") if frames else pl.DataFrame()
+
+    # Before anything is read: a mixed set makes every comparison below
+    # meaningless, and it is invisible once the numbers are in a table.
+    one_model(args.scored_dir, args.days)
 
     live = collect("arrivals-live")
     blind = collect("arrivals-blind")

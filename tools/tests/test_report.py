@@ -10,6 +10,7 @@ prevent.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import subprocess
@@ -538,6 +539,81 @@ def test_the_weekday_caveat_reaches_the_page(tmp_path):
              {"events": 4, "connections": 4}, out,
              gaps=R.headline(rows, rows, conn, conn))
     assert "Weekdays only." in out.read_text(encoding="utf-8")
+
+
+# --- one model per page ------------------------------------------------------
+#
+# The published journey rows compared a `-live` file scored on 06/09 21:57
+# against a `-blind` file scored on 03/09 18:49, across a rewrite of
+# `ConnectionModel.propagate`. Both files were complete, both counts were
+# right, and the page presented the difference between two models as the one
+# result that had got worse.
+
+
+def scored_day(root: Path, day: str, stamps: dict[str, str], *,
+               names=("arrivals-live", "arrivals-blind")) -> None:
+    """One day's directory: a row in each named file, and a manifest."""
+    out = root / day
+    out.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        (out / f"{name}.jsonl").write_text('{"eva":"1"}\n', encoding="utf-8")
+    (out / R.MANIFEST).write_text(json.dumps(stamps), encoding="utf-8")
+
+
+def test_one_model_accepts_a_set_written_by_a_single_version(tmp_path):
+    scored_day(tmp_path, "2026-08-17", {"arrivals-live": "aa", "arrivals-blind": "aa"})
+    scored_day(tmp_path, "2026-08-18", {"arrivals-live": "aa", "arrivals-blind": "aa"})
+    assert R.one_model(tmp_path, ["2026-08-17", "2026-08-18"]) == "aa"
+
+
+def test_a_live_and_blind_pair_from_different_versions_is_refused(tmp_path):
+    """The exact shape of the bug: the pair that gets subtracted."""
+    scored_day(tmp_path, "2026-08-17", {"arrivals-live": "new", "arrivals-blind": "old"})
+    with pytest.raises(SystemExit, match="more than one version"):
+        R.one_model(tmp_path, ["2026-08-17"])
+
+
+def test_one_stale_day_among_many_is_refused(tmp_path):
+    """A partial re-run rewrites some days and not others."""
+    for day in ("2026-08-17", "2026-08-18"):
+        scored_day(tmp_path, day, {"arrivals-live": "new", "arrivals-blind": "new"})
+    scored_day(tmp_path, "2026-08-19", {"arrivals-live": "old", "arrivals-blind": "old"})
+    with pytest.raises(SystemExit, match="more than one version"):
+        R.one_model(tmp_path, ["2026-08-17", "2026-08-18", "2026-08-19"])
+
+
+def test_an_unstamped_file_is_refused_rather_than_assumed_current(tmp_path):
+    """Silence is not agreement. Data scored before the stamping existed is
+    exactly the data that has no way to prove it was scored by one model."""
+    scored_day(tmp_path, "2026-08-17", {"arrivals-live": "aa"})
+    with pytest.raises(SystemExit, match="do not say which model wrote them"):
+        R.one_model(tmp_path, ["2026-08-17"])
+
+
+def test_a_day_with_no_journeys_is_not_a_mismatch(tmp_path):
+    """Before the second tier was polled a day has no two-leg journeys at all,
+    and the driver writes the empty file without running a harness."""
+    scored_day(tmp_path, "2026-08-17", {"arrivals-live": "aa", "arrivals-blind": "aa"})
+    (tmp_path / "2026-08-17/journeys-live.jsonl").write_text("", encoding="utf-8")
+    assert R.one_model(tmp_path, ["2026-08-17"]) == "aa"
+
+
+def test_the_page_refuses_to_render_a_mixed_set(tmp_path, monkeypatch, capsys):
+    """The guard has to sit in front of the render, not beside it."""
+    scored_day(tmp_path, "2026-08-17", {"arrivals-live": "new", "arrivals-blind": "old"})
+    monkeypatch.setattr(sys, "argv",
+                        ["report.py", "--scored-dir", str(tmp_path),
+                         "--days", "2026-08-17", "--out", str(tmp_path / "r.html")])
+    with pytest.raises(SystemExit, match="more than one version"):
+        R.main()
+    assert not (tmp_path / "r.html").exists()
+
+
+def test_the_names_checked_are_the_names_the_page_reads(tmp_path):
+    """A file added to the page but not to SCORED would go unguarded."""
+    source = (R.ROOT / "tools/report.py").read_text(encoding="utf-8")
+    read = set(re.findall(r'collect\("([a-z-]+)"\)', source))
+    assert read and read <= set(R.SCORED), read - set(R.SCORED)
 
 
 # --- provenance -------------------------------------------------------------

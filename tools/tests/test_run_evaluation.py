@@ -8,6 +8,7 @@ here are the ones the shell did implicitly and Python has to do on purpose.
 
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -329,3 +330,88 @@ def test_the_first_cohort_still_gets_its_own_file(tmp_path, monkeypatch):
         stations = cmd[cmd.index("--stations") + 1]
         assert stations.endswith("forecast_stations.csv"), stations
         assert "--cohort" not in cmd
+
+
+# --- which model scored which file -------------------------------------------
+#
+# A run that stops between stages leaves a directory holding files from two
+# different models, and nothing downstream can tell: the counts are right and
+# the page renders. The published two-leg journey rows held a `-live` file
+# against a `-blind` file scored three days and one rewrite of
+# `ConnectionModel.propagate` apart, and the page reported the difference
+# between the two models as the model's one regression.
+
+
+def test_the_fingerprint_follows_the_app_source(tmp_path, monkeypatch):
+    src = tmp_path / "app/src/main"
+    src.mkdir(parents=True)
+    (src / "Model.kt").write_text("fun predict() = 1\n", encoding="utf-8")
+    monkeypatch.setattr(re_, "ROOT", tmp_path)
+    before = re_.app_fingerprint()
+    (src / "Model.kt").write_text("fun predict() = 2\n", encoding="utf-8")
+    assert re_.app_fingerprint() != before, "an edited model is a different model"
+    (src / "Model.kt").write_text("fun predict() = 1\n", encoding="utf-8")
+    assert re_.app_fingerprint() == before, "and the same source is the same model"
+
+
+def test_the_fingerprint_is_of_the_working_tree_not_the_commit(tmp_path, monkeypatch):
+    """The harness runs what is on disk. An uncommitted edit changes the model
+    without changing HEAD, which is why the commit is the wrong identity."""
+    src = tmp_path / "app/src/main"
+    src.mkdir(parents=True)
+    (src / "Model.kt").write_text("fun predict() = 1\n", encoding="utf-8")
+    monkeypatch.setattr(re_, "ROOT", tmp_path)
+    assert not (tmp_path / ".git").exists(), "no repository here at all"
+    # Answers anyway, and keeps answering differently as the tree changes:
+    # nothing about it can be coming from a commit.
+    first = re_.app_fingerprint()
+    (src / "Model.kt").write_text("fun predict() = 2\n", encoding="utf-8")
+    assert re_.app_fingerprint() != first
+
+
+def test_a_new_name_is_added_to_the_manifest_not_written_over_it(tmp_path):
+    """Stamps are written a stage at a time, so the fourth must not erase the
+    first three — a run interrupted after one stage is the case being caught."""
+    re_.record(tmp_path, "arrivals-live", "aa")
+    re_.record(tmp_path, "arrivals-blind", "aa")
+    got = json.loads((tmp_path / re_.MANIFEST).read_text(encoding="utf-8"))
+    assert got == {"arrivals-live": "aa", "arrivals-blind": "aa"}
+
+
+def test_a_rescore_replaces_the_old_stamp(tmp_path):
+    re_.record(tmp_path, "arrivals-live", "old")
+    re_.record(tmp_path, "arrivals-live", "new")
+    got = json.loads((tmp_path / re_.MANIFEST).read_text(encoding="utf-8"))
+    assert got == {"arrivals-live": "new"}
+
+
+def test_a_damaged_manifest_does_not_stop_the_run(tmp_path):
+    """It is a stamp, not the data. A rescore must be able to replace it."""
+    (tmp_path / re_.MANIFEST).write_text("{not json", encoding="utf-8")
+    re_.record(tmp_path, "arrivals-live", "aa")
+    got = json.loads((tmp_path / re_.MANIFEST).read_text(encoding="utf-8"))
+    assert got == {"arrivals-live": "aa"}
+
+
+def test_every_harness_output_is_stamped(tmp_path, monkeypatch):
+    """Six files are scored and the page compares all six; an unstamped one is
+    an unguarded one."""
+    stub_run(monkeypatch, "2026-08-27", tmp_path, journeys='{"a": 1}\n')
+    monkeypatch.setattr(re_, "app_fingerprint", lambda: "aa")
+    assert re_.score_day("2026-08-27", tmp_path, "8000001") is True
+    got = json.loads((tmp_path / "2026-08-27" / re_.MANIFEST).read_text(encoding="utf-8"))
+    assert set(got) == {"arrivals-live", "arrivals-blind",
+                        "connections-live", "connections-blind",
+                        "journeys-live", "journeys-blind"}
+    assert set(got.values()) == {"aa"}
+
+
+def test_a_day_without_journeys_stamps_only_what_it_wrote(tmp_path, monkeypatch):
+    """No two-leg journeys before the second tier was polled, and the driver
+    skips both harnesses rather than running them empty."""
+    stub_run(monkeypatch, "2026-08-17", tmp_path, journeys="")
+    monkeypatch.setattr(re_, "app_fingerprint", lambda: "aa")
+    assert re_.score_day("2026-08-17", tmp_path, "8000001") is True
+    got = json.loads((tmp_path / "2026-08-17" / re_.MANIFEST).read_text(encoding="utf-8"))
+    assert set(got) == {"arrivals-live", "arrivals-blind",
+                        "connections-live", "connections-blind"}
