@@ -566,7 +566,8 @@ def fake_prov(**over):
     `render` reads every key directly, so a test that builds its own by hand
     starts failing with a KeyError the day a key is added."""
     return {"commit": "a" * 40, "short": "a" * 12, "version": "0.1.4",
-            "code": "5", "tag": "", "release": "", "dirty": [], **over}
+            "code": "5", "tag": "", "release": "", "ahead": "", "dirty": [],
+            **over}
 
 
 def test_the_fake_provenance_has_the_keys_the_real_one_has():
@@ -586,6 +587,41 @@ def test_an_unreleased_commit_is_labelled_as_such(tmp_path, monkeypatch):
     assert "not a released version" in page
     assert "a" * 12 in page and "0.1.4" in page
     assert "the one that ships" not in page
+
+
+def test_a_candidate_says_whose_version_number_it_carries(tmp_path, monkeypatch):
+    """The version number is bumped in the release commit, so a candidate shows
+    its predecessor's. A reader who stopped at "declares version 0.3.0" took the
+    page to be scoring the shipped model, which is the conclusion the whole
+    provenance block exists to prevent."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    monkeypatch.setattr(R, "provenance",
+                        lambda: fake_prov(version="0.3.0", code="7", ahead="12"))
+    R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+             R.connections_table(conn, conn), R.outcome_split(conn, conn),
+             {"events": 4, "connections": 4}, out,
+             gaps=R.headline(rows, rows, conn, conn))
+    page = out.read_text(encoding="utf-8")
+    assert "the last released one rather than this code" in page
+    assert "12 commit(s) since" in page
+
+
+def test_a_candidate_level_with_its_tag_claims_no_distance(tmp_path, monkeypatch):
+    """`git rev-list --count` answers "0" for a tag that exists with nothing
+    past it, and "" for a tag that does not exist. Neither is a distance worth
+    printing, and "0 commit(s) since" would be a false one."""
+    out = tmp_path / "report.html"
+    rows = [arrival(num=str(i)) for i in range(4)]
+    conn = [connection(num=str(i), caught=i > 0) for i in range(4)]
+    for value in ("0", ""):
+        monkeypatch.setattr(R, "provenance", lambda v=value: fake_prov(ahead=v))
+        R.render(["2026-08-17"], R.arrivals_table(rows, rows),
+                 R.connections_table(conn, conn), R.outcome_split(conn, conn),
+                 {"events": 4, "connections": 4}, out,
+                 gaps=R.headline(rows, rows, conn, conn))
+        assert "commit(s) since" not in out.read_text(encoding="utf-8")
 
 
 def test_a_released_commit_names_its_tag(tmp_path, monkeypatch):
@@ -901,6 +937,24 @@ def test_a_changed_model_is_not_the_released_one(tmp_path, monkeypatch):
                    capture_output=True)
     monkeypatch.setattr(R, "ROOT", path)
     assert R.provenance()["release"] == ""
+
+
+def test_the_distance_past_the_release_counts_only_app_commits(tmp_path, monkeypatch):
+    """The page's subject is the model, so a commit that re-renders the page is
+    no distance at all — the same distinction `release` already makes."""
+    path = repo(tmp_path)
+    commit_a_generator_change(path)          # tools/ only: not app code
+    (path / "app/src/main/Model.kt").write_text("fun predict() = 99\n",
+                                                encoding="utf-8")
+    subprocess.run(["git", "commit", "-aqm", "new model"], cwd=path, check=True,
+                   capture_output=True)
+    monkeypatch.setattr(R, "ROOT", path)
+    assert R.provenance()["ahead"] == "1"
+
+
+def test_a_release_is_no_distance_past_itself(tmp_path, monkeypatch):
+    monkeypatch.setattr(R, "ROOT", repo(tmp_path))
+    assert R.provenance()["ahead"] == ""
 
 
 def test_a_version_with_no_tag_at_all_is_not_a_release(tmp_path, monkeypatch):

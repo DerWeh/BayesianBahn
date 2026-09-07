@@ -1199,6 +1199,12 @@ def provenance() -> dict:
         git("rev-parse", "--verify", f"{release}^{{commit}}") != ""
         and git("diff", "--name-only", release, "HEAD", "--",
                 "app/src/main", "app/build.gradle.kts") == "")
+    # How far the app code has moved past the release its version number
+    # names. Only meaningful when that tag exists and the code differs from it;
+    # `git()` turns a missing tag into the same empty string as a clean count,
+    # which is why the caller checks the value rather than its presence.
+    ahead = "" if same_app else git("rev-list", "--count", f"{release}..HEAD",
+                                    "--", "app/src/main", "app/build.gradle.kts")
     return {
         "commit": commit,
         "short": commit[:12],
@@ -1207,6 +1213,7 @@ def provenance() -> dict:
         "tag": described,
         # The tag whose app code this is, even when HEAD has moved past it.
         "release": release if same_app else "",
+        "ahead": ahead,
         "dirty": sorted(dirty),
     }
 
@@ -1247,9 +1254,21 @@ def render(days, arrivals, connections, split, totals, out: Path, *,
             "in that version of the app; the commits since the tag change only "
             "this page and how it is generated.")
     else:
-        release_note = ("That commit is <strong>not a released version</strong>: the app "
-                        "published in the stores does not contain this model unless a "
-                        "later release says so.")
+        # The version number is bumped in the release commit, so a candidate
+        # commit carries its predecessor's. Printed beside "not a released
+        # version" that reads as a contradiction, and a reader who stops at the
+        # number concludes the page scored the shipped model — the same wrong
+        # conclusion the dirty-tree check exists to prevent, reached by a
+        # different route. Say whose number it is and how far the code is past it.
+        moved = (f" The app code has moved on in {prov['ahead']} commit(s) since "
+                 f"<code>{html.escape(prov['version'])}</code> was tagged."
+                 if prov["ahead"] and prov["ahead"] != "0" else "")
+        release_note = (
+            "That commit is <strong>not a released version</strong>, and the version "
+            "number above is the last released one rather than this code's — the bump "
+            f"happens in the release commit, so a candidate carries its predecessor's.{moved} "
+            "The app published in the stores does not contain this model unless a "
+            "later release says so.")
 
     # The third kind of answer needs a far-end forecast, which only exists from
     # the day the second tier was first polled — so the page has to be honest
