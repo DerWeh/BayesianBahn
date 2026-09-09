@@ -5,7 +5,7 @@ All notable changes to BayesianBahn are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor = features, patch =
 fixes; expect breaking changes between minors until 1.0).
 
-## [Unreleased]
+## [0.4.0] - 2026-09-09
 
 ### Added
 - **A forecast for trains whose run number is too new to have one.** IRIS gives
@@ -25,6 +25,19 @@ fixes; expect breaking changes between minors until 1.0).
   which line the numbers came from rather than claiming they are this train's.
 
 ### Changed
+- **A reported delay is now an anchor with an admitted error, not a promise.**
+  0.3.0 took DB's live delay and adjusted it by what the train's own past runs
+  did; where DB reported nothing it used history alone. The adjustment was the
+  weaker half. A report is now the centre of its own distribution, widened by
+  the error such reports are measured to carry at that much notice — fitted on
+  82,482 arrivals, and asymmetric, because a train that has lost time rarely
+  makes it back. The connecting train's departure report is treated the same
+  way, so a change is the difference of two admitted errors rather than one
+  distribution against one promise. Scored against DB over the same thirteen
+  days as 0.3.0: arrival CRPS −0.564 → −0.678 minutes, missed connections
+  −0.147 → −0.225 Brier, and "every connection" moves from *not separated from
+  DB* (+0.001) to −0.005. Over sixteen days the shipped model is −0.695 minutes
+  on 296,619 arrivals and −0.242 on 14,835 missed connections.
 - **A train's history and its line's are pooled, not switched between.** The
   first version of the above picked one or the other. Backtesting the
   combination showed the switch to be a step function fitted to a curve: the
@@ -53,6 +66,33 @@ fixes; expect breaking changes between minors until 1.0).
   departure to another train's arrival. Line-keying also loses to number-keying
   wherever the number has a history (0.13 min of CRPS, 95% 0.12..0.13), so it
   is now reached only through the fallback that measured better.
+
+### Fixed
+- **A connection search froze the screen it had just put a spinner on.**
+  Reported from a Pixel 10 as a hang and repeated crash (#2); the attached trace
+  is an ANR, with the main thread five seconds deep in app code. Every
+  `viewModelScope.launch` named no dispatcher, which is the UI thread, and
+  `IrisClient` left the IO dispatcher as soon as the bytes arrived — so the XML
+  parse, the history model and the connection mixture all ran where the frames
+  are drawn. Nothing could draw while the search ran, so the spinner stopped and
+  the result appeared all at once, and on a slow enough route Android killed the
+  app instead. Parsing and planning now run off the main thread; only the state
+  assignments Compose reads stay on it.
+- **The cancellation figure read "n/a" for every train DB had reported on.**
+  Anchoring on a live report returned before the train's own record was
+  consulted, and the cancellation rate comes from that record — so the one
+  number that says how often this train simply does not run went blank exactly
+  when the app had most to say about it.
+- **A change could be answered with no number at all.** The probability of
+  boarding underflows to exactly zero for a connection far enough out of reach,
+  and the rule that always keeps the first candidate then kept it at zero
+  weight — a distribution whose weights sum to nothing, which answers NaN rather
+  than declining to answer.
+- **The on-demand cache grew for the life of the install, and a file written
+  during a kill stayed "fresh" for eighteen hours.** Both are solved problems in
+  RFC 9111, so the hand-written disk cache is gone and OkHttp does it: entries
+  are evicted, a partial write is never published, and revalidating an unchanged
+  shard now costs a round trip instead of the file.
 
 ## [0.3.0] - 2026-08-29
 
@@ -352,6 +392,7 @@ times and connections with DB's official apps.
   Augsburg/München region; optional bulk download for offline use,
   refreshed daily to within ~a day of reality.
 
+[0.4.0]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.4.0
 [0.3.0]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.3.0
 [0.2.0]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.2.0
 [0.1.4]: https://github.com/DerWeh/BayesianBahn/releases/tag/v0.1.4

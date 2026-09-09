@@ -1,0 +1,4 @@
+• DB's live delay is now the middle of a range, not a fixed number — widened by how wrong such reports turn out to be that far ahead. Your connecting train's departure is treated the same way, so a change weighs two honest ranges. Measured against DB over 16 days: better arrival times, and clearly better at flagging the connections you miss.
+• Trains with a brand-new run number now borrow their line's history.
+
+Fixed: connection searches froze the screen instead of showing progress (#2).

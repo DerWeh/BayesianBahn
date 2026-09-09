@@ -1,0 +1,4 @@
+• Die Live-Verspätung der DB ist jetzt die Mitte eines Bereichs statt einer festen Zahl — verbreitert um den Fehler, den solche Meldungen so weit im Voraus haben. Für die Abfahrt des Anschlusszuges gilt dasselbe. Über 16 Tage gegen die DB gemessen: bessere Ankunftszeiten, deutlich besser bei verpassten Anschlüssen.
+• Züge mit ganz neuer Zugnummer nutzen jetzt die Historie ihrer Linie.
+
+Behoben: Die Verbindungssuche fror die Anzeige ein, statt Fortschritt zu zeigen (#2).
